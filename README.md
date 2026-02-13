@@ -56,9 +56,10 @@ game, and posts moves back to Lichess.
 - Set `LICHESS_TOKEN` in `.env` or in the shell environment before launching.
   Do **not** hard-code it inside the script.
 
-The bridge talks to Lichess through `HTTP::Tiny`, so as long as Perl can load
-`IO::Socket::SSL` and `Mozilla::CA` for TLS verification no external binaries
-such as `curl` are required.
+The bridge talks to Lichess directly over TLS sockets, so as long as Perl can
+load `IO::Socket::SSL`, `Net::SSLeay`, and `Mozilla::CA` (installed under
+`.perl5` via `script/setup_env.sh`) no external binaries such as `curl` are
+required.
 
 ### Debugging Tips
 

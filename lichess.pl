@@ -22,7 +22,6 @@ use IPC::Open2;
 use IO::Handle;
 use Text::ParseWords qw(shellwords);
 use POSIX ':sys_wait_h';
-use HTTP::Tiny;
 use Config;
 use IO::Socket::SSL qw(SSL_VERIFY_PEER);
 
@@ -32,8 +31,6 @@ eval {
   require Mozilla::CA;
   1;
 } or die "Install IO::Socket::SSL and Mozilla::CA to use lichess.pl: $@";
-
-my $API_BASE = 'https://lichess.org/api';
 
 load_env("$RealBin/.env");
 
@@ -47,20 +44,10 @@ STDOUT->autoflush(1);
 STDERR->autoflush(1);
 
 my $debug = $ENV{LICHESS_DEBUG} // 0;
-my $extra_debug = $ENV{LICHESS_EXTRA_DEBUG} // 0;
 
 my $auth_header = "Bearer $token";
 my $ssl_ca_file = Mozilla::CA::SSL_ca_file();
-
-my $http = HTTP::Tiny->new(
-  agent           => 'PerlGigachess/0.1',
-  default_headers => { Authorization => $auth_header },
-  keep_alive      => 1,
-  verify_SSL      => 1,
-  SSL_options     => {
-    SSL_ca_file => $ssl_ca_file,
-  },
-);
+my $user_agent  = 'PerlGigachess/0.1';
 
 # Ensure the token is valid and capture the bot username.
 my $account = lichess_json_get('/account');
@@ -156,14 +143,17 @@ sub start_game {
     return;
   }
   if ($pid == 0) {
-    play_game($game_id);
+    select undef, undef, undef, 0.1;
+    play_game($game);
     exit 0;
   }
   log_info("Spawned handler pid $pid for game $game_id");
 }
 
 sub play_game {
-  my ($game_id) = @_;
+  my ($seed) = @_;
+  my $seed_info = (ref $seed eq 'HASH') ? $seed : {};
+  my $game_id = $seed_info->{id} // $seed;
   log_info("Starting game stream for $game_id");
 
   my ($engine_out, $engine_in);
@@ -179,8 +169,8 @@ sub play_game {
 
   my %game = (
     id           => $game_id,
-    my_color     => undef,
-    initial_fen  => 'startpos',
+    my_color     => normalize_color($seed_info->{color}),
+    initial_fen  => normalize_fen($seed_info->{fen}),
     moves        => [],
     pending_move => undef,
     status       => 'created',
@@ -188,7 +178,16 @@ sub play_game {
     btime        => undef,
     winc         => 0,
     binc         => 0,
+    is_my_turn   => extract_turn_flag($seed_info),
   );
+  if (defined $seed_info->{secondsLeft} && defined $game{my_color}) {
+    if ($game{my_color} eq 'white') {
+      $game{wtime} = $seed_info->{secondsLeft};
+    } else {
+      $game{btime} = $seed_info->{secondsLeft};
+    }
+  }
+  maybe_move(\%game, $engine_out, $engine_in);
 
   log_debug("Opening game stream for $game_id");
   my $buffer = '';
@@ -228,6 +227,7 @@ sub handle_game_event {
     $game->{btime}  = $event->{state}{btime};
     $game->{winc}   = $event->{state}{winc};
     $game->{binc}   = $event->{state}{binc};
+    update_turn_from_event($game, $event);
     print {$engine_in} "ucinewgame\n";
     maybe_move($game, $engine_out, $engine_in);
   } elsif ($type eq 'gameState') {
@@ -244,6 +244,7 @@ sub handle_game_event {
     {
       $game->{pending_move} = undef;
     }
+    update_turn_from_event($game, $event);
     maybe_move($game, $engine_out, $engine_in);
   } elsif ($type eq 'chatLine') {
     log_info("Chat <$event->{username}> $event->{text}") if $event->{text};
@@ -257,6 +258,66 @@ sub parse_moves {
   return \@moves;
 }
 
+sub normalize_color {
+  my ($color) = @_;
+  return unless defined $color;
+  $color = lc $color;
+  return 'white' if $color eq 'white';
+  return 'black' if $color eq 'black';
+  return;
+}
+
+sub normalize_fen {
+  my ($fen) = @_;
+  return 'startpos' unless defined $fen && length $fen;
+  return $fen;
+}
+
+sub extract_turn_flag {
+  my ($source) = @_;
+  return unless ref $source eq 'HASH';
+  if (exists $source->{state}
+    && ref $source->{state} eq 'HASH'
+    && exists $source->{state}{isMyTurn})
+  {
+    return $source->{state}{isMyTurn} ? 1 : 0;
+  }
+  if (exists $source->{isMyTurn}) {
+    return $source->{isMyTurn} ? 1 : 0;
+  }
+  return;
+}
+
+sub update_turn_from_event {
+  my ($game, $event) = @_;
+  my $flag = extract_turn_flag($event);
+  return unless defined $flag;
+  $game->{is_my_turn} = $flag ? 1 : 0;
+}
+
+sub infer_turn_from_moves {
+  my ($game) = @_;
+  return unless defined $game->{my_color};
+  my $initial = initial_side_from_fen($game->{initial_fen});
+  my $moves = $game->{moves} // [];
+  my $side;
+  if ($initial eq 'white') {
+    $side = (@$moves % 2 == 0) ? 'white' : 'black';
+  } else {
+    $side = (@$moves % 2 == 0) ? 'black' : 'white';
+  }
+  return $side eq $game->{my_color} ? 1 : 0;
+}
+
+sub initial_side_from_fen {
+  my ($fen) = @_;
+  return 'white' unless defined $fen && $fen ne 'startpos';
+  if ($fen =~ /\s([wb])\s/) {
+    return $1 eq 'b' ? 'black' : 'white';
+  }
+  return 'white';
+}
+
 sub maybe_move {
   my ($game, $engine_out, $engine_in) = @_;
   return unless ($game->{status} // '') eq 'started';
@@ -264,10 +325,11 @@ sub maybe_move {
   return unless defined $game->{my_color};
   return if $game->{pending_move};
 
-  my $move_count = scalar @{$game->{moves}};
-  my $side_to_move = $move_count % 2 == 0 ? 'white' : 'black';
-  log_debug("move_count=$move_count my=$game->{my_color} side=$side_to_move");
-  return unless $side_to_move eq $game->{my_color};
+  my $my_turn = defined $game->{is_my_turn}
+    ? $game->{is_my_turn}
+    : infer_turn_from_moves($game);
+  log_debug("my_color=$game->{my_color} is_my_turn=" . ($my_turn // 'undef'));
+  return unless $my_turn;
 
   my $best = compute_bestmove($game, $engine_out, $engine_in);
   if (!$best || $best eq '(none)') {
@@ -277,6 +339,7 @@ sub maybe_move {
 
   if (send_move($game->{id}, $best)) {
     $game->{pending_move} = $best;
+    $game->{is_my_turn}   = 0;
     log_info("Played $best in $game->{id}");
   }
 }
@@ -313,13 +376,59 @@ sub compute_bestmove {
 }
 
 sub send_move {
-  my ($game_id, $move) = @_;
-  my $res = http_request('POST', "/bot/game/$game_id/move/$move");
+  my ($game_id, $move, $opts) = @_;
+  $opts ||= {};
+  my %query;
+  if ($opts->{offer_draw}) {
+    $query{offeringDraw} = 'true';
+  }
+  my $res = http_request('POST', "/bot/game/$game_id/move/$move", {
+    query => \%query,
+  });
   if (!$res->{success}) {
     log_warn("Move $move for $game_id was rejected: " . $res->{status_line});
     return 0;
   }
   return 1;
+}
+
+sub api_abort_game {
+  my ($game_id) = @_;
+  return http_request('POST', "/bot/game/$game_id/abort");
+}
+
+sub api_resign_game {
+  my ($game_id) = @_;
+  return http_request('POST', "/bot/game/$game_id/resign");
+}
+
+sub api_claim_draw {
+  my ($game_id) = @_;
+  return http_request('POST', "/bot/game/$game_id/claim-draw");
+}
+
+sub api_claim_victory {
+  my ($game_id) = @_;
+  return http_request('POST', "/bot/game/$game_id/claim-victory");
+}
+
+sub api_handle_takeback {
+  my ($game_id, $accept) = @_;
+  my $decision = $accept ? 'yes' : 'no';
+  return http_request('POST', "/bot/game/$game_id/takeback/$decision");
+}
+
+sub api_send_chat {
+  my ($game_id, $room, $text) = @_;
+  $text //= '';
+  if (length $text > 140) {
+    log_warn("Chat message too long ($game_id): " . length($text));
+    return { success => 0, status => 0, status_line => 'chat too long', content => '' };
+  }
+  return http_request('POST', "/bot/game/$game_id/chat", {
+    form => { room => $room, text => $text },
+    accept => 'application/json',
+  });
 }
 
 sub uci_handshake {
@@ -363,8 +472,7 @@ sub log_debug {
 sub _emit_log {
   my ($level, $msg) = @_;
   my $ts = scalar gmtime;
-  my $prefix = $extra_debug ? 'EXTRA-DEBUG ' : '';
-  warn "[$ts] $level $prefix$msg\n";
+  warn "[$ts] $level $msg\n";
 }
 
 sub mask_secret {
@@ -497,21 +605,94 @@ sub load_env {
 sub http_request {
   my ($method, $path, $opts) = @_;
   $opts ||= {};
-  my $url = "$API_BASE$path";
-  my %headers = (
-    Accept => $opts->{accept} // 'application/json',
-  );
-  my %request = ( headers => \%headers );
-  if (my $form = $opts->{form}) {
-    $headers{'content-type'} = 'application/x-www-form-urlencoded';
-    $request{content} = _encode_form($form);
-  } elsif (exists $opts->{content}) {
-    $request{content} = $opts->{content};
+  $method = uc($method // 'GET');
+  my $relative = $path // '/';
+  $relative = "/$relative" unless $relative =~ m{^/};
+  $relative = "/api$relative" unless $relative =~ m{^/api/};
+
+  if (my $query = $opts->{query}) {
+    my $qs = _encode_query($query);
+    $relative .= ($relative =~ /\?/ ? '&' : '?') . $qs if length $qs;
   }
-  my $res = $http->request($method, $url, \%request);
-  $res->{status_line} //= sprintf 'HTTP/1.1 %s %s',
-    $res->{status} // 0, $res->{reason} // '';
-  return $res;
+
+  my $content = '';
+  if (my $form = $opts->{form}) {
+    $content = _encode_form($form);
+    $opts->{headers}{'Content-Type'} //= 'application/x-www-form-urlencoded';
+  } elsif (exists $opts->{content}) {
+    $content = $opts->{content};
+  }
+
+  my $sock = IO::Socket::SSL->new(
+    PeerHost        => 'lichess.org',
+    PeerPort        => 443,
+    SSL_verify_mode => SSL_VERIFY_PEER(),
+    SSL_ca_file     => $ssl_ca_file,
+    SNI_hostname    => 'lichess.org',
+  );
+  unless ($sock) {
+    my $err = IO::Socket::SSL::errstr() // 'unknown';
+    return {
+      success     => 0,
+      status      => 0,
+      reason      => $err,
+      status_line => "IO::Socket::SSL error: $err",
+      content     => '',
+    };
+  }
+  $sock->autoflush(1);
+
+  my %headers = (
+    'Host'          => 'lichess.org',
+    'Authorization' => $auth_header,
+    'User-Agent'    => $user_agent,
+    'Accept'        => $opts->{accept} // 'application/json',
+    'Connection'    => 'close',
+  );
+  if (my $extra = $opts->{headers}) {
+    foreach my $key (keys %$extra) {
+      $headers{$key} = $extra->{$key};
+    }
+  }
+  if (length $content) {
+    $headers{'Content-Length'} = length($content);
+  }
+
+  my $request = sprintf "%s %s HTTP/1.1\r\n", $method, $relative;
+  foreach my $key (keys %headers) {
+    my $value = $headers{$key};
+    $request .= "$key: $value\r\n";
+  }
+  $request .= "\r\n";
+  $request .= $content if length $content;
+
+  print {$sock} $request;
+
+  my $resp_headers = _read_http_headers($sock);
+  my $status_line = $resp_headers->{status_line} // 'HTTP/1.1 000';
+  my ($status, $reason) = $status_line =~ m{^HTTP/\S+\s+(\d+)\s*(.*)$};
+  $reason //= '';
+
+  my $body = '';
+  my $te = $resp_headers->{'transfer-encoding'} // '';
+  if ($te =~ /chunked/i) {
+    my $ok = _consume_chunked($sock, sub { $body .= shift });
+    $body = '' unless $ok;
+  } elsif (defined(my $len = $resp_headers->{'content-length'})) {
+    my $data = _read_exact($sock, $len);
+    $body = defined $data ? $data : '';
+  } else {
+    $body = _read_all($sock);
+  }
+  close $sock;
+
+  return {
+    success     => ($status && $status >= 200 && $status < 300) ? 1 : 0,
+    status      => $status // 0,
+    reason      => $reason,
+    status_line => $status_line,
+    content     => $body // '',
+  };
 }
 
 sub _encode_form {
@@ -519,16 +700,33 @@ sub _encode_form {
   my @pairs;
   foreach my $key (sort keys %$form) {
     my $value = defined $form->{$key} ? $form->{$key} : '';
-    push @pairs, join('=', _url_escape($key), _url_escape($value));
+    push @pairs, join('=', _form_escape($key), _form_escape($value));
   }
   return join '&', @pairs;
 }
 
-sub _url_escape {
+sub _encode_query {
+  my ($params) = @_;
+  my @pairs;
+  foreach my $key (sort keys %$params) {
+    my $value = defined $params->{$key} ? $params->{$key} : '';
+    push @pairs, join('=', _query_escape($key), _query_escape($value));
+  }
+  return join '&', @pairs;
+}
+
+sub _form_escape {
   my ($text) = @_;
   $text //= '';
   $text =~ s/([^A-Za-z0-9_\-\.~ ])/sprintf '%%%02X', ord($1)/ge;
   $text =~ s/ /+/g;
+  return $text;
+}
+
+sub _query_escape {
+  my ($text) = @_;
+  $text //= '';
+  $text =~ s/([^A-Za-z0-9_\-\.~])/sprintf '%%%02X', ord($1)/ge;
   return $text;
 }
 
@@ -558,6 +756,7 @@ sub stream_ndjson {
       "Host: lichess.org\r\n",
       "Authorization: Bearer $token\r\n",
       "Accept: application/x-ndjson\r\n",
+      "User-Agent: $user_agent\r\n",
       "Connection: keep-alive\r\n",
       "\r\n"
     );
@@ -573,26 +772,19 @@ sub stream_ndjson {
       next;
     }
 
+    log_info("Stream $path status " . ($headers->{status_line} // 'unknown'));
     my $buffer = '';
-    my $ok = 1;
-    my $te = $headers->{'transfer-encoding'} // '';
-    if ($te =~ /chunked/i) {
-      $ok = _consume_chunked($sock, sub {
-        my ($chunk) = @_;
-        $buffer .= $chunk;
-        _drain_ndjson($path, \$buffer, $callback);
-      });
-    } else {
-      $ok = _consume_raw($sock, sub {
-        my ($chunk) = @_;
-        $buffer .= $chunk;
-        _drain_ndjson($path, \$buffer, $callback);
-      });
+    my $ok = 0;
+    while (defined(my $line = <$sock>)) {
+      $buffer .= $line;
+      _drain_ndjson($path, \$buffer, $callback);
+      $ok = 1;
     }
 
     close $sock;
 
     if ($ok) {
+      log_info("Stream $path completed");
       return 1;
     }
 
