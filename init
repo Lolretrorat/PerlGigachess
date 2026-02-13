@@ -1,0 +1,71 @@
+#!/usr/bin/env perl
+use v5.10;
+use strict;
+use warnings;
+
+use FindBin qw($Bin);
+use lib $Bin;
+
+use Getopt::Long qw(GetOptionsFromArray);
+use JSON::PP;
+
+use Chess::LocationModifer qw(%location_modifiers default_store_path);
+
+my $command = shift @ARGV || '';
+
+if ($command eq 'train-location') {
+    train_location(@ARGV);
+} else {
+    usage();
+}
+
+sub train_location {
+    my (@args) = @_;
+    my ($output, $max_games, $scale, $stdout);
+    $stdout = 0;
+
+    GetOptionsFromArray(
+        \@args,
+        'output=s' => \$output,
+        'games=i'  => \$max_games,
+        'scale=i'  => \$scale,
+        'stdout!'  => \$stdout,
+    ) or usage();
+
+    my %train_opts;
+    $train_opts{max_games} = $max_games if defined $max_games;
+    $train_opts{scale} = $scale if defined $scale;
+
+    say STDERR 'Reading PGN data from STDIN…';
+    my $stats = Chess::LocationModifer::train_from_stream(\*STDIN, %train_opts);
+
+    my $target = $output || default_store_path();
+
+    if ($stdout) {
+        print JSON::PP->new->canonical->pretty->encode(\%location_modifiers);
+    } else {
+        Chess::LocationModifer::save_to_file($target);
+        say STDERR "Updated location modifiers at $target";
+    }
+
+    say STDERR sprintf(
+        'Processed %d game(s), skipped %d, ignored %d move(s).',
+        $stats->{games_processed} || 0,
+        $stats->{games_skipped} || 0,
+        $stats->{moves_skipped} || 0,
+    );
+}
+
+sub usage {
+    print STDERR <<'HELP';
+Usage:
+  ./init train-location [--output path] [--games N] [--scale SCALE] [--stdout]
+
+Examples:
+  zstdcat lichess_db_standard_rated_2024-01.pgn.zst | ./init train-location --games 10000
+  bzcat sample.pgn.bz2 | ./init train-location --output data/location_modifiers.json
+
+Pipe PGN data from database.lichess.org to train square preferences.
+HELP
+    exit 1;
+}
