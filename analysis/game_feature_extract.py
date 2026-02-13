@@ -59,8 +59,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("pgn", help="Path to source PGN file (can be .pgn or .pgn.zst).")
     parser.add_argument(
         "--output-dir",
-        default="data/processed",
-        help="Directory for npz shards (default: data/processed).",
+        default="jsons/processed",
+        help="Directory for npz shards (default: jsons/processed).",
     )
     parser.add_argument(
         "--shard-size",

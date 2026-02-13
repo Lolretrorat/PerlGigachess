@@ -7,11 +7,29 @@ points:
 - `perft.pl` — perft validation driver.
 - `lichess.pl` — Bot API bridge that lets the engine play on lichess.org.
 
+## Development Environment
+
+Dependencies are isolated with a Python virtual environment and a local Perl
+lib. Run (sourcing applies the exports to your current shell):
+
+```bash
+source script/setup_env.sh
+```
+
+The helper installs Python packages from `requirements.txt` into `.venv` and
+Perl modules declared in `cpanfile` under `.perl5`. If you execute the script
+normally (`./script/setup_env.sh`), it still installs everything and prints the
+commands needed to activate the environments later.
+
+If `cpanm` is missing, install `App::cpanminus` (e.g., `cpan App::cpanminus`)
+before running the helper.
+
 ## Running the Lichess bridge
 
 1. [Create a Lichess bot account](https://lichess.org/account/oauth/bot) and
    generate a Bot API token.
-2. Ensure `curl` is installed; the bridge shells out to it for HTTPS streaming.
+2. Install Perl TLS essentials (`IO::Socket::SSL` and `Mozilla::CA`) so HTTPS
+   requests succeed.
 3. Store the token in a `.env` file (same directory as the scripts):
    ```
    LICHESS_TOKEN=lip_kmfsKa2rBUqvzfOPwXg8
@@ -38,8 +56,9 @@ game, and posts moves back to Lichess.
 - Set `LICHESS_TOKEN` in `.env` or in the shell environment before launching.
   Do **not** hard-code it inside the script.
 
-The bridge only relies on core modules available in Perl 5.26+, so no CPAN
-installations are required on a standard Perl distribution.
+The bridge talks to Lichess through `HTTP::Tiny`, so as long as Perl can load
+`IO::Socket::SSL` and `Mozilla::CA` for TLS verification no external binaries
+such as `curl` are required.
 
 ### Debugging Tips
 
@@ -58,7 +77,7 @@ engine code. Stream PGN text into the helper:
 zstdcat lichess_db_standard_rated_2024-01.pgn.zst | ./init train-location --games 5000
 ```
 
-The command updates `data/location_modifiers.json`, which the module loads at
+The command updates `jsons/location_modifiers.json`, which the module loads at
 startup. To validate and install JSON exported from other tooling, run
 `perl script/update_location_modifiers.pl path/to/tables.json`. The pipeline and
 feature format are described in `docs/location-modifier-ml.md`.

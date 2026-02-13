@@ -6,13 +6,32 @@ use warnings;
 # Make local modules available so the bundled UCI engine can be spawned.
 use FindBin qw($RealBin);
 use lib $RealBin;
+BEGIN {
+  my $base = "$RealBin/.perl5/lib/perl5";
+  if (-d $base) {
+    unshift @INC, $base;
+    my $arch = "$base/" . $Config::Config{archname};
+    if (-d $arch) {
+      unshift @INC, $arch;
+    }
+  }
+}
 
 use JSON::PP qw(decode_json);
 use IPC::Open2;
-use IPC::Open3;
 use IO::Handle;
 use Text::ParseWords qw(shellwords);
 use POSIX ':sys_wait_h';
+use HTTP::Tiny;
+use Config;
+use IO::Socket::SSL qw(SSL_VERIFY_PEER);
+
+eval {
+  require IO::Socket::SSL;
+  IO::Socket::SSL->import();
+  require Mozilla::CA;
+  1;
+} or die "Install IO::Socket::SSL and Mozilla::CA to use lichess.pl: $@";
 
 my $API_BASE = 'https://lichess.org/api';
 
@@ -28,8 +47,20 @@ STDOUT->autoflush(1);
 STDERR->autoflush(1);
 
 my $debug = $ENV{LICHESS_DEBUG} // 0;
+my $extra_debug = $ENV{LICHESS_EXTRA_DEBUG} // 0;
 
-my $auth_header = "Authorization: Bearer $token";
+my $auth_header = "Bearer $token";
+my $ssl_ca_file = Mozilla::CA::SSL_ca_file();
+
+my $http = HTTP::Tiny->new(
+  agent           => 'PerlGigachess/0.1',
+  default_headers => { Authorization => $auth_header },
+  keep_alive      => 1,
+  verify_SSL      => 1,
+  SSL_options     => {
+    SSL_ca_file => $ssl_ca_file,
+  },
+);
 
 # Ensure the token is valid and capture the bot username.
 my $account = lichess_json_get('/account');
@@ -159,6 +190,7 @@ sub play_game {
     binc         => 0,
   );
 
+  log_debug("Opening game stream for $game_id");
   my $buffer = '';
   my $ok = stream_ndjson("/bot/game/stream/$game_id", sub {
     my ($event) = @_;
@@ -184,6 +216,7 @@ sub handle_game_event {
   my $type = $event->{type} // '';
 
   if ($type eq 'gameFull') {
+    log_debug("gameFull payload: " . encode_json($event)) if $debug;
     log_debug("gameFull for $game->{id}");
     $game->{initial_fen} = $event->{initialFen} && $event->{initialFen} ne 'startpos'
       ? $event->{initialFen} : 'startpos';
@@ -198,6 +231,7 @@ sub handle_game_event {
     print {$engine_in} "ucinewgame\n";
     maybe_move($game, $engine_out, $engine_in);
   } elsif ($type eq 'gameState') {
+    log_debug("gameState payload: " . encode_json($event)) if $debug;
     log_debug("gameState for $game->{id}: moves=$event->{moves}");
     $game->{status} = $event->{status} if defined $event->{status};
     $game->{moves}  = parse_moves($event->{moves});
@@ -312,21 +346,25 @@ sub lichess_json_get {
 }
 sub log_info {
   my ($msg) = @_;
-  my $ts = scalar gmtime;
-  warn "[$ts] INFO $msg\n";
+  _emit_log('INFO', $msg);
 }
 
 sub log_warn {
   my ($msg) = @_;
-  my $ts = scalar gmtime;
-  warn "[$ts] WARN $msg\n";
+  _emit_log('WARN', $msg);
 }
 
 sub log_debug {
   my ($msg) = @_;
   return unless $debug;
+  _emit_log('DEBUG', $msg);
+}
+
+sub _emit_log {
+  my ($level, $msg) = @_;
   my $ts = scalar gmtime;
-  warn "[$ts] DEBUG $msg\n";
+  my $prefix = $extra_debug ? 'EXTRA-DEBUG ' : '';
+  warn "[$ts] $level $prefix$msg\n";
 }
 
 sub mask_secret {
@@ -335,6 +373,108 @@ sub mask_secret {
   my $needle = "Bearer $token";
   $text =~ s/\Q$needle\E/Bearer <redacted>/g;
   return $text;
+}
+
+sub _drain_ndjson {
+  my ($path, $buffer_ref, $callback) = @_;
+  while ($$buffer_ref =~ s/^(.*?\n)//) {
+    my $line = $1;
+    $line =~ s/[\r\n]+$//;
+    next unless length $line;
+    log_debug("NDJSON $path: $line") if $debug;
+    my $payload = eval { decode_json($line) };
+    if ($@) {
+      log_warn("Failed to decode payload '$line': $@");
+      next;
+    }
+    $callback->($payload);
+  }
+}
+
+sub _read_http_headers {
+  my ($fh) = @_;
+  my %headers;
+  my $status_line = _read_line($fh);
+  return {} unless defined $status_line;
+  $status_line =~ s/\r?\n$//;
+  $headers{status_line} = $status_line;
+  if ($status_line =~ m{^HTTP/\S+\s+(\d+)}) {
+    $headers{status} = $1;
+  }
+  while (defined(my $line = _read_line($fh))) {
+    last if $line =~ /^\r?\n$/;
+    $line =~ s/\r?\n$//;
+    my ($key, $value) = split /:\s*/, $line, 2;
+    next unless defined $key && defined $value;
+    $headers{lc $key} = $value;
+  }
+  return \%headers;
+}
+
+sub _consume_chunked {
+  my ($fh, $cb) = @_;
+  while (1) {
+    my $len_line = _read_line($fh);
+    return 0 unless defined $len_line;
+    $len_line =~ s/\r?\n$//;
+    $len_line =~ s/;.*$//;
+    my $len = eval { hex($len_line) };
+    return 0 if !defined $len;
+    last if $len == 0;
+    my $chunk = _read_exact($fh, $len);
+    return 0 unless defined $chunk;
+    $cb->($chunk);
+    _read_exact($fh, 2); # consume CRLF
+  }
+  return 1;
+}
+
+sub _consume_raw {
+  my ($fh, $cb) = @_;
+  while (1) {
+    my $chunk = '';
+    my $rv = sysread($fh, $chunk, 4096);
+    last unless $rv;
+    $cb->($chunk);
+  }
+  return 1;
+}
+
+sub _read_line {
+  my ($fh) = @_;
+  my $line = '';
+  while (1) {
+    my $char = '';
+    my $rv = sysread($fh, $char, 1);
+    return if !defined $rv || $rv == 0;
+    $line .= $char;
+    last if $char eq "\n";
+  }
+  return $line;
+}
+
+sub _read_exact {
+  my ($fh, $len) = @_;
+  my $data = '';
+  while (length($data) < $len) {
+    my $chunk = '';
+    my $rv = sysread($fh, $chunk, $len - length($data));
+    return unless defined $rv && $rv > 0;
+    $data .= $chunk;
+  }
+  return $data;
+}
+
+sub _read_all {
+  my ($fh) = @_;
+  my $data = '';
+  while (1) {
+    my $chunk = '';
+    my $rv = sysread($fh, $chunk, 4096);
+    last unless $rv;
+    $data .= $chunk;
+  }
+  return $data;
 }
 
 sub load_env {
@@ -358,95 +498,112 @@ sub http_request {
   my ($method, $path, $opts) = @_;
   $opts ||= {};
   my $url = "$API_BASE$path";
-  my @cmd = (
-    'curl', '-sS', '-i',
-    '-H', $auth_header,
-    '-H', 'Accept: application/json',
+  my %headers = (
+    Accept => $opts->{accept} // 'application/json',
   );
-  push @cmd, '-X', $method if $method ne 'GET';
+  my %request = ( headers => \%headers );
   if (my $form = $opts->{form}) {
-    while (my ($key, $value) = each %$form) {
-      push @cmd, '-d', "$key=$value";
-    }
+    $headers{'content-type'} = 'application/x-www-form-urlencoded';
+    $request{content} = _encode_form($form);
   } elsif (exists $opts->{content}) {
-    push @cmd, '--data-binary', $opts->{content};
+    $request{content} = $opts->{content};
   }
-  push @cmd, $url;
+  my $res = $http->request($method, $url, \%request);
+  $res->{status_line} //= sprintf 'HTTP/1.1 %s %s',
+    $res->{status} // 0, $res->{reason} // '';
+  return $res;
+}
 
-  open my $fh, '-|', @cmd
-    or die "Failed to run curl for $method $path: $!";
-
-  my $status_line = '';
-  while (my $line = <$fh>) {
-    $line =~ s/\r?\n$//;
-    if ($line =~ m{^HTTP/}) {
-      $status_line = $line;
-      last;
-    }
+sub _encode_form {
+  my ($form) = @_;
+  my @pairs;
+  foreach my $key (sort keys %$form) {
+    my $value = defined $form->{$key} ? $form->{$key} : '';
+    push @pairs, join('=', _url_escape($key), _url_escape($value));
   }
-  unless ($status_line) {
-    close $fh;
-    return {
-      success     => 0,
-      status      => 0,
-      status_line => 'No HTTP status received',
-      content     => '',
-    };
-  }
+  return join '&', @pairs;
+}
 
-  my ($status, $reason) = $status_line =~ m{^HTTP/\S+\s+(\d+)\s*(.*)$};
-  $reason //= '';
-
-  while (my $line = <$fh>) {
-    $line =~ s/\r?\n$//;
-    last if $line eq '';
-  }
-
-  my $content = do { local $/; <$fh> };
-  close $fh;
-
-  return {
-    success     => ($status && $status >= 200 && $status < 300),
-    status      => $status,
-    reason      => $reason,
-    status_line => $status_line,
-    content     => $content // '',
-  };
+sub _url_escape {
+  my ($text) = @_;
+  $text //= '';
+  $text =~ s/([^A-Za-z0-9_\-\.~ ])/sprintf '%%%02X', ord($1)/ge;
+  $text =~ s/ /+/g;
+  return $text;
 }
 
 sub stream_ndjson {
   my ($path, $callback) = @_;
-  my @cmd = (
-    'curl', '-sS', '--fail', '--no-buffer', '--http1.1',
-    '-H', $auth_header,
-    '-H', 'Accept: application/x-ndjson',
-    "$API_BASE$path"
-  );
-  log_debug("Starting stream " . mask_secret(join(' ', @cmd))) if $debug;
-  open my $errfh, '>', '/dev/null';
-  my $pid = open3(my $writer, my $reader, $errfh, @cmd);
-  close $writer;
+  my $attempt = 0;
 
-  while (my $line = <$reader>) {
-    $line =~ s/[\r\n]+$//;
-    next unless length $line;
-    log_debug("NDJSON $path: $line") if $debug;
-    next if $line =~ /^[0-9]+$/;
-    next if $line =~ /^[0-9]+e+$/i;
-    my $payload = eval { decode_json($line) };
-    if ($@) {
-      log_warn("Failed to decode payload '$line': $@");
+  while (1) {
+    $attempt ++;
+    log_info("Opening stream $path (attempt $attempt)");
+    my $sock = IO::Socket::SSL->new(
+      PeerHost        => 'lichess.org',
+      PeerPort        => 443,
+      SSL_verify_mode => SSL_VERIFY_PEER(),
+      SSL_ca_file     => $ssl_ca_file,
+      SNI_hostname    => 'lichess.org',
+    );
+    if (!$sock) {
+      log_warn("Unable to open TLS socket: " . IO::Socket::SSL::errstr());
+      sleep 2;
       next;
     }
-    $callback->($payload);
-  }
+    $sock->autoflush(1);
 
-  close $reader;
-  waitpid($pid, 0);
-  my $status = $? >> 8;
-  if ($status != 0) {
-    log_warn("Stream $path exited with status $status");
+    my $request = join('', 
+      "GET /api$path HTTP/1.1\r\n",
+      "Host: lichess.org\r\n",
+      "Authorization: Bearer $token\r\n",
+      "Accept: application/x-ndjson\r\n",
+      "Connection: keep-alive\r\n",
+      "\r\n"
+    );
+    print {$sock} $request;
+
+    my $headers = _read_http_headers($sock);
+    if (!$headers->{status} || $headers->{status} !~ /^2/) {
+      my $status_line = $headers->{status_line} // 'unknown';
+      my $body = _read_all($sock);
+      log_warn("Stream $path failed: $status_line body=$body");
+      close $sock;
+      sleep 1;
+      next;
+    }
+
+    my $buffer = '';
+    my $ok = 1;
+    my $te = $headers->{'transfer-encoding'} // '';
+    if ($te =~ /chunked/i) {
+      $ok = _consume_chunked($sock, sub {
+        my ($chunk) = @_;
+        $buffer .= $chunk;
+        _drain_ndjson($path, \$buffer, $callback);
+      });
+    } else {
+      $ok = _consume_raw($sock, sub {
+        my ($chunk) = @_;
+        $buffer .= $chunk;
+        _drain_ndjson($path, \$buffer, $callback);
+      });
+    }
+
+    close $sock;
+
+    if ($ok) {
+      return 1;
+    }
+
+    log_warn("Stream $path closed unexpectedly");
+
+    if ($path =~ m{/bot/game/stream/} && $attempt < 5) {
+      log_info("Retrying game stream $path in 1s");
+      sleep 1;
+      next;
+    }
+
     return 0;
   }
-  return 1;
 }

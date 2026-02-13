@@ -5,6 +5,7 @@ use warnings;
 use Chess::Constant;
 use Chess::State;
 use Chess::LocationModifer qw(%location_modifiers);
+use Chess::EndgameTable;
 
 use Chess::Book;
 
@@ -14,12 +15,15 @@ use constant DEBUG => 1;
 use constant LOCATION_WEIGHT => 0.15;
 use constant QUIESCE_MAX_DEPTH => 4;
 
+my %history_scores;
+my @killer_moves;
+
 sub new {
   my $class = shift;
 
   my %self;
   $self{state} = shift || die "Cannot instantiate Chess::Engine without a Chess::State";
-  $self{depth} = shift || 5; # bigger number more thinky
+  $self{depth} = shift || 6; # bigger number more thinky
 
   # hi ken
   return bless \%self, $class;
@@ -121,18 +125,18 @@ sub _location_bonus {
 }
 
 sub _ordered_moves {
-  my ($state) = @_;
+  my ($state, $ply) = @_;
   my $turn = $state->[Chess::State::TURN];
   my $board = $state->[Chess::State::BOARD];
   my @scored = map {
-    [ _move_order_score($board, $_, $turn), $_ ]
+    [ _move_order_score($board, $_, $turn, $ply), $_ ]
   } @{$state->generate_pseudo_moves};
   @scored = sort { $b->[0] <=> $a->[0] } @scored;
   return map { $_->[1] } @scored;
 }
 
 sub _move_order_score {
-  my ($board, $move, $turn) = @_;
+  my ($board, $move, $turn, $ply) = @_;
   my $from_piece = $board->[$move->[0]] || 0;
   my $to_piece = $board->[$move->[1]] || 0;
   my $score = 0;
@@ -158,12 +162,51 @@ sub _move_order_score {
     $score += 25 * $bonus;
   }
 
+  if (! _is_capture($board, $move)) {
+    $score += _history_bonus($move);
+    $score += _killer_bonus($move, $ply);
+  }
+
   return $score;
 }
 
 sub _is_capture {
   my ($board, $move) = @_;
   return ($board->[$move->[1]] // 0) < 0;
+}
+
+sub _move_key {
+  my ($move) = @_;
+  return join(':', $move->[0], $move->[1], (defined $move->[2] ? $move->[2] : 0));
+}
+
+sub _history_bonus {
+  my ($move) = @_;
+  return ($history_scores{_move_key($move)} // 0);
+}
+
+sub _killer_bonus {
+  my ($move, $ply) = @_;
+  my $slot = $killer_moves[$ply] || [];
+  my $key = _move_key($move);
+  return 200 if defined $slot->[0] && $slot->[0] eq $key;
+  return 150 if defined $slot->[1] && $slot->[1] eq $key;
+  return 0;
+}
+
+sub _store_killer {
+  my ($ply, $move) = @_;
+  $killer_moves[$ply] ||= [];
+  my $key = _move_key($move);
+  return if defined $killer_moves[$ply][0] && $killer_moves[$ply][0] eq $key;
+  $killer_moves[$ply][1] = $killer_moves[$ply][0] if defined $killer_moves[$ply][0];
+  $killer_moves[$ply][0] = $key;
+}
+
+sub _update_history {
+  my ($move, $depth) = @_;
+  my $key = _move_key($move);
+  $history_scores{$key} += $depth * $depth;
 }
 
 sub _quiesce {
@@ -181,7 +224,7 @@ sub _quiesce {
 
   my @ordered = map { $_->[1] }
     sort { $b->[0] <=> $a->[0] }
-    map { [ _move_order_score($board, $_, $turn), $_ ] } @captures;
+    map { [ _move_order_score($board, $_, $turn, 0), $_ ] } @captures;
 
   foreach my $move (@ordered) {
     my $new_state = $state->make_move($move);
@@ -218,7 +261,8 @@ sub _evaluate_board {
 }
 
 sub _rec_think {
-    my ($state, $depth, $alpha, $beta) = @_;
+    my ($state, $depth, $alpha, $beta, $ply) = @_;
+    $ply //= 0;
 
   if ($depth <= 0) {
     my $static = _quiesce($state, $alpha, $beta, 0);
@@ -227,17 +271,24 @@ sub _rec_think {
 
   my $best_value;
   my $best_move;
-  foreach my $move (_ordered_moves($state))
+  foreach my $move (_ordered_moves($state, $ply))
   {
+    my $is_capture = _is_capture($state->[Chess::State::BOARD], $move);
     my $new_state = $state->make_move($move);
     if (defined $new_state)
     {
-      my ($value) = _rec_think($new_state, $depth - 1, -$beta, -$alpha);
+      my ($value) = _rec_think($new_state, $depth - 1, -$beta, -$alpha, $ply + 1);
       if (! defined $best_value || $best_value < $value) {
         $best_value = $value;
 	$best_move = $move;
         $alpha = max($alpha, $best_value);
-        last if $alpha >= $beta;
+        if ($alpha >= $beta) {
+          unless ($is_capture) {
+            _store_killer($ply, $move);
+            _update_history($move, $depth);
+          }
+          last;
+        }
       }
     }
   }
@@ -254,20 +305,17 @@ sub think {
 
   my $state = ${$self->{state}};
 
-  # see if we can make a book move
-  my $pos = join('', map { $p2l{$_} }
-    @{$state->[0]}[21 .. 28, 31 .. 38, 41 .. 48, 51 .. 58, 61 .. 68, 71 .. 78, 81 .. 88, 91 .. 98]);
-  #print "THINK: " . $pos . "\n";
+  if (my $book_move = Chess::Book::choose_move($state)) {
+    return $book_move;
+  }
 
-  my $entry = $Chess::Book::book{$pos};
-  if ($entry) {
-    #print "BOOK HIT\n";
-    return $entry->[rand(@$entry)];
+  if (my $table_move = Chess::EndgameTable::choose_move($state)) {
+    return $table_move;
   }
 
   #my ($best_value, $best_move);
   #foreach $move (@move_list) {
-  my ($score, $move) = _rec_think(${$self->{state}}, $self->{depth} - 1, -99999, 99999);
+  my ($score, $move) = _rec_think(${$self->{state}}, $self->{depth} - 1, -99999, 99999, 0);
   return $move;
   #}
 }

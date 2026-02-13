@@ -141,6 +141,9 @@ our %location_modifiers = (
 
 our @EXPORT_OK = qw(%location_modifiers load_from_file save_to_file train_from_stream default_store_path);
 
+sub load_from_file;
+sub save_to_file;
+
 my @FILES = qw(a b c d e f g h);
 my @RANKS = (1 .. 8);
 my @ALL_SQUARES = map {
@@ -190,11 +193,6 @@ sub default_store_path {
     my $module_dir = dirname(__FILE__);
     my $root = File::Spec->catdir($module_dir, '..');
     return File::Spec->catfile($root, 'data', 'location_modifiers.json');
-}
-
-BEGIN {
-    my $default = default_store_path();
-    load_from_file($default) if defined $default && -e $default;
 }
 
 sub load_from_file {
@@ -479,6 +477,11 @@ sub _sync_opponent_modifiers {
 sub _piece_key {
     my ($piece) = @_;
     return $PIECE_KEY{$piece};
+}
+
+BEGIN {
+    my $default = default_store_path();
+    load_from_file($default) if defined $default && -e $default;
 }
 
 1;

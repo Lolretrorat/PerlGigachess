@@ -1,0 +1,16 @@
+requires 'Carp', 0;
+requires 'File::Basename', 0;
+requires 'File::Path', 0;
+requires 'File::Spec', 0;
+requires 'FindBin', 0;
+requires 'Getopt::Long', 0;
+requires 'HTTP::Tiny', 0;
+requires 'IO::Handle', 0;
+requires 'IO::Socket::SSL', 0;
+requires 'IPC::Open2', 0;
+requires 'JSON::PP', 0;
+requires 'List::Util', 0;
+requires 'Mozilla::CA', 0;
+requires 'Net::SSLeay', 0;
+requires 'POSIX', 0;
+requires 'Text::ParseWords', 0;

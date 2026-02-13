@@ -63,7 +63,7 @@ Usage:
 
 Examples:
   zstdcat lichess_db_standard_rated_2024-01.pgn.zst | ./init train-location --games 10000
-  bzcat sample.pgn.bz2 | ./init train-location --output data/location_modifiers.json
+  bzcat sample.pgn.bz2 | ./init train-location --output jsons/location_modifiers.json
 
 Pipe PGN data from database.lichess.org to train square preferences.
 HELP

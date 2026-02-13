@@ -1,38 +1,22 @@
-package Chess::Book;
+package Chess::EndgameTable;
 use strict;
 use warnings;
 
-use Chess::Constant;
 use File::Basename qw(dirname);
 use File::Spec;
 use JSON::PP;
 use List::Util qw(sum);
 
-our %book = (
-  # moves from opening
-  'RNBQKBNRPPPPPPPP________________________________pppppppprnbqkbnr' => [
-    [ 35, 55 ], # e4
-    [ 34, 54 ], # d4
-    [ 27, 46 ], # Nf3
-    [ 33, 53 ], # c4
-  ],
-  # 1. e4
-  'RNBQKBNRPPPPPPPP____________________p___________pppp_ppprnbqkbnr' => [
-    [ 33, 53 ], # ... c5
-    [ 35, 55 ], # ... e5
-  ],
-);
+my %table;
 
-my %fen_book;
-
-sub _book_path {
+sub _table_path {
   my $module_dir = dirname(__FILE__);
   my $root = File::Spec->catdir($module_dir, '..');
-  return File::Spec->catfile($root, 'data', 'opening_book.json');
+  return File::Spec->catfile($root, 'data', 'endgame_table.json');
 }
 
-sub _load_json_book {
-  my $path = _book_path();
+sub _load_tables {
+  my $path = _table_path();
   return unless defined $path && -e $path;
 
   my $json_text = do {
@@ -60,17 +44,22 @@ sub _load_json_book {
         push @parsed, { uci => $move, weight => 1 };
       }
     }
-    $fen_book{$key} = \@parsed if @parsed;
+    $table{$key} = \@parsed if @parsed;
   }
 }
 
 BEGIN {
-  _load_json_book();
+  _load_tables();
 }
 
 sub choose_move {
   my ($state) = @_;
-  return _lookup_fen_move($state) || _legacy_lookup($state);
+  my $key = _canonical_key($state);
+  my $entries = $table{$key} or return;
+  my $choice = _pick_weighted($entries) or return;
+  my $move = eval { $state->encode_move($choice->{uci}) };
+  return $move if $move;
+  return;
 }
 
 sub _canonical_key {
@@ -78,33 +67,6 @@ sub _canonical_key {
   my $fen = $state->get_fen;
   my ($placement, $turn, $castle, $ep) = split / /, $fen;
   return join(' ', $placement, $turn, $castle, $ep);
-}
-
-sub _lookup_fen_move {
-  my ($state) = @_;
-  my $key = _canonical_key($state);
-  my $entries = $fen_book{$key} or return;
-
-  my $choice = _pick_weighted($entries) or return;
-  return _encode_uci($state, $choice->{uci});
-}
-
-sub _legacy_lookup {
-  my ($state) = @_;
-  my $pos = join('', map { $Chess::Constant::p2l{$_} }
-    @{$state->[0]}[21 .. 28, 31 .. 38, 41 .. 48, 51 .. 58, 61 .. 68, 71 .. 78, 81 .. 88, 91 .. 98]);
-
-  my $entry = $book{$pos} or return;
-  my $index = int(rand(@$entry));
-  return $entry->[$index];
-}
-
-sub _encode_uci {
-  my ($state, $uci) = @_;
-  return unless defined $uci && length $uci;
-  my $move = eval { $state->encode_move($uci) };
-  return $move if $move;
-  return;
 }
 
 sub _pick_weighted {
