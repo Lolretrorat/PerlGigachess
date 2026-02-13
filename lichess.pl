@@ -17,7 +17,7 @@ BEGIN {
   }
 }
 
-use JSON::PP qw(decode_json);
+use JSON::PP qw(decode_json encode_json);
 use IPC::Open2;
 use IO::Handle;
 use Text::ParseWords qw(shellwords);
@@ -180,15 +180,6 @@ sub play_game {
     binc         => 0,
     is_my_turn   => extract_turn_flag($seed_info),
   );
-  if (defined $seed_info->{secondsLeft} && defined $game{my_color}) {
-    if ($game{my_color} eq 'white') {
-      $game{wtime} = $seed_info->{secondsLeft};
-    } else {
-      $game{btime} = $seed_info->{secondsLeft};
-    }
-  }
-  maybe_move(\%game, $engine_out, $engine_in);
-
   log_debug("Opening game stream for $game_id");
   my $buffer = '';
   my $ok = stream_ndjson("/bot/game/stream/$game_id", sub {
@@ -239,11 +230,7 @@ sub handle_game_event {
     $game->{btime}  = $event->{btime};
     $game->{winc}   = $event->{winc};
     $game->{binc}   = $event->{binc};
-    if ($game->{pending_move} && @{$game->{moves}}
-      && $game->{moves}[-1] eq $game->{pending_move})
-    {
-      $game->{pending_move} = undef;
-    }
+    $game->{pending_move} = undef if $game->{pending_move};
     update_turn_from_event($game, $event);
     maybe_move($game, $engine_out, $engine_in);
   } elsif ($type eq 'chatLine') {
@@ -291,8 +278,11 @@ sub extract_turn_flag {
 sub update_turn_from_event {
   my ($game, $event) = @_;
   my $flag = extract_turn_flag($event);
-  return unless defined $flag;
-  $game->{is_my_turn} = $flag ? 1 : 0;
+  if (defined $flag) {
+    $game->{is_my_turn} = $flag ? 1 : 0;
+  } else {
+    $game->{is_my_turn} = undef;
+  }
 }
 
 sub infer_turn_from_moves {
@@ -357,12 +347,15 @@ sub compute_bestmove {
   }
   print {$engine_in} "\n";
 
-  my $go = 'go';
+  my $go;
   if (defined $game->{wtime} && defined $game->{btime}) {
-    $go .= sprintf ' wtime %d btime %d', $game->{wtime}, $game->{btime};
-  }
-  if (defined $game->{winc} && defined $game->{binc}) {
-    $go .= sprintf ' winc %d binc %d', $game->{winc}, $game->{binc};
+    $go = sprintf 'go wtime %d btime %d', $game->{wtime}, $game->{btime};
+    if (defined $game->{winc} && defined $game->{binc}) {
+      $go .= sprintf ' winc %d binc %d', $game->{winc}, $game->{binc};
+    }
+  } else {
+    my $movetime = $ENV{LICHESS_MOVETIME_MS} // 800;
+    $go = "go movetime $movetime";
   }
   print {$engine_in} "$go\n";
 
@@ -489,6 +482,10 @@ sub _drain_ndjson {
     my $line = $1;
     $line =~ s/[\r\n]+$//;
     next unless length $line;
+    if ($line =~ /^[0-9a-f]+$/i) {
+      log_debug("Skipping chunk marker on $path: $line") if $debug;
+      next;
+    }
     log_debug("NDJSON $path: $line") if $debug;
     my $payload = eval { decode_json($line) };
     if ($@) {
@@ -775,10 +772,33 @@ sub stream_ndjson {
     log_info("Stream $path status " . ($headers->{status_line} // 'unknown'));
     my $buffer = '';
     my $ok = 0;
-    while (defined(my $line = <$sock>)) {
-      $buffer .= $line;
-      _drain_ndjson($path, \$buffer, $callback);
-      $ok = 1;
+    my $te = $headers->{'transfer-encoding'} // '';
+    if ($te =~ /chunked/i) {
+      while (1) {
+        my $len_line = _read_line($sock);
+        last unless defined $len_line;
+        $len_line =~ s/\r?\n$//;
+        $len_line =~ s/;.*$//;
+        next if $len_line eq '';
+        my $len = eval { hex($len_line) };
+        last if !defined $len;
+        last if $len == 0;
+        my $chunk = _read_exact($sock, $len);
+        last unless defined $chunk;
+        _read_exact($sock, 2);
+        $buffer .= $chunk;
+        _drain_ndjson($path, \$buffer, $callback);
+        $ok = 1;
+      }
+    } else {
+      while (1) {
+        my $chunk = '';
+        my $rv = sysread($sock, $chunk, 4096);
+        last unless defined $rv && $rv > 0;
+        $buffer .= $chunk;
+        _drain_ndjson($path, \$buffer, $callback);
+        $ok = 1;
+      }
     }
 
     close $sock;

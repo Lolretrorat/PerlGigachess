@@ -4,6 +4,10 @@ use strict;
 use warnings;
 
 use Getopt::Long qw(GetOptions);
+use IO::Handle;
+$| = 1;
+STDOUT->autoflush(1);
+STDERR->autoflush(1);
 
 ## LOCAL MODULES
 # make local dir accessible for use statements
@@ -124,6 +128,9 @@ sub run_uci {
 
       if ($position eq 'startpos') {
         $position = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
+      }
+      elsif ($position =~ /^fen\s+(.+)/) {
+        $position = $1;
       }
 
       $state->set_fen($position);
