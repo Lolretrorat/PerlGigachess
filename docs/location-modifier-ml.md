@@ -29,6 +29,7 @@ Turn raw classical game data into empirically grounded piece-square tables used 
   model.fit(X_train, y_train, sample_weight=weights)
   ```
 - Post-process coefficients into a `{piece: {square: value}}` hierarchy. Normalize so the mean modifier per piece is zero and clamp extremes (±40) to avoid unstable evaluations.
+- Notebook: `analysis/location_modifer_training.ipynb` orchestrates load → train → evaluate → export, surfaces accuracy/precision/recall/F1 tables plus a confusion-matrix visualization, and includes an optional cell to regenerate `Chess/LocationModifer.pm`.
 
 ## Evaluation
 - Hold out at least 10% of games for validation.

@@ -12,6 +12,7 @@ use List::Util qw(max);
 
 use constant DEBUG => 1;
 use constant LOCATION_WEIGHT => 0.15;
+use constant QUIESCE_MAX_DEPTH => 4;
 
 sub new {
   my $class = shift;
@@ -119,6 +120,82 @@ sub _location_bonus {
   return $base_value * LOCATION_WEIGHT * $percent;
 }
 
+sub _ordered_moves {
+  my ($state) = @_;
+  my $turn = $state->[Chess::State::TURN];
+  my $board = $state->[Chess::State::BOARD];
+  my @scored = map {
+    [ _move_order_score($board, $_, $turn), $_ ]
+  } @{$state->generate_pseudo_moves};
+  @scored = sort { $b->[0] <=> $a->[0] } @scored;
+  return map { $_->[1] } @scored;
+}
+
+sub _move_order_score {
+  my ($board, $move, $turn) = @_;
+  my $from_piece = $board->[$move->[0]] || 0;
+  my $to_piece = $board->[$move->[1]] || 0;
+  my $score = 0;
+
+  if ($to_piece < 0) {
+    my $victim_value = abs($piece_values{$to_piece} || 0);
+    my $attacker_value = abs($piece_values{$from_piece} || 0);
+    $score += 1000 + 10 * $victim_value - $attacker_value;
+  }
+
+  if (defined $move->[2]) {
+    my $promo = abs($piece_values{$move->[2]} || 0);
+    my $pawn = abs($piece_values{PAWN} || 1);
+    $score += 500 + ($promo - $pawn);
+  }
+
+  if (defined $move->[3]) {
+    $score += 50;
+  }
+
+  if (my $square = _idx_to_square($move->[1], $turn)) {
+    my $bonus = abs(_location_modifier_percent($from_piece, $square));
+    $score += 25 * $bonus;
+  }
+
+  return $score;
+}
+
+sub _is_capture {
+  my ($board, $move) = @_;
+  return ($board->[$move->[1]] // 0) < 0;
+}
+
+sub _quiesce {
+  my ($state, $alpha, $beta, $depth) = @_;
+  $depth //= 0;
+
+  my $stand_pat = _evaluate_board($state);
+  $alpha = max($alpha, $stand_pat);
+  return $alpha if $alpha >= $beta || $depth >= QUIESCE_MAX_DEPTH;
+
+  my $board = $state->[Chess::State::BOARD];
+  my $turn = $state->[Chess::State::TURN];
+  my @captures = grep { _is_capture($board, $_) } @{$state->generate_pseudo_moves};
+  return $alpha unless @captures;
+
+  my @ordered = map { $_->[1] }
+    sort { $b->[0] <=> $a->[0] }
+    map { [ _move_order_score($board, $_, $turn), $_ ] } @captures;
+
+  foreach my $move (@ordered) {
+    my $new_state = $state->make_move($move);
+    next unless defined $new_state;
+    my $score = -_quiesce($new_state, -$beta, -$alpha, $depth + 1);
+    if ($score > $alpha) {
+      $alpha = $score;
+      last if $alpha >= $beta;
+    }
+  }
+
+  return $alpha;
+}
+
 sub _evaluate_board {
   my ($state) = @_;
   my $board = $state->[Chess::State::BOARD];
@@ -143,43 +220,29 @@ sub _evaluate_board {
 sub _rec_think {
     my ($state, $depth, $alpha, $beta) = @_;
 
-  #printf("%s> _rec_think($depth, $alpha, $beta):", "===" x (3 - $depth));
-  # STATIC EVALUATOR
-  # bail if at the bottom
-  #printf("%d\n", -sum( map { $piece_values{$_} } @{$state->[0]})) unless $depth;
-  #return (-sum( map { $piece_values{$_} } @{$state->[0]}), undef) unless $depth;
-  #print "\n";
+  if ($depth <= 0) {
+    my $static = _quiesce($state, $alpha, $beta, 0);
+    return (-$static, undef);
+  }
+
   my $best_value;
   my $best_move;
-  foreach my $move (@{$state->generate_pseudo_moves})
+  foreach my $move (_ordered_moves($state))
   {
     my $new_state = $state->make_move($move);
     if (defined $new_state)
     {
-      #printf("%s> Consider move: %s\n", "===" x (3 - $depth), $state->decode_move($move));
-      # Move was successful.  Recurse.
-      my ($value) = $depth ?
-        _rec_think($new_state, $depth - 1, -$beta, -$alpha) :
-        (_evaluate_board($state));
-      #printf("%s> Value of move %s was %d\n", "===" x (3 - $depth), $state->decode_move($move), $value);
-      # Value of this move depends on whether we are at max depth or not.
+      my ($value) = _rec_think($new_state, $depth - 1, -$beta, -$alpha);
       if (! defined $best_value || $best_value < $value) {
-        #printf("%s> Better than best_value (%s), updating\n", "===" x (3 - $depth), defined $best_value ? $best_value : 'undef');
         $best_value = $value;
 	$best_move = $move;
-        # update the alpha cutoff
         $alpha = max($alpha, $best_value);
-        #printf("%s> Alpha now %d\n", "===" x (3 - $depth), $alpha);
-        # test against Beta
-        #printf("%s> Alpha >= beta %d, SKIPPING\n", "===" x (3 - $depth), $beta) if $alpha >= $beta;
         last if $alpha >= $beta;
       }
     }
   }
 
   $best_value = ($state->is_checked() ? -99999 : 0) unless defined $best_value;
-
-  #printf("%s> AT FINAL: return best value %d, move %s\n", "===" x (3 - $depth), $best_value, $state->decode_move($best_move));
 
   return (- $best_value, $best_move);
 }

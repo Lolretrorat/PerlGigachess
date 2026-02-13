@@ -9,11 +9,10 @@ use lib $RealBin;
 
 use JSON::PP qw(decode_json);
 use IPC::Open2;
+use IPC::Open3;
 use IO::Handle;
 use Text::ParseWords qw(shellwords);
 use POSIX ':sys_wait_h';
-use IO::Select;
-use MIME::Base64 qw(encode_base64);
 
 my $API_BASE = 'https://lichess.org/api';
 
@@ -21,7 +20,7 @@ load_env("$RealBin/.env");
 
 my $token = $ENV{LICHESS_TOKEN}
   or die "Set LICHESS_TOKEN to a Bot API token generated on lichess.org\n";
-my $engine_cmd = $ENV{LICHESS_ENGINE_CMD} // "$^X $RealBin/uci.pl";
+my $engine_cmd = $ENV{LICHESS_ENGINE_CMD} // "$^X $RealBin/play.pl --uci";
 my @engine_parts = shellwords($engine_cmd);
 @engine_parts or die "Unable to parse LICHESS_ENGINE_CMD '$engine_cmd'\n";
 
@@ -49,7 +48,11 @@ sub stream_events {
     log_info('Connecting to event stream');
     my $ok = stream_ndjson('/stream/event', sub {
       my ($event) = @_;
-      log_debug("Event $event->{type}") if $event->{type};
+      unless (ref $event eq 'HASH') {
+        log_debug("Ignoring non-object event on /stream/event");
+        return;
+      }
+      log_debug("Event " . ($event->{type} // ''));
       handle_event($event);
     });
     if (!$ok) {
@@ -159,6 +162,10 @@ sub play_game {
   my $buffer = '';
   my $ok = stream_ndjson("/bot/game/stream/$game_id", sub {
     my ($event) = @_;
+    unless (ref $event eq 'HASH') {
+      log_debug("Ignoring non-object payload on game stream $game_id");
+      return;
+    }
     handle_game_event(\%game, $event, $engine_out, $engine_in);
   });
 
@@ -322,6 +329,14 @@ sub log_debug {
   warn "[$ts] DEBUG $msg\n";
 }
 
+sub mask_secret {
+  my ($text) = @_;
+  return $text unless defined $token && length $token;
+  my $needle = "Bearer $token";
+  $text =~ s/\Q$needle\E/Bearer <redacted>/g;
+  return $text;
+}
+
 sub load_env {
   my ($path) = @_;
   return unless -e $path;
@@ -401,57 +416,37 @@ sub http_request {
 
 sub stream_ndjson {
   my ($path, $callback) = @_;
-  my $url = "$API_BASE$path";
-  my $req = join '',
-    "GET $url HTTP/1.1\r\n",
-    "Host: lichess.org\r\n",
-    "$auth_header\r\n",
-    "Accept: application/x-ndjson\r\n",
-    "Connection: close\r\n",
-    "\r\n";
-
-  my ($reader, $writer);
-  my $pid = open2($reader, $writer, 'openssl', 's_client', '-quiet', 'lichess.org:443');
-  print {$writer} $req;
+  my @cmd = (
+    'curl', '-sS', '--fail', '--no-buffer', '--http1.1',
+    '-H', $auth_header,
+    '-H', 'Accept: application/x-ndjson',
+    "$API_BASE$path"
+  );
+  log_debug("Starting stream " . mask_secret(join(' ', @cmd))) if $debug;
+  open my $errfh, '>', '/dev/null';
+  my $pid = open3(my $writer, my $reader, $errfh, @cmd);
   close $writer;
 
-  my $sel = IO::Select->new($reader);
-  my $header = '';
-  while (1) {
-    my $chunk = '';
-    my $rv = sysread($reader, $chunk, 1);
-    last unless $rv;
-    $header .= $chunk;
-    last if $header =~ /\r\n\r\n/;
-  }
-
-  unless ($header =~ m{HTTP/\S+\s+200}) {
-    log_warn("Stream $path unexpected headers: " . encode_base64($header));
-    close $reader;
-    waitpid($pid, 0);
-    return 0;
-  }
-
-  my $buffer = '';
-  while ($sel->can_read) {
-    my $chunk = '';
-    my $rv = sysread($reader, $chunk, 4096);
-    last unless $rv;
-    $buffer .= $chunk;
-    while ($buffer =~ s/^(.*?\n)//) {
-      my $line = $1;
-      $line =~ s/[\r\n]+$//;
-      next unless length $line;
-      my $payload = eval { decode_json($line) };
-      if ($@) {
-        log_warn("Failed to decode payload '$line': $@");
-        next;
-      }
-      $callback->($payload);
+  while (my $line = <$reader>) {
+    $line =~ s/[\r\n]+$//;
+    next unless length $line;
+    log_debug("NDJSON $path: $line") if $debug;
+    next if $line =~ /^[0-9]+$/;
+    next if $line =~ /^[0-9]+e+$/i;
+    my $payload = eval { decode_json($line) };
+    if ($@) {
+      log_warn("Failed to decode payload '$line': $@");
+      next;
     }
+    $callback->($payload);
   }
 
   close $reader;
   waitpid($pid, 0);
+  my $status = $? >> 8;
+  if ($status != 0) {
+    log_warn("Stream $path exited with status $status");
+    return 0;
+  }
   return 1;
 }

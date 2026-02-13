@@ -3,9 +3,8 @@
 This repository contains a minimalist Perl chess engine along with several entry
 points:
 
-- `play.pl` — interactive CLI to play vs the engine.
+- `play.pl` — interactive CLI (default) or `--uci` for a headless engine loop.
 - `perft.pl` — perft validation driver.
-- `uci.pl` — barebones UCI loop suitable for cutechess, lichess-bot, etc.
 - `lichess.pl` — Bot API bridge that lets the engine play on lichess.org.
 
 ## Running the Lichess bridge
@@ -32,9 +31,9 @@ game, and posts moves back to Lichess.
 ### Configuration
 
 - `LICHESS_ENGINE_CMD` — override the command used to start the engine
-  (defaults to `perl uci.pl`). Example:
+  (defaults to `perl play.pl --uci`). Example:
   ```bash
-  LICHESS_ENGINE_CMD="perl uci.pl --depth 6" perl lichess.pl
+  LICHESS_ENGINE_CMD="perl play.pl --uci --depth 6" perl lichess.pl
   ```
 - Set `LICHESS_TOKEN` in `.env` or in the shell environment before launching.
   Do **not** hard-code it inside the script.
