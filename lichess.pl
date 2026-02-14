@@ -28,6 +28,8 @@ use IO::Socket::SSL qw(SSL_VERIFY_PEER);
 use Socket qw(AF_INET);
 use Time::HiRes qw(time);
 use Fcntl qw(:flock);
+use File::Basename qw(dirname);
+use File::Path qw(make_path);
 use Chess::State;
 use Chess::Engine ();
 
@@ -59,7 +61,7 @@ my $ssl_ca_file = Mozilla::CA::SSL_ca_file();
 my $user_agent  = 'PerlGigachess/0.1';
 my $bot_id = $ENV{LICHESS_BOT_ID} // '';
 my $last_tls_error = '';
-my $game_url_log_path = $ENV{LICHESS_GAME_URL_LOG} // '/data/lichess_game_urls.log';
+my $game_url_log_path = $ENV{LICHESS_GAME_URL_LOG} // "$RealBin/data/lichess_game_urls.log";
 my %logged_finished_games;
 
 unless (caller) {
@@ -291,6 +293,8 @@ sub log_finished_game_url {
     return;
   }
 
+  return unless ensure_parent_dir($game_url_log_path);
+
   my $fh;
   unless (open $fh, '>>', $game_url_log_path) {
     log_warn("Unable to append game URL to $game_url_log_path: $!");
@@ -303,6 +307,23 @@ sub log_finished_game_url {
 
   $logged_finished_games{$game_id} = 1 if length $game_id;
   log_info("Logged finished game URL: $url");
+}
+
+sub ensure_parent_dir {
+  my ($path) = @_;
+  return 0 unless defined $path && length $path;
+  my $dir = dirname($path);
+  return 1 unless defined $dir && length $dir;
+  return 1 if -d $dir;
+
+  my $ok = eval { make_path($dir); 1 };
+  unless ($ok && -d $dir) {
+    my $err = $@ || 'unknown error';
+    chomp $err;
+    log_warn("Unable to create directory $dir for game URL log: $err");
+    return 0;
+  }
+  return 1;
 }
 
 sub game_url_from_payload {

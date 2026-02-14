@@ -13,47 +13,59 @@ use Chess::Book;
 use List::Util qw(max min);
 use Time::HiRes qw(time);
 
-use constant LOCATION_WEIGHT => 0.15;
-use constant QUIESCE_MAX_DEPTH => 4;
-use constant INF_SCORE => 1_000_000;
-use constant MATE_SCORE => 900_000;
-use constant ASPIRATION_WINDOW => 24;
+use constant LOCATION_WEIGHT => 0.15;                  # Higher => piece-square tables influence eval more.
+use constant QUIESCE_MAX_DEPTH => 4;                   # Higher => deeper quiescence (more tactics, more time).
+use constant QUIESCE_CHECK_MAX_DEPTH => 1;             # Higher => include checking moves deeper in quiescence.
+use constant QUIESCE_CHECK_BONUS => 110;               # Higher => checks are searched earlier inside quiescence.
+use constant INF_SCORE => 1_000_000;                   # Search sentinel bound; should stay above any real eval.
+use constant MATE_SCORE => 900_000;                    # Higher => mate threats dominate eval more strongly.
+use constant ASPIRATION_WINDOW => 24;                  # Higher => fewer re-searches, but less pruning focus.
 
-use constant TT_FLAG_EXACT => 0;
-use constant TT_FLAG_LOWER => 1;
-use constant TT_FLAG_UPPER => 2;
-use constant SCORE_STABILITY_DELTA => 2;
-use constant EXTRA_DEPTH_ON_UNSTABLE => 4;
-use constant TIME_CHECK_INTERVAL_NODES => 2048;
-use constant TIME_DEFAULT_HORIZON => 34;
-use constant TIME_INC_WEIGHT => 0.75;
-use constant TIME_RESERVE_MS => 800;
-use constant TIME_MOVE_OVERHEAD_MS => 100;
-use constant TIME_MIN_BUDGET_MS => 20;
-use constant TIME_HARD_SCALE => 1.5;
-use constant TIME_MAX_SHARE => 0.60;
-use constant MID_ENDGAME_TIME_MAX_SHARE => 0.70;
-use constant DEEP_ENDGAME_TIME_MAX_SHARE => 0.76;
-use constant MID_ENDGAME_HORIZON_REDUCTION => 8;
-use constant DEEP_ENDGAME_HORIZON_REDUCTION => 12;
-use constant TIME_EMERGENCY_MS => 1500;
-use constant QUIESCE_EMERGENCY_MAX_DEPTH => 2;
-use constant TT_MAX_ENTRIES => 200_000;
-use constant COUNTERMOVE_BONUS => 180;
-use constant EASY_MOVE_MIN_DEPTH => 4;
-use constant EASY_MOVE_DEPTH_CAP => 5;
-use constant MID_ENDGAME_PIECE_THRESHOLD => 16;
-use constant DEEP_ENDGAME_PIECE_THRESHOLD => 10;
-use constant MID_ENDGAME_DEPTH_BOOST => 1;
-use constant DEEP_ENDGAME_DEPTH_BOOST => 2;
-use constant MID_ENDGAME_EASY_MOVE_EXTRA_DEPTH => 2;
-use constant DEVELOPMENT_MINOR_PENALTY => 2;
-use constant EARLY_ROOK_MOVE_PENALTY => 3;
-use constant EARLY_QUEEN_MOVE_PENALTY => 4;
-use constant UNCASTLED_KING_PENALTY => 4;
-use constant CENTRAL_KING_PENALTY => 3;
-use constant HANGING_DEFENDED_SCALE => 0.35;
-use constant HANGING_MOVE_GUARD_BONUS => 14;
+use constant TT_FLAG_EXACT => 0;                       # TT exact-score entry type marker.
+use constant TT_FLAG_LOWER => 1;                       # TT lower-bound entry type marker (fail-high).
+use constant TT_FLAG_UPPER => 2;                       # TT upper-bound entry type marker (fail-low).
+use constant SCORE_STABILITY_DELTA => 2;               # Higher => engine treats score shifts as "stable" more easily.
+use constant EXTRA_DEPTH_ON_UNSTABLE => 5;             # Higher => search extends more when PV/score is volatile.
+use constant TIME_CHECK_INTERVAL_NODES => 2048;        # Lower => checks clock more often, with extra overhead.
+use constant TIME_DEFAULT_HORIZON => 34;               # Higher => spreads clock over more future moves (safer).
+use constant TIME_INC_WEIGHT => 0.75;                  # Higher => increment contributes more to per-move budget.
+use constant TIME_RESERVE_MS => 800;                   # Higher => keeps more clock in reserve for later moves.
+use constant TIME_MOVE_OVERHEAD_MS => 100;             # Higher => subtracts more fixed overhead from think time.
+use constant TIME_MIN_BUDGET_MS => 20;                 # Higher => guarantees longer minimum think per move.
+use constant TIME_HARD_SCALE => 1.5;                   # Higher => hard cutoff sits farther past soft deadline.
+use constant TIME_MAX_SHARE => 0.60;                   # Higher => allowed to spend larger share of usable time.
+use constant MID_ENDGAME_TIME_MAX_SHARE => 0.70;       # Higher => more aggressive clock use in lighter middlegames.
+use constant DEEP_ENDGAME_TIME_MAX_SHARE => 0.76;      # Higher => more aggressive clock use in deep endgames.
+use constant MID_ENDGAME_HORIZON_REDUCTION => 8;       # Higher => assumes fewer moves left in middlegame/endgame.
+use constant DEEP_ENDGAME_HORIZON_REDUCTION => 12;     # Higher => assumes much fewer moves left in deep endgames.
+use constant TIME_EMERGENCY_MS => 1500;                # Higher => enters emergency time-saving mode earlier.
+use constant QUIESCE_EMERGENCY_MAX_DEPTH => 2;         # Lower => cuts tactical depth more when low on time.
+use constant TT_MAX_ENTRIES => 200_000;                # Higher => larger TT memory footprint, fewer evictions.
+use constant COUNTERMOVE_BONUS => 180;                 # Higher => counter-move heuristic impacts ordering more.
+use constant EASY_MOVE_MIN_DEPTH => 4;                 # Higher => require deeper confirmation before early stop.
+use constant EASY_MOVE_DEPTH_CAP => 5;                 # Higher => allow easier early-stop logic at deeper levels.
+use constant MID_ENDGAME_PIECE_THRESHOLD => 16;        # Higher => applies endgame heuristics earlier.
+use constant DEEP_ENDGAME_PIECE_THRESHOLD => 10;       # Higher => applies deep-endgame heuristics earlier.
+use constant MID_ENDGAME_DEPTH_BOOST => 1;             # Higher => extra nominal depth in middlegame/endgame.
+use constant DEEP_ENDGAME_DEPTH_BOOST => 2;            # Higher => extra nominal depth in deep endgames.
+use constant MID_ENDGAME_EASY_MOVE_EXTRA_DEPTH => 2;   # Higher => delay easy-move exits in lighter positions.
+use constant DEVELOPMENT_MINOR_PENALTY => 2;           # Higher => punishes undeveloped minors more.
+use constant EARLY_ROOK_MOVE_PENALTY => 3;             # Higher => discourages early rook moves before development.
+use constant EARLY_QUEEN_MOVE_PENALTY => 4;            # Higher => discourages early queen activity.
+use constant UNCASTLED_KING_PENALTY => 4;              # Higher => penalizes staying uncastled more.
+use constant CENTRAL_KING_PENALTY => 3;                # Higher => penalizes central uncastled king more.
+use constant HANGING_DEFENDED_SCALE => 0.35;           # Higher => softens hanging penalty less when defended.
+use constant HANGING_MOVE_GUARD_BONUS => 14;           # Higher => penalizes quiet self-pins/hangs more.
+use constant LMR_KING_DANGER_THRESHOLD => 11;          # Lower => disables LMR sooner in king-danger positions.
+use constant UNSAFE_CAPTURE_HANGING_BONUS => 26;       # Higher => stronger penalty for grabbing into danger.
+use constant UNSAFE_CAPTURE_DEFENDED_SCALE => 0.45;    # Higher => keep more penalty even if capture square defended.
+use constant UNSAFE_CAPTURE_KING_EXPOSURE_WEIGHT => 3; # Higher => prioritize king shelter over greedy captures.
+use constant KING_DANGER_RING_ATTACK_PENALTY => 2;     # Higher => penalize attacked king-ring squares more.
+use constant KING_DANGER_RING_UNDEFENDED_PENALTY => 1; # Higher => penalize undefended ring attacks more.
+use constant KING_DANGER_CHECK_PENALTY => 10;          # Higher => direct check against king hurts eval more.
+use constant KING_DANGER_SHIELD_MISSING_PENALTY => 2;  # Higher => missing pawn shield costs more.
+use constant KING_DANGER_OPEN_FILE_PENALTY => 2;       # Higher => open king file is punished more.
+use constant KING_DANGER_ADJ_FILE_PENALTY => 1;        # Higher => adjacent open files near king hurt more.
 
 my %history_scores;
 my @killer_moves;
@@ -384,6 +396,135 @@ sub _hanging_move_penalty {
   return $base + HANGING_MOVE_GUARD_BONUS;
 }
 
+sub _king_ring_indices {
+  my ($board, $king_idx) = @_;
+  return unless defined $king_idx;
+
+  my @ring;
+  for my $inc (-11, -10, -9, -1, 1, 9, 10, 11) {
+    my $idx = $king_idx + $inc;
+    next if ($board->[$idx] // OOB) == OOB;
+    push @ring, $idx;
+  }
+  return @ring;
+}
+
+sub _king_danger_for_piece {
+  my ($board, $king_piece) = @_;
+  my $king_idx = _find_piece_idx($board, $king_piece);
+  return 0 unless defined $king_idx;
+
+  my $friendly_sign = $king_piece > 0 ? 1 : -1;
+  my $enemy_sign = -$friendly_sign;
+  my $friendly_pawn = $friendly_sign * PAWN;
+  my $danger = 0;
+
+  my @ring = _king_ring_indices($board, $king_idx);
+  my $ring_attacked = 0;
+  my $ring_undefended = 0;
+  for my $idx (@ring) {
+    next unless _is_square_attacked_by_side($board, $idx, $enemy_sign);
+    $ring_attacked++;
+    $ring_undefended++ unless _is_square_attacked_by_side($board, $idx, $friendly_sign);
+  }
+
+  $danger += $ring_attacked * KING_DANGER_RING_ATTACK_PENALTY;
+  $danger += $ring_undefended * KING_DANGER_RING_UNDEFENDED_PENALTY;
+  $danger += KING_DANGER_CHECK_PENALTY if _is_square_attacked_by_side($board, $king_idx, $enemy_sign);
+
+  my @shield_offsets = $friendly_sign > 0 ? (9, 10, 11) : (-9, -10, -11);
+  for my $inc (@shield_offsets) {
+    my $shield_idx = $king_idx + $inc;
+    next if ($board->[$shield_idx] // OOB) == OOB;
+    my $piece = $board->[$shield_idx] // OOB;
+    $danger += KING_DANGER_SHIELD_MISSING_PENALTY if $piece != $friendly_pawn;
+  }
+
+  my $king_file = _file_of_idx($king_idx);
+  for my $file ($king_file - 1 .. $king_file + 1) {
+    next if $file < 1 || $file > 8;
+    my $has_friendly_pawn = 0;
+    for my $rank (1 .. 8) {
+      my $idx = ($rank + 1) * 10 + $file;
+      if (($board->[$idx] // 0) == $friendly_pawn) {
+        $has_friendly_pawn = 1;
+        last;
+      }
+    }
+    next if $has_friendly_pawn;
+    $danger += ($file == $king_file) ? KING_DANGER_OPEN_FILE_PENALTY : KING_DANGER_ADJ_FILE_PENALTY;
+  }
+
+  return $danger;
+}
+
+sub _king_danger_score {
+  my ($board) = @_;
+  my $our_danger = _king_danger_for_piece($board, KING);
+  my $opp_danger = _king_danger_for_piece($board, OPP_KING);
+  return $opp_danger - $our_danger;
+}
+
+sub _is_king_safety_critical_move {
+  my ($state, $move, $new_state, $own_king_danger) = @_;
+  my $board = $state->[Chess::State::BOARD];
+  my $from_piece = abs($board->[$move->[0]] // 0);
+  return 1 if $from_piece == KING;
+  return 1 if $new_state->is_checked;
+
+  my $king_idx = _find_piece_idx($board, KING);
+  return 1 if defined $own_king_danger && $own_king_danger >= LMR_KING_DANGER_THRESHOLD;
+  return 0 unless defined $king_idx;
+
+  my $king_file = _file_of_idx($king_idx);
+  if ($from_piece == PAWN && abs(_file_of_idx($move->[0]) - $king_file) <= 1) {
+    return 1;
+  }
+
+  my @ring = _king_ring_indices($board, $king_idx);
+  my %ring = map { $_ => 1 } @ring;
+  return 1 if $ring{$move->[0]} || $ring{$move->[1]};
+
+  return 0;
+}
+
+sub _unsafe_capture_penalty {
+  my ($state, $move, $from_piece, $to_piece) = @_;
+  return 0 unless $to_piece < 0;
+
+  my $board = $state->[Chess::State::BOARD];
+  my $dest_idx = $move->[1];
+  my $king_danger_before = _king_danger_for_piece($board, KING);
+
+  my $attacker_value = abs($piece_values{$from_piece} || 0);
+  my $victim_value = abs($piece_values{$to_piece} || 0);
+  my $exchange_loss = max(0, $attacker_value - $victim_value);
+  my $enemy_attacks = _is_square_attacked_by_side($board, $dest_idx, -1) ? 1 : 0;
+  my $defended = _is_square_attacked_by_side($board, $dest_idx, 1) ? 1 : 0;
+
+  my $penalty = 0;
+  if ($enemy_attacks) {
+    $penalty = $exchange_loss;
+    if ($defended) {
+      $penalty = int($penalty * UNSAFE_CAPTURE_DEFENDED_SCALE);
+    } else {
+      $penalty += UNSAFE_CAPTURE_HANGING_BONUS;
+    }
+  }
+
+  if ($king_danger_before >= int(LMR_KING_DANGER_THRESHOLD / 2)) {
+    my $new_state = $state->make_move($move);
+    if (defined $new_state) {
+      my $new_board = $new_state->[Chess::State::BOARD];
+      my $king_danger_after = _king_danger_for_piece($new_board, OPP_KING);
+      my $delta = $king_danger_after - $king_danger_before;
+      $penalty += $delta * UNSAFE_CAPTURE_KING_EXPOSURE_WEIGHT if $delta > 0;
+    }
+  }
+
+  return $penalty;
+}
+
 sub _ordered_moves {
   my ($state, $ply, $tt_move_key, $prev_move_key) = @_;
   my @scored = map {
@@ -409,6 +550,7 @@ sub _move_order_score {
     my $victim_value = abs($piece_values{$to_piece} || 0);
     my $attacker_value = abs($piece_values{$from_piece} || 0);
     $score += 1000 + 10 * $victim_value - $attacker_value;
+    $score -= _unsafe_capture_penalty($state, $move, $from_piece, $to_piece);
   }
 
   if (defined $move->[2]) {
@@ -683,16 +825,28 @@ sub _quiesce {
   $alpha = max($alpha, $stand_pat);
   return $alpha if $alpha >= $beta || $depth >= $search_quiesce_limit;
 
-  my @captures = grep { _is_capture_state($state, $_) } @{$state->generate_pseudo_moves};
-  return $alpha unless @captures;
+  my @forcing;
+  for my $move (@{$state->generate_pseudo_moves}) {
+    my $is_capture = _is_capture_state($state, $move);
+    next if ! $is_capture && $depth >= QUIESCE_CHECK_MAX_DEPTH;
+    my $new_state = $state->make_move($move);
+    next unless defined $new_state;
+    my $is_check = $new_state->is_checked ? 1 : 0;
+    next unless $is_capture || $is_check;
+    push @forcing, [ $move, $new_state, $is_check ];
+  }
+  return $alpha unless @forcing;
 
   my @ordered = map { $_->[1] }
     sort { $b->[0] <=> $a->[0] }
-    map { [ _move_order_score($state, $_, 0), $_ ] } @captures;
+    map {
+      my ($move, $new_state, $is_check) = @$_;
+      my $score = _move_order_score($state, $move, 0) + ($is_check ? QUIESCE_CHECK_BONUS : 0);
+      [ $score, [ $move, $new_state ] ];
+    } @forcing;
 
-  foreach my $move (@ordered) {
-    my $new_state = $state->make_move($move);
-    next unless defined $new_state;
+  foreach my $entry (@ordered) {
+    my ($move, $new_state) = @$entry;
     my $score = -_quiesce($new_state, -$beta, -$alpha, $depth + 1);
     if ($score > $alpha) {
       $alpha = $score;
@@ -723,6 +877,7 @@ sub _evaluate_board {
   $score += _development_score($board);
   $score += _passed_pawn_score($board);
   $score += _hanging_piece_score($board);
+  $score += _king_danger_score($board);
 
   return $score;
 }
@@ -762,12 +917,14 @@ sub _search {
   my $legal_moves = 0;
   my $move_index = 0;
   my $in_check = $state->is_checked ? 1 : 0;
+  my $own_king_danger = _king_danger_for_piece($state->[Chess::State::BOARD], KING);
 
   foreach my $move (_ordered_moves($state, $ply, $tt_move_key, $prev_move_key)) {
     my $is_capture = _is_capture_state($state, $move);
     my $new_state = $state->make_move($move);
     next unless defined $new_state;
     my $quiet_hanging_move = _is_quiet_hanging_move($new_state, $move, $is_capture);
+    my $king_safety_critical = _is_king_safety_critical_move($state, $move, $new_state, $own_king_danger);
 
     $legal_moves++;
     my $child_prev_move_key = _move_key($move);
@@ -784,7 +941,9 @@ sub _search {
         && !defined $move->[2]
         && !defined $move->[3]
         && ! $is_capture
-        && ! $quiet_hanging_move)
+        && ! $quiet_hanging_move
+        && ! $king_safety_critical
+        && $own_king_danger < LMR_KING_DANGER_THRESHOLD)
       {
         $reduction = 1;
         $reduction = 2 if $depth >= 6 && $move_index >= 8;

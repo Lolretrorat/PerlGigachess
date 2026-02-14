@@ -1,0 +1,75 @@
+{
+  "generated_at_utc": "2026-02-14T13:30:17.929841+00:00",
+  "summary": {
+    "generated_at_utc": "2026-02-14T13:30:17.866872+00:00",
+    "games": 4,
+    "engine_moves": 97,
+    "moves_with_eval": 96,
+    "bestmove_match_rate": 0.44329896907216493,
+    "avg_cp_loss": 2.1979166666666665,
+    "critical_80cp": 0,
+    "severe_150cp": 0,
+    "capture_critical": 0,
+    "quiet_critical": 0,
+    "critical_with_opp_checks": 0,
+    "book_disagreements_opening": 20
+  },
+  "model_metrics": {
+    "rows": 96,
+    "train_rows": 72,
+    "test_rows": 24,
+    "mae": 13.505686035862626,
+    "r2": -1.183163899266976
+  },
+  "feature_importance": [
+    {
+      "feature": "legal_moves",
+      "importance": 0.31807778468461056
+    },
+    {
+      "feature": "material_cp",
+      "importance": 0.20633249296147768
+    },
+    {
+      "feature": "played_is_capture",
+      "importance": 0.17474233432682776
+    },
+    {
+      "feature": "opening_phase",
+      "importance": 0.09320026504941713
+    },
+    {
+      "feature": "opponent_checks_after",
+      "importance": 0.06796463714216865
+    },
+    {
+      "feature": "book_differs_nobook",
+      "importance": 0.06701012739686997
+    },
+    {
+      "feature": "king_ring_attacked",
+      "importance": 0.027887955883183196
+    },
+    {
+      "feature": "best_matches_played",
+      "importance": 0.02512991831660419
+    },
+    {
+      "feature": "played_gives_check",
+      "importance": 0.019654484238840718
+    },
+    {
+      "feature": "king_in_check",
+      "importance": 0.0
+    },
+    {
+      "feature": "king_ring_undefended",
+      "importance": 0.0
+    }
+  ],
+  "proposed_constant_updates": {
+    "UNSAFE_CAPTURE_HANGING_BONUS": 26,
+    "UNSAFE_CAPTURE_KING_EXPOSURE_WEIGHT": 3,
+    "EXTRA_DEPTH_ON_UNSTABLE": 5
+  }
+}

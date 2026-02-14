@@ -3,3 +3,4 @@
 .perl5/
 __pycache__/
 *.pyc
+AGENTS.* 

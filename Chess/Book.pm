@@ -31,10 +31,11 @@ our %book = (
 
 my %fen_book;
 my %relaxed_fen_book;
-my $BOOK_MIN_PLAYED   = _env_int('CHESS_BOOK_MIN_PLAYED', 2, 1);
-my $BOOK_MIN_RELATIVE = _env_num('CHESS_BOOK_MIN_RELATIVE', 0.08, 0.0, 1.0);
+my $BOOK_MIN_PLAYED   = _env_int('CHESS_BOOK_MIN_PLAYED', 3, 1);
+my $BOOK_MIN_RELATIVE = _env_num('CHESS_BOOK_MIN_RELATIVE', 0.12, 0.0, 1.0);
 my $BOOK_VARIETY      = _env_num('CHESS_BOOK_VARIETY', 0.0, 0.0, 1.0);
 my $BOOK_BAYES_GAMES  = _env_num('CHESS_BOOK_BAYES_GAMES', 8.0, 0.0, 1000.0);
+my $BOOK_QUALITY_WEIGHT = _env_num('CHESS_BOOK_QUALITY_WEIGHT', 0.82, 0.0, 1.0);
 
 sub _book_path {
   my $module_dir = dirname(__FILE__);
@@ -212,6 +213,7 @@ sub _rank_legal_entries {
   $side //= 'white';
 
   my $top_played = max(map { _entry_played($_) } @$entries) || 1;
+  my ($quality_weight, $popularity_weight) = _book_rank_weights($top_played);
   my @scored = ();
   foreach my $entry (@$entries) {
     my $played = _entry_played($entry);
@@ -219,7 +221,7 @@ sub _rank_legal_entries {
 
     my $quality = _entry_quality_for_side($entry, $side);
     my $popularity = sqrt($played / $top_played);
-    my $score = 0.70 * $quality + 0.30 * $popularity;
+    my $score = $quality_weight * $quality + $popularity_weight * $popularity;
     push @scored, { %$entry, _book_score => $score };
   }
 
@@ -229,7 +231,7 @@ sub _rank_legal_entries {
       my $quality = _entry_quality_for_side($entry, $side);
       my $played = _entry_played($entry);
       my $popularity = sqrt($played / $top_played);
-      my $score = 0.70 * $quality + 0.30 * $popularity;
+      my $score = $quality_weight * $quality + $popularity_weight * $popularity;
       push @scored, { %$entry, _book_score => $score };
     }
   }
@@ -294,6 +296,20 @@ sub _is_sparse_move {
   return 0 if $played >= $top_played;
   return 1 if $top_played < 10;
   return ($played / $top_played) < $BOOK_MIN_RELATIVE ? 1 : 0;
+}
+
+sub _book_rank_weights {
+  my ($top_played) = @_;
+  $top_played = int($top_played // 0);
+  if ($top_played > 0 && $top_played < 8) {
+    return (0.93, 0.07);
+  }
+  if ($top_played > 0 && $top_played < 20) {
+    return (0.88, 0.12);
+  }
+  my $quality = $BOOK_QUALITY_WEIGHT;
+  my $popularity = 1 - $quality;
+  return ($quality, $popularity);
 }
 
 sub _side_to_move {

@@ -1,8 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-LIST_FILE="${1:-/data/lichess_game_urls.log}"
-OUT_FILE="${2:-/data/lichess_games_export.pgn}"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd)"
+DEFAULT_LIST_FILE="$REPO_ROOT/data/lichess_game_urls.log"
+DEFAULT_OUT_FILE="$REPO_ROOT/data/lichess_games_export.pgn"
+
+LIST_FILE="${1:-$DEFAULT_LIST_FILE}"
+OUT_FILE="${2:-$DEFAULT_OUT_FILE}"
 APPEND_MODE="${APPEND_MODE:-0}"
 
 usage() {
@@ -11,8 +16,8 @@ Usage:
   scripts/fetch_own_lichess_pgns.sh [list_file] [out_file]
 
 Defaults:
-  list_file: /data/lichess_game_urls.log
-  out_file:  /data/lichess_games_export.pgn
+  list_file: <repo>/data/lichess_game_urls.log
+  out_file:  <repo>/data/lichess_games_export.pgn
 
 Environment:
   APPEND_MODE=1   Append to out_file instead of truncating it first

@@ -17,10 +17,13 @@ use JSON::PP ();
 my $output = 'data/opening_book.json';
 my $max_plies = 18;
 my $max_games = 0;
-my $min_position_games = 5;
-my $min_move_games = 2;
+my $min_position_games = 12;
+my $min_move_games = 4;
 my $progress_every = 0;
 my $append_existing = 0;
+my $min_white_elo = 0;
+my $min_black_elo = 0;
+my $min_avg_elo = 0;
 
 GetOptions(
   'output=s' => \$output,
@@ -28,17 +31,28 @@ GetOptions(
   'max-games=i' => \$max_games,
   'min-position-games=i' => \$min_position_games,
   'min-move-games=i' => \$min_move_games,
+  'min-white-elo=i' => \$min_white_elo,
+  'min-black-elo=i' => \$min_black_elo,
+  'min-avg-elo=i' => \$min_avg_elo,
   'progress-every=i' => \$progress_every,
   'append-existing!' => \$append_existing,
-) or die "Usage: $0 [--output PATH] [--max-plies N] [--max-games N] [--min-position-games N] [--min-move-games N] [--progress-every N] [--[no-]append-existing] [inputs...]\n";
+) or die "Usage: $0 [--output PATH] [--max-plies N] [--max-games N] [--min-position-games N] [--min-move-games N] [--min-white-elo N] [--min-black-elo N] [--min-avg-elo N] [--progress-every N] [--[no-]append-existing] [inputs...]\n";
 
 die "--max-plies must be >= 1\n" unless $max_plies >= 1;
 die "--max-games must be >= 0\n" unless $max_games >= 0;
 $min_position_games = 1 if $min_position_games < 1;
 $min_move_games = 1 if $min_move_games < 1;
+$min_white_elo = 0 if !defined $min_white_elo || $min_white_elo < 0;
+$min_black_elo = 0 if !defined $min_black_elo || $min_black_elo < 0;
+$min_avg_elo = 0 if !defined $min_avg_elo || $min_avg_elo < 0;
 $progress_every = 0 if !defined $progress_every || $progress_every < 0;
 
 my @inputs = @ARGV;
+my %game_filters = (
+  min_white_elo => $min_white_elo,
+  min_black_elo => $min_black_elo,
+  min_avg_elo   => $min_avg_elo,
+);
 
 my %counts;
 my %position_totals;
@@ -66,6 +80,7 @@ if (@inputs) {
           \%counts,
           \%position_totals,
           $max_plies,
+          \%game_filters,
         );
         $processed_games++ if $ok;
         _report_progress($parsed_games, $processed_games, $progress_every);
@@ -91,6 +106,7 @@ if (@inputs) {
         \%counts,
         \%position_totals,
         $max_plies,
+        \%game_filters,
       );
       $processed_games++ if $ok;
       _report_progress($parsed_games, $processed_games, $progress_every);
@@ -303,8 +319,23 @@ sub _consume_games {
 }
 
 sub _process_game {
-  my ($headers, $movetext, $counts, $position_totals, $max_plies) = @_;
+  my ($headers, $movetext, $counts, $position_totals, $max_plies, $filters) = @_;
   my $result = $headers->{Result} // '*';
+  $filters ||= {};
+
+  my $white_elo = _parse_elo($headers->{WhiteElo});
+  my $black_elo = _parse_elo($headers->{BlackElo});
+  if (($filters->{min_white_elo} // 0) > 0) {
+    return 0 unless defined $white_elo && $white_elo >= $filters->{min_white_elo};
+  }
+  if (($filters->{min_black_elo} // 0) > 0) {
+    return 0 unless defined $black_elo && $black_elo >= $filters->{min_black_elo};
+  }
+  if (($filters->{min_avg_elo} // 0) > 0) {
+    return 0 unless defined $white_elo && defined $black_elo;
+    my $avg_elo = ($white_elo + $black_elo) / 2;
+    return 0 unless $avg_elo >= $filters->{min_avg_elo};
+  }
 
   my $state;
   eval {
@@ -375,6 +406,13 @@ sub _process_game {
   }
 
   return 1;
+}
+
+sub _parse_elo {
+  my ($value) = @_;
+  return unless defined $value;
+  return unless $value =~ /\A\d+(?:\.\d+)?\z/;
+  return 0 + $value;
 }
 
 sub _tokenize_movetext {
