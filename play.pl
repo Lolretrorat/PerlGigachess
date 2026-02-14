@@ -19,7 +19,7 @@ use Chess::State;
 use Chess::Engine;
 
 my $uci_mode = 0;
-my $depth = 6;
+my $depth = 14;
 my $fen;
 
 GetOptions(

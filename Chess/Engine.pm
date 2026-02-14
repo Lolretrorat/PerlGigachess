@@ -9,21 +9,29 @@ use Chess::EndgameTable;
 
 use Chess::Book;
 
-use List::Util qw(max);
+use List::Util qw(max min);
 
 use constant DEBUG => 1;
 use constant LOCATION_WEIGHT => 0.15;
 use constant QUIESCE_MAX_DEPTH => 4;
+use constant INF_SCORE => 1_000_000;
+use constant MATE_SCORE => 900_000;
+use constant ASPIRATION_WINDOW => 24;
+
+use constant TT_FLAG_EXACT => 0;
+use constant TT_FLAG_LOWER => 1;
+use constant TT_FLAG_UPPER => 2;
 
 my %history_scores;
 my @killer_moves;
+my %transposition_table;
 
 sub new {
   my $class = shift;
 
   my %self;
   $self{state} = shift || die "Cannot instantiate Chess::Engine without a Chess::State";
-  $self{depth} = shift || 6; # bigger number more thinky
+  $self{depth} = shift || 14; # bigger number more thinky
 
   # hi ken
   return bless \%self, $class;
@@ -125,21 +133,26 @@ sub _location_bonus {
 }
 
 sub _ordered_moves {
-  my ($state, $ply) = @_;
+  my ($state, $ply, $tt_move_key) = @_;
   my $turn = $state->[Chess::State::TURN];
   my $board = $state->[Chess::State::BOARD];
   my @scored = map {
-    [ _move_order_score($board, $_, $turn, $ply), $_ ]
+    [ _move_order_score($board, $_, $turn, $ply, $tt_move_key), $_ ]
   } @{$state->generate_pseudo_moves};
   @scored = sort { $b->[0] <=> $a->[0] } @scored;
   return map { $_->[1] } @scored;
 }
 
 sub _move_order_score {
-  my ($board, $move, $turn, $ply) = @_;
+  my ($board, $move, $turn, $ply, $tt_move_key) = @_;
   my $from_piece = $board->[$move->[0]] || 0;
   my $to_piece = $board->[$move->[1]] || 0;
   my $score = 0;
+  my $move_key = _move_key($move);
+
+  if (defined $tt_move_key && $move_key eq $tt_move_key) {
+    $score += 5000;
+  }
 
   if ($to_piece < 0) {
     my $victim_value = abs($piece_values{$to_piece} || 0);
@@ -209,6 +222,31 @@ sub _update_history {
   $history_scores{$key} += $depth * $depth;
 }
 
+sub _decay_history {
+  for my $key (keys %history_scores) {
+    $history_scores{$key} = int($history_scores{$key} * 0.85);
+    delete $history_scores{$key} if $history_scores{$key} <= 0;
+  }
+}
+
+sub _state_key {
+  my ($state) = @_;
+  return $state->get_fen;
+}
+
+sub _find_move_by_key {
+  my ($state, $target_key) = @_;
+  return unless defined $target_key;
+
+  for my $move (@{$state->generate_pseudo_moves}) {
+    next unless _move_key($move) eq $target_key;
+    my $new_state = $state->make_move($move);
+    return $move if defined $new_state;
+  }
+
+  return;
+}
+
 sub _quiesce {
   my ($state, $alpha, $beta, $depth) = @_;
   $depth //= 0;
@@ -260,49 +298,104 @@ sub _evaluate_board {
   return $score;
 }
 
-sub _rec_think {
-    my ($state, $depth, $alpha, $beta, $ply) = @_;
-    $ply //= 0;
+sub _search {
+  my ($state, $depth, $alpha, $beta, $ply) = @_;
+  $ply //= 0;
 
   if ($depth <= 0) {
-    my $static = _quiesce($state, $alpha, $beta, 0);
-    return (-$static, undef);
+    return (_quiesce($state, $alpha, $beta, 0), undef);
   }
 
-  my $best_value;
+  my $key = _state_key($state);
+  my $tt_entry = $transposition_table{$key};
+
+  if ($tt_entry && $tt_entry->{depth} >= $depth) {
+    my $tt_score = $tt_entry->{score};
+    if ($tt_entry->{flag} == TT_FLAG_EXACT) {
+      return ($tt_score, _find_move_by_key($state, $tt_entry->{best_move_key}));
+    }
+    if ($tt_entry->{flag} == TT_FLAG_LOWER) {
+      $alpha = max($alpha, $tt_score);
+    } elsif ($tt_entry->{flag} == TT_FLAG_UPPER) {
+      $beta = min($beta, $tt_score);
+    }
+    if ($alpha >= $beta) {
+      return ($tt_score, _find_move_by_key($state, $tt_entry->{best_move_key}));
+    }
+  }
+
+  my $alpha_orig = $alpha;
+  my $beta_orig = $beta;
+  my $tt_move_key = $tt_entry ? $tt_entry->{best_move_key} : undef;
+  my $board = $state->[Chess::State::BOARD];
+  my $best_value = -INF_SCORE;
   my $best_move;
-  foreach my $move (_ordered_moves($state, $ply))
-  {
-    my $is_capture = _is_capture($state->[Chess::State::BOARD], $move);
+  my $legal_moves = 0;
+  my $move_index = 0;
+
+  foreach my $move (_ordered_moves($state, $ply, $tt_move_key)) {
+    my $is_capture = _is_capture($board, $move);
     my $new_state = $state->make_move($move);
-    if (defined $new_state)
-    {
-      my ($value) = _rec_think($new_state, $depth - 1, -$beta, -$alpha, $ply + 1);
-      if (! defined $best_value || $best_value < $value) {
-        $best_value = $value;
-	$best_move = $move;
-        $alpha = max($alpha, $best_value);
-        if ($alpha >= $beta) {
-          unless ($is_capture) {
-            _store_killer($ply, $move);
-            _update_history($move, $depth);
-          }
-          last;
+    next unless defined $new_state;
+
+    $legal_moves++;
+
+    my $value;
+    if ($move_index == 0) {
+      ($value) = _search($new_state, $depth - 1, -$beta, -$alpha, $ply + 1);
+      $value = -$value;
+    } else {
+      ($value) = _search($new_state, $depth - 1, -$alpha - 1, -$alpha, $ply + 1);
+      $value = -$value;
+      if ($value > $alpha && $value < $beta) {
+        ($value) = _search($new_state, $depth - 1, -$beta, -$alpha, $ply + 1);
+        $value = -$value;
+      }
+    }
+    $move_index++;
+
+    if ($value > $best_value) {
+      $best_value = $value;
+      $best_move = $move;
+    }
+
+    if ($value > $alpha) {
+      $alpha = $value;
+      if ($alpha >= $beta) {
+        unless ($is_capture) {
+          _store_killer($ply, $move);
+          _update_history($move, $depth);
         }
+        last;
       }
     }
   }
 
-  $best_value = ($state->is_checked() ? -99999 : 0) unless defined $best_value;
+  if (! $legal_moves) {
+    my $mate_or_draw = $state->is_checked ? (-MATE_SCORE + $ply) : 0;
+    return ($mate_or_draw, undef);
+  }
 
-  return (- $best_value, $best_move);
+  my $flag = TT_FLAG_EXACT;
+  if ($best_value <= $alpha_orig) {
+    $flag = TT_FLAG_UPPER;
+  } elsif ($best_value >= $beta_orig) {
+    $flag = TT_FLAG_LOWER;
+  }
+
+  $transposition_table{$key} = {
+    depth => $depth,
+    score => $best_value,
+    flag => $flag,
+    best_move_key => (defined $best_move ? _move_key($best_move) : undef),
+  };
+
+  return ($best_value, $best_move);
 }
 
 #  mainly a converience wrapper around rec_think.
 sub think {
   my $self = shift;
-  #my ($self, @move_list) = shift;
-
   my $state = ${$self->{state}};
 
   if (my $book_move = Chess::Book::choose_move($state)) {
@@ -313,11 +406,45 @@ sub think {
     return $table_move;
   }
 
-  #my ($best_value, $best_move);
-  #foreach $move (@move_list) {
-  my ($score, $move) = _rec_think(${$self->{state}}, $self->{depth} - 1, -99999, 99999, 0);
-  return $move;
-  #}
+  _decay_history();
+  @killer_moves = ();
+  %transposition_table = ();
+
+  my $target_depth = max(1, $self->{depth} - 1);
+  my $best_move;
+  my $prev_score = 0;
+
+  for my $depth (1 .. $target_depth) {
+    my $alpha = -INF_SCORE;
+    my $beta = INF_SCORE;
+    my $window = ASPIRATION_WINDOW;
+
+    if ($depth >= 3) {
+      $alpha = max(-INF_SCORE, $prev_score - $window);
+      $beta = min(INF_SCORE, $prev_score + $window);
+    }
+
+    while (1) {
+      my ($score, $move) = _search($state, $depth, $alpha, $beta, 0);
+      $best_move = $move if defined $move;
+
+      if ($score <= $alpha) {
+        $alpha = max(-INF_SCORE, $alpha - $window);
+        $window *= 2;
+        next;
+      }
+      if ($score >= $beta) {
+        $beta = min(INF_SCORE, $beta + $window);
+        $window *= 2;
+        next;
+      }
+
+      $prev_score = $score;
+      last;
+    }
+  }
+
+  return $best_move;
 }
 
 1;

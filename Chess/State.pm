@@ -197,21 +197,26 @@ sub encode_move
 {
   my ($self, $move) = @_;
   my @fields = split //, $move;
+  my ($from, $to, $promo);
 
   if ($self->[TURN])
   {
-    return [
-      10 * (10 - $fields[1]) + ord($fields[0]) - ord('a') + 1,
-      10 * (10 - $fields[3]) + ord($fields[2]) - ord('a') + 1,
-      ($fields[4] ? - $p2l{$fields[4]} : undef)
-    ];
+    $from = 10 * (10 - $fields[1]) + ord($fields[0]) - ord('a') + 1;
+    $to = 10 * (10 - $fields[3]) + ord($fields[2]) - ord('a') + 1;
+    $promo = ($fields[4] ? - $p2l{$fields[4]} : undef);
+  } else {
+    $from = 10 * ($fields[1] + 1) + ord($fields[0]) - ord('a') + 1;
+    $to = 10 * ($fields[3] + 1) + ord($fields[2]) - ord('a') + 1;
+    $promo = ($fields[4] ? $p2l{$fields[4]} : undef);
   }
 
-  return [
-    10 * ($fields[1] + 1) + ord($fields[0]) - ord('a') + 1,
-    10 * ($fields[3] + 1) + ord($fields[2]) - ord('a') + 1,
-    ($fields[4] ? $p2l{$fields[4]} : undef)
-  ];
+  my $special;
+  if ($self->[BOARD][$from] == KING && $from == 25 && !defined $promo) {
+    $special = CASTLE_KING if $to == 27;
+    $special = CASTLE_QUEEN if $to == 23;
+  }
+
+  return [ $from, $to, $promo, $special ];
 }
 
 # converts a move array back to a string

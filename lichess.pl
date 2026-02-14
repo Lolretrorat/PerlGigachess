@@ -24,6 +24,8 @@ use Text::ParseWords qw(shellwords);
 use POSIX ':sys_wait_h';
 use Config;
 use IO::Socket::SSL qw(SSL_VERIFY_PEER);
+use Chess::State;
+use Chess::Engine ();
 
 eval {
   require IO::Socket::SSL;
@@ -39,11 +41,13 @@ my $token = $ENV{LICHESS_TOKEN}
 my $engine_cmd = $ENV{LICHESS_ENGINE_CMD} // "$^X $RealBin/play.pl --uci";
 my @engine_parts = shellwords($engine_cmd);
 @engine_parts or die "Unable to parse LICHESS_ENGINE_CMD '$engine_cmd'\n";
+my $default_depth = 14;
 
 STDOUT->autoflush(1);
 STDERR->autoflush(1);
 
 my $debug = $ENV{LICHESS_DEBUG} // 0;
+my %handled_challenges;
 
 my $auth_header = "Bearer $token";
 my $ssl_ca_file = Mozilla::CA::SSL_ca_file();
@@ -83,12 +87,16 @@ sub stream_events {
 sub handle_event {
   my ($event) = @_;
   my $type = $event->{type} // '';
-  if ($type eq 'challenge') {
-    handle_challenge($event->{challenge});
+  if ($type eq 'challenge' || $type eq 'challengeCreated') {
+    handle_challenge(extract_challenge_payload($event));
   } elsif ($type eq 'challengeCanceled') {
-    log_info("Challenge $event->{challenge}->{id} canceled");
+    log_info("Challenge " . challenge_id($event) . " canceled");
   } elsif ($type eq 'challengeDeclined') {
-    log_info("Challenge $event->{challenge}->{id} declined");
+    log_info("Challenge " . challenge_id($event) . " declined");
+  } elsif ($type eq 'challengeAccepted') {
+    my $id = challenge_id($event);
+    $handled_challenges{$id} = 1 if $id ne 'unknown';
+    log_info("Challenge $id accepted");
   } elsif ($type eq 'gameStart') {
     start_game($event->{game});
   } elsif ($type eq 'gameFinish') {
@@ -100,27 +108,107 @@ sub handle_event {
 
 sub handle_challenge {
   my ($challenge) = @_;
-  my $id     = $challenge->{id};
-  my $variant = $challenge->{variant}{key} // '';
-  my $speed   = $challenge->{speed} // '';
+  $challenge = extract_challenge_payload($challenge);
+  unless (ref $challenge eq 'HASH') {
+    log_warn('Challenge event missing challenge payload');
+    return;
+  }
+
+  my $id = $challenge->{id};
+  unless (defined $id && length $id) {
+    log_warn('Challenge event missing id');
+    return;
+  }
+
+  if ($handled_challenges{$id}) {
+    log_debug("Skipping previously handled challenge $id");
+    return;
+  }
+
+  my $direction = lc($challenge->{direction} // '');
+  if (length $direction && $direction ne 'in') {
+    log_debug("Ignoring non-incoming challenge $id (direction=$direction)");
+    return;
+  }
+
+  my $status = lc($challenge->{status} // '');
+  if (length $status && $status ne 'created') {
+    log_debug("Ignoring challenge $id with status $status");
+    return;
+  }
+
+  my $variant = lc($challenge->{variant}{key} // '');
+  my $speed   = lc($challenge->{speed} // '');
+  my $challenger = $challenge->{challenger}{name}
+    // $challenge->{challenger}{id}
+    // 'unknown';
 
   if ($variant ne 'standard') {
     log_info("Declining challenge $id (unsupported variant $variant)");
     decline_challenge($id, 'variant');
+    $handled_challenges{$id} = 1;
     return;
   }
 
   if ($speed eq 'correspondence') {
     log_info("Declining challenge $id (unsupported speed)");
     decline_challenge($id, 'timeControl');
+    $handled_challenges{$id} = 1;
     return;
   }
 
-  log_info("Accepting challenge $id ($speed $variant)");
-  my $res = http_request('POST', "/challenge/$id/accept");
-  if (!$res->{success}) {
-    log_warn("Failed to accept challenge $id: " . $res->{status_line});
+  log_info("Accepting challenge $id from $challenger ($speed $variant)");
+  if (accept_challenge($id)) {
+    $handled_challenges{$id} = 1;
   }
+}
+
+sub challenge_id {
+  my ($event) = @_;
+  return 'unknown' unless ref $event eq 'HASH';
+  my $challenge = extract_challenge_payload($event);
+  if (ref $challenge eq 'HASH' && defined $challenge->{id}) {
+    return $challenge->{id};
+  }
+  return $event->{id} // 'unknown';
+}
+
+sub extract_challenge_payload {
+  my ($source) = @_;
+  return unless ref $source eq 'HASH';
+  if (ref $source->{challenge} eq 'HASH' && exists $source->{challenge}{id}) {
+    return $source->{challenge};
+  }
+  if (exists $source->{id}) {
+    return $source;
+  }
+  if (ref $source->{challenge} eq 'HASH') {
+    return extract_challenge_payload($source->{challenge});
+  }
+  return;
+}
+
+sub accept_challenge {
+  my ($id) = @_;
+  my $attempt = 0;
+  while ($attempt < 3) {
+    $attempt++;
+    my $res = http_request('POST', "/challenge/$id/accept");
+    return 1 if $res->{success};
+    my $status = $res->{status} // 0;
+    log_warn(
+      "Failed to accept challenge $id (attempt $attempt): $res->{status_line}"
+    );
+    if ($status == 409) {
+      log_info("Challenge $id is already accepted");
+      return 1;
+    }
+    if ($status >= 400 && $status < 500 && $status != 429) {
+      return 0;
+    }
+    select undef, undef, undef, 0.5;
+  }
+  return 0;
 }
 
 sub decline_challenge {
@@ -178,6 +266,7 @@ sub play_game {
     btime        => undef,
     winc         => 0,
     binc         => 0,
+    engine_depth => undef,
     is_my_turn   => extract_turn_flag($seed_info),
   );
   log_debug("Opening game stream for $game_id");
@@ -321,21 +410,172 @@ sub maybe_move {
   log_debug("my_color=$game->{my_color} is_my_turn=" . ($my_turn // 'undef'));
   return unless $my_turn;
 
-  my $best = compute_bestmove($game, $engine_out, $engine_in);
-  if (!$best || $best eq '(none)') {
-    log_warn("Engine returned no move for $game->{id}");
+  my $state = _state_from_game($game);
+  unless ($state) {
+    log_warn("Unable to rebuild local state for $game->{id}; skipping move");
     return;
   }
 
-  if (send_move($game->{id}, $best)) {
-    $game->{pending_move} = $best;
-    $game->{is_my_turn}   = 0;
-    log_info("Played $best in $game->{id}");
+  my $best = compute_bestmove($game, $engine_out, $engine_in);
+  my @candidates = _candidate_moves($state, $best);
+  unless (@candidates) {
+    log_warn("No legal move available for $game->{id}");
+    return;
   }
+
+  my $attempts = 0;
+  while (@candidates && $attempts < 4) {
+    my $candidate = shift @candidates;
+    $attempts++;
+
+    my $res = send_move($game->{id}, $candidate);
+    if ($res->{success}) {
+      $game->{pending_move} = $candidate;
+      $game->{is_my_turn}   = 0;
+      log_info("Played $candidate in $game->{id}");
+      return;
+    }
+
+    last unless _is_retryable_illegal_reject($res);
+    log_warn("Retrying with alternate legal move for $game->{id} after HTTP 400");
+  }
+}
+
+sub _my_time_ms {
+  my ($game) = @_;
+  return unless defined $game->{my_color};
+  return $game->{my_color} eq 'white' ? $game->{wtime} : $game->{btime};
+}
+
+sub _maybe_adjust_depth {
+  my ($game, $engine_in) = @_;
+  my $my_time = _my_time_ms($game);
+  return unless defined $my_time;
+
+  my $target = _depth_for_remaining_ms($my_time);
+  return if defined $game->{engine_depth} && $game->{engine_depth} == $target;
+
+  print {$engine_in} "setoption name Depth value $target\n";
+  $game->{engine_depth} = $target;
+  log_info("Adjusted depth to $target for $game->{id} (time ${my_time}ms)");
+}
+
+sub _depth_for_remaining_ms {
+  my ($my_time) = @_;
+  return _clamp_depth($default_depth) unless defined $my_time && $my_time =~ /^\d+$/;
+
+  if ($my_time <= 60_000) {
+    # 60s -> 5, then lower by 1 every 10s until floor 1.
+    my $steps = int((60_000 - $my_time) / 10_000);
+    return _clamp_depth(5 - $steps);
+  }
+
+  return 6 if $my_time <= 120_000;
+  return 7 if $my_time <= 180_000;
+  return _clamp_depth($default_depth);
+}
+
+sub _state_from_game {
+  my ($game) = @_;
+  my $state = eval {
+    ($game->{initial_fen} && $game->{initial_fen} ne 'startpos')
+      ? Chess::State->new($game->{initial_fen})
+      : Chess::State->new();
+  };
+  if (!$state || $@) {
+    log_warn("Could not create state from initial FEN for $game->{id}: $@");
+    return;
+  }
+
+  foreach my $uci (@{ $game->{moves} || [] }) {
+    my $encoded = eval { $state->encode_move($uci) };
+    if (!$encoded || $@) {
+      log_warn("Failed to encode move '$uci' in $game->{id}: $@");
+      return;
+    }
+    my $next = eval { $state->make_move($encoded) };
+    if (!defined $next || $@) {
+      log_warn("Illegal historical move '$uci' while rebuilding $game->{id}");
+      return;
+    }
+    $state = $next;
+  }
+
+  return $state;
+}
+
+sub _candidate_moves {
+  my ($state, $proposed) = @_;
+  my @legal = $state->get_moves;
+  return () unless @legal;
+
+  my %legal = map { $_ => 1 } @legal;
+  my @ordered;
+  my %seen;
+  if (defined $proposed && $proposed ne '(none)' && $legal{$proposed}) {
+    push @ordered, $proposed;
+    $seen{$proposed} = 1;
+  } elsif (defined $proposed && length $proposed) {
+    log_warn("Engine proposed illegal move '$proposed'; trying fallback move(s)");
+  } else {
+    log_warn("Engine returned no move; trying fallback move(s)");
+  }
+
+  foreach my $move (_engine_contender_moves($state, 6)) {
+    next unless $legal{$move};
+    next if $seen{$move};
+    push @ordered, $move;
+    $seen{$move} = 1;
+  }
+
+  foreach my $move (@legal) {
+    next if $seen{$move};
+    push @ordered, $move;
+  }
+
+  return @ordered;
+}
+
+sub _engine_contender_moves {
+  my ($state, $limit) = @_;
+  $limit = 1 unless defined $limit && $limit =~ /^\d+$/;
+  $limit = 1 if $limit < 1;
+
+  my @ordered;
+  my $ok = eval {
+    @ordered = Chess::Engine::_ordered_moves($state, 0);
+    1;
+  };
+  unless ($ok) {
+    log_warn("Failed to rank contender moves via engine ordering: $@");
+    return ();
+  }
+
+  my @contenders;
+  foreach my $move (@ordered) {
+    my $next = $state->make_move($move);
+    next unless defined $next;
+    push @contenders, $state->decode_move($move);
+    last if @contenders >= $limit;
+  }
+
+  return @contenders;
+}
+
+sub _is_retryable_illegal_reject {
+  my ($res) = @_;
+  return 0 unless ref $res eq 'HASH' && (($res->{status} // 0) == 400);
+
+  my $body = lc($res->{content} // '');
+  return 1 unless length $body;
+  return 0 if $body =~ /(not your turn|game (?:is )?(?:over|finished)|already ended|terminated|too late|not started)/;
+  return 1;
 }
 
 sub compute_bestmove {
   my ($game, $engine_out, $engine_in) = @_;
+  _maybe_adjust_depth($game, $engine_in);
+
   my $moves = $game->{moves} // [];
   if ($game->{initial_fen} && $game->{initial_fen} ne 'startpos') {
     print {$engine_in} "position fen $game->{initial_fen}";
@@ -379,10 +619,26 @@ sub send_move {
     query => \%query,
   });
   if (!$res->{success}) {
-    log_warn("Move $move for $game_id was rejected: " . $res->{status_line});
-    return 0;
+    my $extra = '';
+    if (defined $res->{content} && length $res->{content}) {
+      my $body = $res->{content};
+      $body =~ s/\s+/ /g;
+      $body = substr($body, 0, 180);
+      $extra = " body='$body'";
+    }
+    log_warn("Move $move for $game_id was rejected: " . $res->{status_line} . $extra);
+    return $res;
   }
-  return 1;
+  return $res;
+}
+
+sub _clamp_depth {
+  my ($depth) = @_;
+  $depth = 1 unless defined $depth && $depth =~ /^\d+$/;
+  $depth = int($depth);
+  $depth = 1 if $depth < 1;
+  $depth = 20 if $depth > 20;
+  return $depth;
 }
 
 sub api_abort_game {
@@ -653,6 +909,8 @@ sub http_request {
   }
   if (length $content) {
     $headers{'Content-Length'} = length($content);
+  } elsif ($method =~ /^(?:POST|PUT|PATCH)$/) {
+    $headers{'Content-Length'} = 0;
   }
 
   my $request = sprintf "%s %s HTTP/1.1\r\n", $method, $relative;

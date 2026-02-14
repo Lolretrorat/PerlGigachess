@@ -1,22 +1,44 @@
 [
   {
-    "key": "6k1/6Q1/8/8/8/8/8/6K1 w - -",
+    "key": "7k/6Q1/6K1/8/8/8/8/8 w - -",
     "moves": [
-      {"uci": "g7g8", "weight": 1},
-      {"uci": "g7h7", "weight": 1}
+      {"uci": "g7h7", "weight": 100, "rank": 100},
+      {"uci": "g7f8", "weight": 20, "rank": 40}
     ]
   },
   {
-    "key": "6k1/6R1/8/8/8/8/8/6K1 w - -",
+    "key": "7k/6R1/6K1/8/8/8/8/8 w - -",
     "moves": [
-      {"uci": "g7g8", "weight": 1},
-      {"uci": "g7a7", "weight": 1}
+      {"uci": "g7h7", "weight": 100, "rank": 100},
+      {"uci": "g7a7", "weight": 20, "rank": 30}
     ]
   },
   {
-    "key": "6K1/8/8/8/8/8/6q1/6k1 b - -",
+    "key": "6k1/5Q2/6K1/8/8/8/8/8 w - -",
     "moves": [
-      {"uci": "g2g1", "weight": 1}
+      {"uci": "f7g7", "weight": 100, "rank": 100},
+      {"uci": "f7e8", "weight": 20, "rank": 35}
+    ]
+  },
+  {
+    "key": "8/8/8/8/8/8/5kq1/7K b - -",
+    "moves": [
+      {"uci": "g2g1", "weight": 100, "rank": 100},
+      {"uci": "g2h2", "weight": 15, "rank": 20}
+    ]
+  },
+  {
+    "key": "8/8/8/8/8/8/5kr1/7K b - -",
+    "moves": [
+      {"uci": "g2g1", "weight": 100, "rank": 100},
+      {"uci": "g2h2", "weight": 15, "rank": 15}
+    ]
+  },
+  {
+    "key": "6k1/8/6Q1/6K1/8/8/8/8 b - -",
+    "moves": [
+      {"uci": "g8f8", "weight": 50, "rank": 50},
+      {"uci": "g8h8", "weight": 50, "rank": 50}
     ]
   }
 ]

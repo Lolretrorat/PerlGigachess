@@ -2,118 +2,194 @@
   {
     "key": "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq -",
     "moves": [
-      {"uci": "e2e4", "weight": 80},
-      {"uci": "d2d4", "weight": 10},
-      {"uci": "c2c4", "weight": 5},
-      {"uci": "g1f3", "weight": 5}
+      {"uci": "e2e4", "weight": 88},
+      {"uci": "d2d4", "weight": 7},
+      {"uci": "g1f3", "weight": 3},
+      {"uci": "c2c4", "weight": 2}
     ]
   },
   {
     "key": "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq -",
     "moves": [
-      {"uci": "e7e5", "weight": 80},
-      {"uci": "c7c5", "weight": 10},
-      {"uci": "g8f6", "weight": 5},
-      {"uci": "c7c6", "weight": 5}
-    ]
-  },
-  {
-    "key": "rnbqkbnr/pppppppp/8/8/3P4/8/PPP1PPPP/RNBQKBNR b KQkq -",
-    "moves": [
-      {"uci": "d7d5", "weight": 40},
-      {"uci": "g8f6", "weight": 35},
-      {"uci": "g7g6", "weight": 25}
-    ]
-  },
-  {
-    "key": "rnbqkbnr/pppppppp/8/8/2P5/8/PP1PPPPP/RNBQKBNR b KQkq -",
-    "moves": [
-      {"uci": "e7e5", "weight": 35},
-      {"uci": "g7g6", "weight": 25},
-      {"uci": "g8f6", "weight": 25},
-      {"uci": "c7c5", "weight": 15}
-    ]
-  },
-  {
-    "key": "rnbqkbnr/pppppppp/8/8/8/5N2/PPPPPPPP/RNBQKB1R b KQkq -",
-    "moves": [
-      {"uci": "d7d5", "weight": 30},
-      {"uci": "g8f6", "weight": 40},
-      {"uci": "g7g6", "weight": 30}
+      {"uci": "e7e5", "weight": 90},
+      {"uci": "c7c5", "weight": 6},
+      {"uci": "e7e6", "weight": 2},
+      {"uci": "c7c6", "weight": 2}
     ]
   },
   {
     "key": "rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq -",
     "moves": [
-      {"uci": "g1f3", "weight": 30},
-      {"uci": "b1c3", "weight": 25},
-      {"uci": "f2f4", "weight": 15},
-      {"uci": "d2d4", "weight": 30}
+      {"uci": "g1f3", "weight": 72},
+      {"uci": "f1c4", "weight": 10},
+      {"uci": "b1c3", "weight": 10},
+      {"uci": "f2f4", "weight": 8}
     ]
   },
   {
-    "key": "rnbqkbnr/pppp1ppp/8/4P3/4p3/8/PPPP1PPP/RNBQKBNR b KQkq -",
+    "key": "rnbqkbnr/pppp1ppp/8/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R b KQkq -",
     "moves": [
-      {"uci": "d7d5", "weight": 80},
-      {"uci": "g8e7", "weight": 20}
+      {"uci": "b8c6", "weight": 78},
+      {"uci": "g8f6", "weight": 12},
+      {"uci": "d7d6", "weight": 6},
+      {"uci": "f7f5", "weight": 4}
     ]
   },
   {
-    "key": "rnbqkbnr/pppp1ppp/8/4P3/3p4/8/PPP2PPP/RNBQKBNR w KQkq -",
+    "key": "r1bqkbnr/pppp1ppp/2n5/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq -",
     "moves": [
-      {"uci": "d2d4", "weight": 80},
-      {"uci": "g1f3", "weight": 20}
+      {"uci": "d2d4", "weight": 62},
+      {"uci": "f1c4", "weight": 22},
+      {"uci": "b1c3", "weight": 10},
+      {"uci": "c2c3", "weight": 6}
     ]
   },
   {
-    "key": "rnbqkbnr/ppp2ppp/8/3pp3/3P4/8/PPP2PPP/RNBQKBNR w KQkq -",
+    "key": "r1bqkbnr/pppp1ppp/2n5/4p3/3PP3/5N2/PPP2PPP/RNBQKB1R b KQkq -",
     "moves": [
-      {"uci": "d4xe5", "weight": 80},
-      {"uci": "c2c3", "weight": 20}
+      {"uci": "e5d4", "weight": 75},
+      {"uci": "g8f6", "weight": 15},
+      {"uci": "c6d4", "weight": 10}
+    ]
+  },
+  {
+    "key": "r1bqkbnr/pppp1ppp/2n5/8/3pP3/5N2/PPP2PPP/RNBQKB1R w KQkq -",
+    "moves": [
+      {"uci": "f3d4", "weight": 78},
+      {"uci": "c2c3", "weight": 12},
+      {"uci": "f1c4", "weight": 10}
+    ]
+  },
+  {
+    "key": "r1bqkbnr/pppp1ppp/2n5/8/3NP3/8/PPP2PPP/RNBQKB1R b KQkq -",
+    "moves": [
+      {"uci": "g8f6", "weight": 45},
+      {"uci": "f8c5", "weight": 30},
+      {"uci": "d7d6", "weight": 15},
+      {"uci": "g7g6", "weight": 10}
+    ]
+  },
+  {
+    "key": "r1bqkb1r/pppp1ppp/2n2n2/8/3NP3/8/PPP2PPP/RNBQKB1R w KQkq -",
+    "moves": [
+      {"uci": "b1c3", "weight": 45},
+      {"uci": "d4c6", "weight": 20},
+      {"uci": "d4b5", "weight": 20},
+      {"uci": "f1d3", "weight": 15}
+    ]
+  },
+  {
+    "key": "r1bqk1nr/pppp1ppp/2n5/2b5/3NP3/8/PPP2PPP/RNBQKB1R w KQkq -",
+    "moves": [
+      {"uci": "c2c3", "weight": 40},
+      {"uci": "d4b3", "weight": 25},
+      {"uci": "d4c6", "weight": 20},
+      {"uci": "c1e3", "weight": 15}
+    ]
+  },
+  {
+    "key": "r1bqkbnr/pppp1ppp/2n5/8/3pP3/2P2N2/PP3PPP/RNBQKB1R b KQkq -",
+    "moves": [
+      {"uci": "d4c3", "weight": 35},
+      {"uci": "g8f6", "weight": 35},
+      {"uci": "d7d5", "weight": 30}
+    ]
+  },
+  {
+    "key": "r1bqkbnr/pppp1ppp/2n5/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R b KQkq -",
+    "moves": [
+      {"uci": "g8f6", "weight": 40},
+      {"uci": "f8c5", "weight": 35},
+      {"uci": "f7f5", "weight": 15},
+      {"uci": "d7d6", "weight": 10}
+    ]
+  },
+  {
+    "key": "r1bqkbnr/pppp1ppp/2n5/4p3/4P3/2N2N2/PPPP1PPP/R1BQKB1R b KQkq -",
+    "moves": [
+      {"uci": "g8f6", "weight": 45},
+      {"uci": "f8c5", "weight": 25},
+      {"uci": "f7f5", "weight": 20},
+      {"uci": "d7d6", "weight": 10}
     ]
   },
   {
     "key": "rnbqkbnr/pp1ppppp/8/2p5/4P3/8/PPPP1PPP/RNBQKBNR w KQkq -",
     "moves": [
-      {"uci": "g1f3", "weight": 35},
-      {"uci": "d2d4", "weight": 35},
-      {"uci": "c2c3", "weight": 20},
-      {"uci": "b1c3", "weight": 10}
+      {"uci": "g1f3", "weight": 40},
+      {"uci": "d2d4", "weight": 40},
+      {"uci": "c2c3", "weight": 15},
+      {"uci": "b1c3", "weight": 5}
+    ]
+  },
+  {
+    "key": "rnbqkbnr/pp2pppp/3p4/8/3NP3/8/PPP2PPP/RNBQKB1R b KQkq -",
+    "moves": [
+      {"uci": "g8f6", "weight": 40},
+      {"uci": "b8c6", "weight": 30},
+      {"uci": "a7a6", "weight": 15},
+      {"uci": "e7e6", "weight": 15}
+    ]
+  },
+  {
+    "key": "rnbqkbnr/pppppppp/8/8/3P4/8/PPP1PPPP/RNBQKBNR b KQkq -",
+    "moves": [
+      {"uci": "d7d5", "weight": 50},
+      {"uci": "g8f6", "weight": 35},
+      {"uci": "e7e6", "weight": 15}
+    ]
+  },
+  {
+    "key": "rnbqkbnr/pppppppp/8/8/2P5/8/PP1PPPPP/RNBQKBNR b KQkq -",
+    "moves": [
+      {"uci": "e7e5", "weight": 45},
+      {"uci": "g8f6", "weight": 25},
+      {"uci": "c7c5", "weight": 20},
+      {"uci": "e7e6", "weight": 10}
+    ]
+  },
+  {
+    "key": "rnbqkbnr/pppppppp/8/8/8/5N2/PPPPPPPP/RNBQKB1R b KQkq -",
+    "moves": [
+      {"uci": "d7d5", "weight": 40},
+      {"uci": "g8f6", "weight": 35},
+      {"uci": "c7c5", "weight": 15},
+      {"uci": "d7d6", "weight": 10}
     ]
   },
   {
     "key": "rnbqkbnr/ppp1pppp/8/3p4/3P4/8/PPP1PPPP/RNBQKBNR w KQkq -",
     "moves": [
-      {"uci": "c2c4", "weight": 40},
+      {"uci": "c2c4", "weight": 45},
       {"uci": "g1f3", "weight": 35},
-      {"uci": "e2e3", "weight": 25}
+      {"uci": "e2e3", "weight": 20}
     ]
   },
   {
     "key": "rnbqkb1r/pppppppp/5n2/8/3P4/8/PPP1PPPP/RNBQKBNR w KQkq -",
     "moves": [
-      {"uci": "c2c4", "weight": 30},
-      {"uci": "g1f3", "weight": 30},
-      {"uci": "g2g3", "weight": 25},
-      {"uci": "c1g5", "weight": 15}
+      {"uci": "c2c4", "weight": 35},
+      {"uci": "g1f3", "weight": 35},
+      {"uci": "g2g3", "weight": 20},
+      {"uci": "c1g5", "weight": 10}
     ]
   },
   {
     "key": "rnbqkbnr/pppppppp/8/4p3/2P5/8/PP1PPPPP/RNBQKBNR w KQkq -",
     "moves": [
       {"uci": "b1c3", "weight": 35},
-      {"uci": "g2g3", "weight": 30},
-      {"uci": "g1f3", "weight": 20},
-      {"uci": "e2e3", "weight": 15}
+      {"uci": "g1f3", "weight": 30},
+      {"uci": "e2e3", "weight": 20},
+      {"uci": "g2g3", "weight": 15}
     ]
   },
   {
     "key": "rnbqkbnr/ppp1pppp/8/3p4/8/5N2/PPPPPPPP/RNBQKB1R w KQkq -",
     "moves": [
-      {"uci": "d2d4", "weight": 35},
+      {"uci": "d2d4", "weight": 40},
       {"uci": "c2c4", "weight": 30},
       {"uci": "g2g3", "weight": 20},
-      {"uci": "e2e3", "weight": 15}
+      {"uci": "e2e3", "weight": 10}
     ]
   }
 ]
