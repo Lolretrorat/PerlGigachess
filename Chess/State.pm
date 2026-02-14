@@ -54,7 +54,13 @@ sub set_fen {
   $self->[CASTLE][! $self->[TURN]][CASTLE_QUEEN] = index($3, 'q') >= 0;
 
   #  EP
-  $self->[EP] = $4 eq '-' ? undef : $4;
+  if ($4 eq '-') {
+    $self->[EP] = undef;
+  } else {
+    my $ep_idx = _square_to_idx($4, $self->[TURN]);
+    die "Invalid en-passant square '$4' in FEN" unless defined $ep_idx;
+    $self->[EP] = $ep_idx;
+  }
   #  Halfmove clock
   $self->[HALFMOVE] = $5;
   #  Move number
@@ -145,7 +151,7 @@ sub get_fen {
   }
 
   # Castle
-  my $castle = '';;
+  my $castle = '';
   $castle .= 'K' if $self->[CASTLE][$self->[TURN]][CASTLE_KING];
   $castle .= 'Q' if $self->[CASTLE][$self->[TURN]][CASTLE_QUEEN];
   $castle .= 'k' if $self->[CASTLE][! $self->[TURN]][CASTLE_KING];
@@ -153,12 +159,10 @@ sub get_fen {
   $castle = '-' if $castle eq '';
 
   # EP
-  my $ep;
-  #if (defined $self->[EP]) {
-  #  $ep = $idx2sqr($self->[EP]);
-  #} else {
-    $ep = '-';
-  #}
+  my $ep = '-';
+  if (defined $self->[EP]) {
+    $ep = _idx_to_square($self->[EP], $self->[TURN]) // '-';
+  }
 
   return join(' ',
     $placement,
@@ -196,18 +200,23 @@ sub get_moves
 sub encode_move
 {
   my ($self, $move) = @_;
-  my @fields = split //, $move;
+  return unless defined $move;
+  $move =~ s/\s+//g;
+  return unless $move =~ /^([a-h])([1-8])([a-h])([1-8])([nbrqNBRQ])?$/;
+  my @fields = ($1, $2, $3, $4, $5);
   my ($from, $to, $promo);
+  my $promo_piece = defined $fields[4] ? $l2p{uc($fields[4])} : undef;
+  return if defined($fields[4]) && !defined($promo_piece);
 
   if ($self->[TURN])
   {
     $from = 10 * (10 - $fields[1]) + ord($fields[0]) - ord('a') + 1;
     $to = 10 * (10 - $fields[3]) + ord($fields[2]) - ord('a') + 1;
-    $promo = ($fields[4] ? - $p2l{$fields[4]} : undef);
+    $promo = defined($promo_piece) ? -$promo_piece : undef;
   } else {
     $from = 10 * ($fields[1] + 1) + ord($fields[0]) - ord('a') + 1;
     $to = 10 * ($fields[3] + 1) + ord($fields[2]) - ord('a') + 1;
-    $promo = ($fields[4] ? $p2l{$fields[4]} : undef);
+    $promo = $promo_piece;
   }
 
   my $special;
@@ -231,7 +240,7 @@ sub decode_move
       10 - int($move->[0] / 10),
       ($move->[1] % 10) - 1 + ord 'a',
       10 - int($move->[1] / 10),
-      ($move->[2] ? $l2p{$move->[2]} : ''));
+      ($move->[2] ? lc($p2l{$move->[2]}) : ''));
   }
 
   return sprintf('%c%1d%c%1d%s',
@@ -239,7 +248,33 @@ sub decode_move
     int($move->[0] / 10) - 1,
     ($move->[1] % 10) - 1 + ord 'a',
     int($move->[1] / 10) - 1,
-    ($move->[2] ? $l2p{$move->[2]} : ''));
+    ($move->[2] ? lc($p2l{$move->[2]}) : ''));
+}
+
+sub _square_to_idx {
+  my ($square, $turn) = @_;
+  return unless defined $square && $square =~ /^([a-h])([1-8])$/i;
+  my ($file, $rank) = (lc($1), $2);
+  my $file_idx = ord($file) - ord('a') + 1;
+  return $turn
+    ? 10 * (10 - $rank) + $file_idx
+    : 10 * ($rank + 1) + $file_idx;
+}
+
+sub _idx_to_square {
+  my ($idx, $turn) = @_;
+  my $file = ($idx % 10) - 1;
+  return unless $file >= 0 && $file < 8;
+  my $rank = $turn ? 10 - int($idx / 10) : int($idx / 10) - 1;
+  return unless $rank >= 1 && $rank <= 8;
+  return chr(ord('a') + $file) . $rank;
+}
+
+sub _flip_idx {
+  my ($idx) = @_;
+  my $rank_base = int($idx / 10) * 10;
+  my $file = $idx % 10;
+  return 110 - $rank_base + $file;
 }
 
 
@@ -251,6 +286,23 @@ sub make_move {
 
   # lookup the existing piece
   my $from_piece = $board[$move->[0]];
+  my $to_piece   = $board[$move->[1]];
+  my $is_capture = ($to_piece // 0) < 0 ? 1 : 0;
+  my $is_en_passant = 0;
+
+  # En-passant capture moves to an empty target square.
+  if ($from_piece == PAWN
+      && defined $self->[EP]
+      && !defined $move->[2]
+      && ($move->[1] - $move->[0] == 9 || $move->[1] - $move->[0] == 11)
+      && $move->[1] == $self->[EP]
+      && ($to_piece // 0) == EMPTY)
+  {
+    $is_en_passant = 1;
+    $is_capture = 1;
+    $board[$move->[1] - 10] = EMPTY;
+  }
+
   # make move
   if (defined $move->[3]) {
     # special-case handler
@@ -287,16 +339,30 @@ sub make_move {
     ($board[$rank + $_], $board[110 - $rank + $_]) = (-$board[110 - $rank + $_], -$board[$rank + $_]) for (1 .. 8);
   }
 
+  my @next_to_move_castle = (
+    $self->[CASTLE][1][CASTLE_KING] ? 1 : 0,
+    $self->[CASTLE][1][CASTLE_QUEEN] ? 1 : 0,
+  );
+  # Capturing an opponent rook on its home square removes that side's right.
+  $next_to_move_castle[CASTLE_KING] = 0 if $move->[1] == 98;
+  $next_to_move_castle[CASTLE_QUEEN] = 0 if $move->[1] == 91;
+
+  my @next_opponent_castle = (
+    ($move->[0] == 25 || $move->[0] == 28) ? 0 : ($self->[CASTLE][0][CASTLE_KING] ? 1 : 0),
+    ($move->[0] == 25 || $move->[0] == 21) ? 0 : ($self->[CASTLE][0][CASTLE_QUEEN] ? 1 : 0),
+  );
+
+  my $new_ep;
+  if ($from_piece == PAWN && !defined $move->[2] && $move->[1] - $move->[0] == 20) {
+    $new_ep = _flip_idx($move->[0] + 10);
+  }
+
   return bless [
     \@board,
     ! $self->[TURN],
-  # TODO
-    [ $self->[CASTLE][1], [
-      $move->[0] == 25 || $move->[0] == 28 ? 0 : $self->[CASTLE][0][CASTLE_KING],
-      $move->[0] == 25 || $move->[0] == 21 ? 0 : $self->[CASTLE][0][CASTLE_QUEEN] ] ],
-  # TODO
-    (defined $self->[EP] ? $self->[EP] : undef),
-    (($from_piece == PAWN || defined $move->[2]) ?  0 : $self->[HALFMOVE] + 1),
+    [ \@next_to_move_castle, \@next_opponent_castle ],
+    $new_ep,
+    (($from_piece == PAWN || defined $move->[2] || $is_capture || $is_en_passant) ? 0 : $self->[HALFMOVE] + 1),
     ($self->[TURN] ? $self->[MOVE] + 1 : $self->[MOVE]),
     #[ $self->[KINGS][1], $self->[KINGS][0] ]
   ];
@@ -421,8 +487,6 @@ sub generate_pseudo_moves
       # Try a capture instead.
       for (9, 11)
       {
-        # TODO: EP
-
         # check ownership by opponent.
         if ($self->[BOARD][$idx + $_] < 0) {
           if ($idx > 90) {
@@ -435,6 +499,9 @@ sub generate_pseudo_moves
           } else {
             push @m, [ $idx, $idx + $_ ];
           }
+        } elsif (defined $self->[EP] && $idx + $_ == $self->[EP]) {
+          # En-passant capture to the target square.
+          push @m, [ $idx, $idx + $_ ];
         }
       }
     } else {
@@ -499,7 +566,8 @@ sub pp {
   # other state info
   print "Castle: self, K=" . $self->[CASTLE][$self->[TURN]][CASTLE_KING] . ', Q=' . $self->[CASTLE][$self->[TURN]][CASTLE_QUEEN] . "\n";
   print "    opponent, k=" . $self->[CASTLE][! $self->[TURN]][CASTLE_KING] . ', q=' . $self->[CASTLE][! $self->[TURN]][CASTLE_QUEEN] . "\n";
-  print "En Passant: " . ($self->[EP] ? join(',', @{$self->[EP]}) : '(none)') . "\n";
+  my $ep = defined $self->[EP] ? (_idx_to_square($self->[EP], $self->[TURN]) // '(invalid)') : '(none)';
+  print "En Passant: $ep\n";
   print "Halfmove: " . $self->[HALFMOVE] . "\n";
   print "Move: " . $self->[MOVE] . "\n";
 

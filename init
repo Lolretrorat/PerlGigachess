@@ -21,8 +21,9 @@ if ($command eq 'train-location') {
 
 sub train_location {
     my (@args) = @_;
-    my ($output, $max_games, $scale, $stdout);
+    my ($output, $max_games, $scale, $stdout, $accumulate);
     $stdout = 0;
+    $accumulate = 0;
 
     GetOptionsFromArray(
         \@args,
@@ -30,16 +31,21 @@ sub train_location {
         'games=i'  => \$max_games,
         'scale=i'  => \$scale,
         'stdout!'  => \$stdout,
+        'accumulate!' => \$accumulate,
     ) or usage();
 
     my %train_opts;
     $train_opts{max_games} = $max_games if defined $max_games;
     $train_opts{scale} = $scale if defined $scale;
+    $train_opts{accumulate} = $accumulate;
+
+    my $target = $output || default_store_path();
+    if ($accumulate && defined $target && -e $target) {
+        Chess::LocationModifer::load_from_file($target);
+    }
 
     say STDERR 'Reading PGN data from STDIN…';
     my $stats = Chess::LocationModifer::train_from_stream(\*STDIN, %train_opts);
-
-    my $target = $output || default_store_path();
 
     if ($stdout) {
         print JSON::PP->new->canonical->pretty->encode(\%location_modifiers);
@@ -59,11 +65,11 @@ sub train_location {
 sub usage {
     print STDERR <<'HELP';
 Usage:
-  ./init train-location [--output path] [--games N] [--scale SCALE] [--stdout]
+  ./init train-location [--output path] [--games N] [--scale SCALE] [--stdout] [--[no-]accumulate]
 
 Examples:
   zstdcat lichess_db_standard_rated_2024-01.pgn.zst | ./init train-location --games 10000
-  bzcat sample.pgn.bz2 | ./init train-location --output jsons/location_modifiers.json
+  bzcat sample.pgn.bz2 | ./init train-location --output data/location_modifiers.json
 
 Pipe PGN data from database.lichess.org to train square preferences.
 HELP

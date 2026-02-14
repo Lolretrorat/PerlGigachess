@@ -20,10 +20,13 @@ BEGIN {
 use JSON::PP qw(decode_json encode_json);
 use IPC::Open2;
 use IO::Handle;
+use IO::Socket::INET;
 use Text::ParseWords qw(shellwords);
 use POSIX ':sys_wait_h';
 use Config;
 use IO::Socket::SSL qw(SSL_VERIFY_PEER);
+use Socket qw(AF_INET);
+use Time::HiRes qw(time);
 use Chess::State;
 use Chess::Engine ();
 
@@ -36,12 +39,13 @@ eval {
 
 load_env("$RealBin/.env");
 
-my $token = $ENV{LICHESS_TOKEN}
-  or die "Set LICHESS_TOKEN to a Bot API token generated on lichess.org\n";
+my $dry_run = $ENV{LICHESS_DRY_RUN} ? 1 : 0;
+my $token = $ENV{LICHESS_TOKEN} // '';
 my $engine_cmd = $ENV{LICHESS_ENGINE_CMD} // "$^X $RealBin/play.pl --uci";
 my @engine_parts = shellwords($engine_cmd);
 @engine_parts or die "Unable to parse LICHESS_ENGINE_CMD '$engine_cmd'\n";
-my $default_depth = 14;
+my $think_slow_ms = $ENV{LICHESS_THINK_SLOW_MS} // 3000;
+$think_slow_ms = 3000 unless defined $think_slow_ms && $think_slow_ms =~ /^\d+$/;
 
 STDOUT->autoflush(1);
 STDERR->autoflush(1);
@@ -49,24 +53,42 @@ STDERR->autoflush(1);
 my $debug = $ENV{LICHESS_DEBUG} // 0;
 my %handled_challenges;
 
-my $auth_header = "Bearer $token";
+my $auth_header = '';
 my $ssl_ca_file = Mozilla::CA::SSL_ca_file();
 my $user_agent  = 'PerlGigachess/0.1';
+my $bot_id = $ENV{LICHESS_BOT_ID} // '';
+my $last_tls_error = '';
 
-# Ensure the token is valid and capture the bot username.
-my $account = lichess_json_get('/account');
-my $bot_id  = $account->{id}
-  or die "Unable to discover bot id from /api/account response\n";
-log_info("Logged in as $account->{username} ($bot_id)");
+unless (caller) {
+  exit main();
+}
 
-$SIG{INT}  = sub { log_info('Caught SIGINT, shutting down'); exit 0 };
-$SIG{TERM} = sub { log_info('Caught SIGTERM, shutting down'); exit 0 };
+sub main {
+  $SIG{INT}  = sub { log_info('Caught SIGINT, shutting down'); exit 0 };
+  $SIG{TERM} = sub { log_info('Caught SIGTERM, shutting down'); exit 0 };
+  $SIG{CHLD} = sub { reap_children() };
 
-stream_events();
-exit 0;
+  if ($dry_run) {
+    return run_dry_run();
+  }
+
+  die "Set LICHESS_TOKEN to a Bot API token generated on lichess.org\n"
+    unless length $token;
+  $auth_header = "Bearer $token";
+
+  # Ensure the token is valid and capture the bot username.
+  my $account = lichess_json_get('/account');
+  $bot_id  = $account->{id}
+    or die "Unable to discover bot id from /api/account response\n";
+  log_info("Logged in as $account->{username} ($bot_id)");
+
+  stream_events();
+  return 0;
+}
 
 sub stream_events {
   while (1) {
+    reap_children();
     log_info('Connecting to event stream');
     my $ok = stream_ndjson('/stream/event', sub {
       my ($event) = @_;
@@ -82,6 +104,147 @@ sub stream_events {
     }
     sleep 2;
   }
+}
+
+sub reap_children {
+  while (1) {
+    my $kid = waitpid(-1, WNOHANG);
+    last if !defined $kid || $kid <= 0;
+    log_debug("Reaped child pid $kid");
+  }
+}
+
+sub run_dry_run {
+  log_info('Running lichess dry run (no network)');
+  $bot_id = 'dry-run-bot';
+  $auth_header = 'Bearer dry-run-token';
+  %handled_challenges = ();
+
+  my @accepted_ids;
+  my @declined_ids;
+  my @attempted_moves;
+  my $send_attempt = 0;
+
+  {
+    no warnings 'redefine';
+
+    local *http_request = sub {
+      my ($method, $path, $opts) = @_;
+      if ($method eq 'POST' && $path =~ m{^/challenge/([^/]+)/accept$}) {
+        push @accepted_ids, $1;
+        return {
+          success => 1, status => 200, reason => 'OK',
+          status_line => 'HTTP/1.1 200 OK', content => '{}',
+        };
+      }
+      if ($method eq 'POST' && $path =~ m{^/challenge/([^/]+)/decline$}) {
+        push @declined_ids, $1;
+        return {
+          success => 1, status => 200, reason => 'OK',
+          status_line => 'HTTP/1.1 200 OK', content => '{}',
+        };
+      }
+      return {
+        success => 1, status => 200, reason => 'OK',
+        status_line => 'HTTP/1.1 200 OK', content => '{}',
+      };
+    };
+
+    local *compute_bestmove = sub {
+      return {
+        move => 'g1f3',
+        elapsed_ms => 42,
+        depth => 4,
+        cp => 18,
+      };
+    };
+
+    local *send_move = sub {
+      my ($game_id, $move, $opts) = @_;
+      push @attempted_moves, $move;
+      $send_attempt++;
+      if ($send_attempt == 1) {
+        return {
+          success => 0, status => 400, reason => 'Bad Request',
+          status_line => 'HTTP/1.1 400 Bad Request', content => 'illegal move',
+        };
+      }
+      return {
+        success => 1, status => 200, reason => 'OK',
+        status_line => 'HTTP/1.1 200 OK', content => '{}',
+      };
+    };
+
+    handle_event({
+      type => 'challenge',
+      challenge => {
+        id => 'dry-accept-1',
+        direction => 'in',
+        status => 'created',
+        speed => 'rapid',
+        variant => { key => 'standard' },
+        challenger => { name => 'tester' },
+      },
+    });
+
+    # Duplicate challenge should be ignored once handled.
+    handle_event({
+      type => 'challenge',
+      challenge => {
+        id => 'dry-accept-1',
+        direction => 'in',
+        status => 'created',
+        speed => 'rapid',
+        variant => { key => 'standard' },
+        challenger => { name => 'tester' },
+      },
+    });
+
+    handle_event({
+      type => 'challengeCreated',
+      challenge => {
+        id => 'dry-decline-1',
+        direction => 'in',
+        status => 'created',
+        speed => 'bullet',
+        variant => { key => 'chess960' },
+        challenger => { name => 'variant-user' },
+      },
+    });
+
+    my %game = (
+      id                => 'dry-game-1',
+      my_color          => 'white',
+      initial_fen       => 'startpos',
+      moves             => [ 'e2e4', 'e7e5' ],
+      pending_move      => undef,
+      status            => 'started',
+      wtime             => 120_000,
+      btime             => 120_000,
+      winc              => 0,
+      binc              => 0,
+      is_my_turn        => 1,
+      state_obj         => undef,
+      state_move_count  => 0,
+      state_initial_fen => undef,
+    );
+
+    maybe_move(\%game, undef, undef);
+
+    my $played = $game{pending_move};
+    push @{$game{moves}}, $played if defined $played && length $played;
+    push @{$game{moves}}, 'b8c6';
+    $game{pending_move} = undef;
+    $game{is_my_turn} = 0;
+    my $synced = _sync_state_from_game(\%game) ? 1 : 0;
+
+    log_info("Dry run accepted challenges: " . (@accepted_ids ? join(',', @accepted_ids) : 'none'));
+    log_info("Dry run declined challenges: " . (@declined_ids ? join(',', @declined_ids) : 'none'));
+    log_info("Dry run move attempts: " . (@attempted_moves ? join(' -> ', @attempted_moves) : 'none'));
+    log_info("Dry run state sync: " . ($synced ? 'ok' : 'failed') . " count=$game{state_move_count}");
+  }
+
+  return 0;
 }
 
 sub handle_event {
@@ -266,8 +429,10 @@ sub play_game {
     btime        => undef,
     winc         => 0,
     binc         => 0,
-    engine_depth => undef,
     is_my_turn   => extract_turn_flag($seed_info),
+    state_obj        => undef,
+    state_move_count => 0,
+    state_initial_fen => undef,
   );
   log_debug("Opening game stream for $game_id");
   my $buffer = '';
@@ -307,6 +472,9 @@ sub handle_game_event {
     $game->{btime}  = $event->{state}{btime};
     $game->{winc}   = $event->{state}{winc};
     $game->{binc}   = $event->{state}{binc};
+    $game->{state_obj} = undef;
+    $game->{state_move_count} = 0;
+    $game->{state_initial_fen} = undef;
     update_turn_from_event($game, $event);
     print {$engine_in} "ucinewgame\n";
     maybe_move($game, $engine_out, $engine_in);
@@ -410,13 +578,27 @@ sub maybe_move {
   log_debug("my_color=$game->{my_color} is_my_turn=" . ($my_turn // 'undef'));
   return unless $my_turn;
 
-  my $state = _state_from_game($game);
+  my $state = _sync_state_from_game($game);
   unless ($state) {
     log_warn("Unable to rebuild local state for $game->{id}; skipping move");
     return;
   }
 
-  my $best = compute_bestmove($game, $engine_out, $engine_in);
+  my $analysis = compute_bestmove($game, $engine_out, $engine_in);
+  if (ref $analysis eq 'HASH' && defined $analysis->{elapsed_ms}
+    && $analysis->{elapsed_ms} >= $think_slow_ms)
+  {
+    log_info(
+      sprintf(
+        'Long think in %s: %dms (candidate %s%s)',
+        $game->{id},
+        $analysis->{elapsed_ms},
+        ($analysis->{move} // 'none'),
+        _format_eval_suffix($analysis),
+      )
+    );
+  }
+  my $best = (ref $analysis eq 'HASH') ? $analysis->{move} : undef;
   my @candidates = _candidate_moves($state, $best);
   unless (@candidates) {
     log_warn("No legal move available for $game->{id}");
@@ -432,7 +614,7 @@ sub maybe_move {
     if ($res->{success}) {
       $game->{pending_move} = $candidate;
       $game->{is_my_turn}   = 0;
-      log_info("Played $candidate in $game->{id}");
+      log_info("Played $candidate in $game->{id}" . _format_eval_suffix($analysis));
       return;
     }
 
@@ -441,66 +623,56 @@ sub maybe_move {
   }
 }
 
-sub _my_time_ms {
+sub _sync_state_from_game {
   my ($game) = @_;
-  return unless defined $game->{my_color};
-  return $game->{my_color} eq 'white' ? $game->{wtime} : $game->{btime};
-}
+  my $moves = $game->{moves} || [];
+  my $initial = ($game->{initial_fen} && $game->{initial_fen} ne 'startpos')
+    ? $game->{initial_fen}
+    : 'startpos';
 
-sub _maybe_adjust_depth {
-  my ($game, $engine_in) = @_;
-  my $my_time = _my_time_ms($game);
-  return unless defined $my_time;
+  my $needs_rebuild = !defined $game->{state_obj}
+    || !defined $game->{state_move_count}
+    || $game->{state_move_count} > @$moves
+    || ($game->{state_initial_fen} // '') ne $initial;
 
-  my $target = _depth_for_remaining_ms($my_time);
-  return if defined $game->{engine_depth} && $game->{engine_depth} == $target;
-
-  print {$engine_in} "setoption name Depth value $target\n";
-  $game->{engine_depth} = $target;
-  log_info("Adjusted depth to $target for $game->{id} (time ${my_time}ms)");
-}
-
-sub _depth_for_remaining_ms {
-  my ($my_time) = @_;
-  return _clamp_depth($default_depth) unless defined $my_time && $my_time =~ /^\d+$/;
-
-  if ($my_time <= 60_000) {
-    # 60s -> 5, then lower by 1 every 10s until floor 1.
-    my $steps = int((60_000 - $my_time) / 10_000);
-    return _clamp_depth(5 - $steps);
+  if ($needs_rebuild) {
+    my $state = eval {
+      $initial eq 'startpos' ? Chess::State->new() : Chess::State->new($initial);
+    };
+    if (!$state || $@) {
+      log_warn("Could not create state from initial FEN for $game->{id}: $@");
+      $game->{state_obj} = undef;
+      $game->{state_move_count} = 0;
+      $game->{state_initial_fen} = undef;
+      return;
+    }
+    $game->{state_obj} = $state;
+    $game->{state_move_count} = 0;
+    $game->{state_initial_fen} = $initial;
   }
 
-  return 6 if $my_time <= 120_000;
-  return 7 if $my_time <= 180_000;
-  return _clamp_depth($default_depth);
-}
-
-sub _state_from_game {
-  my ($game) = @_;
-  my $state = eval {
-    ($game->{initial_fen} && $game->{initial_fen} ne 'startpos')
-      ? Chess::State->new($game->{initial_fen})
-      : Chess::State->new();
-  };
-  if (!$state || $@) {
-    log_warn("Could not create state from initial FEN for $game->{id}: $@");
-    return;
-  }
-
-  foreach my $uci (@{ $game->{moves} || [] }) {
+  my $state = $game->{state_obj};
+  for (my $i = $game->{state_move_count}; $i < @$moves; $i++) {
+    my $uci = $moves->[$i];
     my $encoded = eval { $state->encode_move($uci) };
     if (!$encoded || $@) {
       log_warn("Failed to encode move '$uci' in $game->{id}: $@");
+      $game->{state_obj} = undef;
+      $game->{state_move_count} = 0;
       return;
     }
     my $next = eval { $state->make_move($encoded) };
     if (!defined $next || $@) {
       log_warn("Illegal historical move '$uci' while rebuilding $game->{id}");
+      $game->{state_obj} = undef;
+      $game->{state_move_count} = 0;
       return;
     }
     $state = $next;
+    $game->{state_move_count} = $i + 1;
   }
 
+  $game->{state_obj} = $state;
   return $state;
 }
 
@@ -541,15 +713,18 @@ sub _engine_contender_moves {
   $limit = 1 unless defined $limit && $limit =~ /^\d+$/;
   $limit = 1 if $limit < 1;
 
-  my @ordered;
-  my $ok = eval {
-    @ordered = Chess::Engine::_ordered_moves($state, 0);
-    1;
-  };
-  unless ($ok) {
-    log_warn("Failed to rank contender moves via engine ordering: $@");
-    return ();
-  }
+  my $board = $state->[Chess::State::BOARD];
+  my @ordered = map { $_->[1] }
+    sort { $b->[0] <=> $a->[0] }
+    map {
+      my $move = $_;
+      my $score = 0;
+      my $target = $board->[$move->[1]] // 0;
+      $score += 1000 + (10 * abs($target)) if $target < 0;
+      $score += 250 if defined $move->[2];
+      $score += 50 if defined $move->[3];
+      [ $score, $move ];
+    } @{$state->generate_pseudo_moves};
 
   my @contenders;
   foreach my $move (@ordered) {
@@ -572,9 +747,24 @@ sub _is_retryable_illegal_reject {
   return 1;
 }
 
+sub _format_eval_suffix {
+  my ($analysis) = @_;
+  return '' unless ref $analysis eq 'HASH';
+
+  my @parts;
+  push @parts, "depth $analysis->{depth}" if defined $analysis->{depth};
+  if (defined $analysis->{mate}) {
+    push @parts, "mate $analysis->{mate}";
+  } elsif (defined $analysis->{cp}) {
+    push @parts, sprintf('cp %+d', $analysis->{cp});
+  }
+
+  return @parts ? " (engine " . join(', ', @parts) . ")" : '';
+}
+
 sub compute_bestmove {
   my ($game, $engine_out, $engine_in) = @_;
-  _maybe_adjust_depth($game, $engine_in);
+  my $started_at = time;
 
   my $moves = $game->{moves} // [];
   if ($game->{initial_fen} && $game->{initial_fen} ne 'startpos') {
@@ -599,13 +789,39 @@ sub compute_bestmove {
   }
   print {$engine_in} "$go\n";
 
+  my %analysis = (move => undef);
   while (my $line = <$engine_out>) {
     $line =~ s/[\r\n]+$//;
+    if ($line =~ /^info\b/) {
+      if ($line =~ /^info string Thinking\.\.\.\s*(.*)$/) {
+        my $msg = $1 // '';
+        $msg =~ s/\s+$//;
+        log_info("Thinking... $msg in $game->{id}");
+        next;
+      }
+      if ($line =~ /\bdepth\s+(\d+)/) {
+        $analysis{depth} = $1 + 0;
+      }
+      if ($line =~ /\bscore\s+cp\s+(-?\d+)/) {
+        $analysis{cp} = $1 + 0;
+        delete $analysis{mate};
+      } elsif ($line =~ /\bscore\s+mate\s+(-?\d+)/) {
+        $analysis{mate} = $1 + 0;
+        delete $analysis{cp};
+      }
+      if ($line =~ /\bpv\s+(\S+)/) {
+        $analysis{candidate} = $1;
+      }
+      next;
+    }
     if ($line =~ /^bestmove\s+(\S+)/) {
-      return $1;
+      $analysis{move} = $1;
+      $analysis{elapsed_ms} = int((time - $started_at) * 1000);
+      return \%analysis;
     }
   }
-  return;
+  $analysis{elapsed_ms} = int((time - $started_at) * 1000);
+  return \%analysis;
 }
 
 sub send_move {
@@ -630,15 +846,6 @@ sub send_move {
     return $res;
   }
   return $res;
-}
-
-sub _clamp_depth {
-  my ($depth) = @_;
-  $depth = 1 unless defined $depth && $depth =~ /^\d+$/;
-  $depth = int($depth);
-  $depth = 1 if $depth < 1;
-  $depth = 20 if $depth > 20;
-  return $depth;
 }
 
 sub api_abort_game {
@@ -683,9 +890,18 @@ sub api_send_chat {
 sub uci_handshake {
   my ($engine_out, $engine_in) = @_;
   print {$engine_in} "uci\n";
+  my $has_ownbook = 0;
   while (my $line = <$engine_out>) {
     $line =~ s/[\r\n]+$//;
+    if ($line =~ /^option\s+name\s+(.+?)\s+type\b/i) {
+      my $name = lc($1 // '');
+      $name =~ s/\s+$//;
+      $has_ownbook = 1 if $name eq 'ownbook';
+    }
     last if $line =~ /^uciok/;
+  }
+  if ($has_ownbook) {
+    print {$engine_in} "setoption name OwnBook value true\n";
   }
   print {$engine_in} "isready\n";
   while (my $line = <$engine_out>) {
@@ -855,6 +1071,91 @@ sub load_env {
   close $fh;
 }
 
+sub _open_lichess_socket {
+  my @errors;
+  my @ssl_attempts = (
+    {
+      label => 'default',
+      args  => {},
+    },
+    {
+      label => 'force-ipv4',
+      args  => {
+        Family           => AF_INET,
+        GetAddrInfoFlags => 0,
+      },
+    },
+  );
+
+  foreach my $attempt (@ssl_attempts) {
+    my $sock = IO::Socket::SSL->new(
+      PeerHost        => 'lichess.org',
+      PeerPort        => 443,
+      Proto           => 'tcp',
+      Timeout         => 15,
+      SSL_verify_mode => SSL_VERIFY_PEER(),
+      SSL_ca_file     => $ssl_ca_file,
+      SNI_hostname    => 'lichess.org',
+      %{$attempt->{args}},
+    );
+    if ($sock) {
+      $sock->autoflush(1);
+      $last_tls_error = '';
+      return $sock;
+    }
+    my $err = IO::Socket::SSL::errstr() // 'unknown';
+    push @errors, "$attempt->{label}: $err";
+  }
+
+  my $plain = IO::Socket::INET->new(
+    PeerAddr => 'lichess.org',
+    PeerPort => 443,
+    Proto    => 'tcp',
+    Timeout  => 15,
+  );
+
+  if ($plain) {
+    my $sock = IO::Socket::SSL->start_SSL(
+      $plain,
+      SSL_verify_mode => SSL_VERIFY_PEER(),
+      SSL_ca_file     => $ssl_ca_file,
+      SSL_hostname    => 'lichess.org',
+      SNI_hostname    => 'lichess.org',
+    );
+    if ($sock) {
+      $sock->autoflush(1);
+      $last_tls_error = '';
+      return $sock;
+    }
+    my $err = IO::Socket::SSL::errstr() // 'unknown';
+    push @errors, "inet+start_ssl: $err";
+  } else {
+    my $err = $! ? "$!" : 'unable to open TCP socket';
+    push @errors, "inet-connect: $err";
+  }
+
+  my $hint = '';
+  if (grep { /name resolution|getaddrinfo|IO::Socket::IP configuration failed/i } @errors) {
+    $hint = ' (check DNS/network connectivity for lichess.org)';
+  }
+  $last_tls_error = join('; ', @errors) . $hint;
+  return;
+}
+
+sub _write_http_request {
+  my ($sock, $method, $path, $headers, $body) = @_;
+  $method = uc($method // 'GET');
+  $path ||= '/';
+  my $request = sprintf "%s %s HTTP/1.1\r\n", $method, $path;
+  foreach my $key (keys %{$headers || {}}) {
+    my $value = $headers->{$key};
+    $request .= "$key: $value\r\n";
+  }
+  $request .= "\r\n";
+  $request .= $body if defined $body && length $body;
+  print {$sock} $request;
+}
+
 sub http_request {
   my ($method, $path, $opts) = @_;
   $opts ||= {};
@@ -876,15 +1177,9 @@ sub http_request {
     $content = $opts->{content};
   }
 
-  my $sock = IO::Socket::SSL->new(
-    PeerHost        => 'lichess.org',
-    PeerPort        => 443,
-    SSL_verify_mode => SSL_VERIFY_PEER(),
-    SSL_ca_file     => $ssl_ca_file,
-    SNI_hostname    => 'lichess.org',
-  );
+  my $sock = _open_lichess_socket();
   unless ($sock) {
-    my $err = IO::Socket::SSL::errstr() // 'unknown';
+    my $err = $last_tls_error || IO::Socket::SSL::errstr() || 'unknown';
     return {
       success     => 0,
       status      => 0,
@@ -893,8 +1188,6 @@ sub http_request {
       content     => '',
     };
   }
-  $sock->autoflush(1);
-
   my %headers = (
     'Host'          => 'lichess.org',
     'Authorization' => $auth_header,
@@ -913,15 +1206,7 @@ sub http_request {
     $headers{'Content-Length'} = 0;
   }
 
-  my $request = sprintf "%s %s HTTP/1.1\r\n", $method, $relative;
-  foreach my $key (keys %headers) {
-    my $value = $headers{$key};
-    $request .= "$key: $value\r\n";
-  }
-  $request .= "\r\n";
-  $request .= $content if length $content;
-
-  print {$sock} $request;
+  _write_http_request($sock, $method, $relative, \%headers, $content);
 
   my $resp_headers = _read_http_headers($sock);
   my $status_line = $resp_headers->{status_line} // 'HTTP/1.1 000';
@@ -992,30 +1277,22 @@ sub stream_ndjson {
   while (1) {
     $attempt ++;
     log_info("Opening stream $path (attempt $attempt)");
-    my $sock = IO::Socket::SSL->new(
-      PeerHost        => 'lichess.org',
-      PeerPort        => 443,
-      SSL_verify_mode => SSL_VERIFY_PEER(),
-      SSL_ca_file     => $ssl_ca_file,
-      SNI_hostname    => 'lichess.org',
-    );
+    my $sock = _open_lichess_socket();
     if (!$sock) {
-      log_warn("Unable to open TLS socket: " . IO::Socket::SSL::errstr());
+      my $err = $last_tls_error || IO::Socket::SSL::errstr() || 'unknown';
+      log_warn("Unable to open TLS socket: $err");
       sleep 2;
       next;
     }
-    $sock->autoflush(1);
 
-    my $request = join('', 
-      "GET /api$path HTTP/1.1\r\n",
-      "Host: lichess.org\r\n",
-      "Authorization: Bearer $token\r\n",
-      "Accept: application/x-ndjson\r\n",
-      "User-Agent: $user_agent\r\n",
-      "Connection: keep-alive\r\n",
-      "\r\n"
+    my %headers = (
+      'Host'          => 'lichess.org',
+      'Authorization' => "Bearer $token",
+      'Accept'        => 'application/x-ndjson',
+      'User-Agent'    => $user_agent,
+      'Connection'    => 'keep-alive',
     );
-    print {$sock} $request;
+    _write_http_request($sock, 'GET', "/api$path", \%headers, '');
 
     my $headers = _read_http_headers($sock);
     if (!$headers->{status} || $headers->{status} !~ /^2/) {

@@ -4,14 +4,12 @@ use strict;
 use warnings;
 
 use utf8;
+use parent qw(Exporter);
 
 our @EXPORT = qw( OOB EMPTY
     PAWN KNIGHT BISHOP ROOK QUEEN KING
     OPP_PAWN OPP_KNIGHT OPP_BISHOP OPP_ROOK OPP_QUEEN OPP_KING
     CASTLE_KING CASTLE_QUEEN %p2f %p2l %l2p );
-
-use Exporter;
-our @ISA = qw(Exporter);
 
 # type of piece (any color)
 use constant {

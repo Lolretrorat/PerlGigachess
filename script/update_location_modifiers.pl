@@ -23,7 +23,9 @@ my $input = shift @ARGV
 my $json_text = do {
   open my $fh, '<', $input or die "Cannot read $input: $!";
   local $/;
-  <$fh>;
+  my $raw = <$fh>;
+  close $fh or die "Error reading $input: $!";
+  $raw;
 };
 
 my $tables = decode_json($json_text);

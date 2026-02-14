@@ -24,6 +24,34 @@ commands needed to activate the environments later.
 If `cpanm` is missing, install `App::cpanminus` (e.g., `cpan App::cpanminus`)
 before running the helper.
 
+## Iteration Wrapper
+
+Use one command to bootstrap a new bot iteration:
+
+```bash
+script/initialize_iteration.sh
+```
+
+By default this runs:
+- `script/setup_env.sh`
+- `script/lichess_dry_run.pl`
+
+Optional heavier steps can be enabled:
+
+```bash
+script/initialize_iteration.sh \
+  --with-syzygy-tools \
+  --lichess-url https://database.lichess.org/standard/lichess_db_standard_rated_2025-01.pgn.zst \
+  --confirm-lichess-source lichess_db_standard_rated_2025-01.pgn.zst
+```
+
+Wrapper utilities:
+- `script/initialize_iteration.sh list` to list scripts in `script/`
+- `script/initialize_iteration.sh run <script_name> [args...]` to run any script via one entrypoint
+
+When `--lichess-url` is used, the wrapper requires `--confirm-lichess-source`
+and runs rebuild in append mode with source-manifest dedupe.
+
 ## Running the Lichess bridge
 
 1. [Create a Lichess bot account](https://lichess.org/account/oauth/bot) and
@@ -55,11 +83,72 @@ game, and posts moves back to Lichess.
   ```
 - Set `LICHESS_TOKEN` in `.env` or in the shell environment before launching.
   Do **not** hard-code it inside the script.
+- `CHESS_SYZYGY_ENABLED` — enable local Syzygy probing in endgames (default `1`).
+- `CHESS_SYZYGY_PATH` — one or more local Syzygy directories (colon-separated on
+  Linux/macOS, semicolon-separated on Windows).
+- `CHESS_SYZYGY_MAX_PIECES` — maximum piece count where Syzygy probes run
+  (default `7`).
+- `CHESS_SYZYGY_PROBETOOL` — optional path to `syzygy1/probetool` binary
+  (preferred when present).
+- `CHESS_SYZYGY_PYTHON` — python executable used for legacy fallback probing
+  (default `python3`).
+- `CHESS_SYZYGY_PROBE_SCRIPT` — optional override path for the Syzygy probe
+  helper (defaults to `script/probe_syzygy.pl`).
 
 The bridge talks to Lichess directly over TLS sockets, so as long as Perl can
 load `IO::Socket::SSL`, `Net::SSLeay`, and `Mozilla::CA` (installed under
 `.perl5` via `script/setup_env.sh`) no external binaries such as `curl` are
 required.
+
+## Local Openings
+
+`Chess::Book` is local-only and reads `data/opening_book.json`.
+
+To rebuild it from local PGN files:
+
+```bash
+perl script/build_opening_book.pl --max-plies 18 --max-games 200000 \
+  --output data/opening_book.json /path/to/games.pgn.zst
+```
+
+The builder also supports multiple input files (`.pgn` and `.pgn.zst`).
+
+For Lichess monthly dumps, you can process in `/tmp` and auto-delete the
+archive after rebuilding:
+
+```bash
+script/rebuild_from_lichess.sh \
+  --url https://database.lichess.org/standard/lichess_db_standard_rated_2025-01.pgn.zst
+```
+
+To append a month and exclude duplicate source ingests:
+
+```bash
+script/rebuild_from_lichess.sh \
+  --append \
+  --confirm-source lichess_db_standard_rated_2025-01.pgn.zst \
+  --url https://database.lichess.org/standard/lichess_db_standard_rated_2025-01.pgn.zst
+```
+
+In append mode, sources are tracked in `data/lichess_ingest_manifest.json`.
+If a source is already present, ingest is skipped unless
+`--allow-duplicate-source` is set.
+
+Book entries now include per-move outcome stats (`white`, `draw`, `black`)
+alongside `played`/`weight`, and the Perl selector ranks legal book moves by
+confidence + result quality (with deterministic top choice by default).
+
+## Local Tablebases
+
+Endgame probing is local-first via Syzygy files on disk.
+
+```bash
+export CHESS_SYZYGY_PATH=/chess/syzygy/3-4-5:/chess/syzygy/6-7
+perl play.pl --uci
+```
+
+If Syzygy files are unavailable or a position is outside the piece limit, the
+engine falls back to `data/endgame_table.json` and then normal search.
 
 ### Debugging Tips
 
@@ -78,7 +167,22 @@ engine code. Stream PGN text into the helper:
 zstdcat lichess_db_standard_rated_2024-01.pgn.zst | ./init train-location --games 5000
 ```
 
-The command updates `jsons/location_modifiers.json`, which the module loads at
+The command updates `data/location_modifiers.json`, which the module loads at
 startup. To validate and install JSON exported from other tooling, run
 `perl script/update_location_modifiers.pl path/to/tables.json`. The pipeline and
 feature format are described in `docs/location-modifier-ml.md`.
+
+To train from a fresh Lichess dump without keeping large files in the repo,
+reuse `script/rebuild_from_lichess.sh` and tune `--location-games`.
+
+## Syzygy Tooling
+
+To use upstream C Syzygy probing, bootstrap tools into `/tmp`:
+
+```bash
+script/setup_syzygy_tools.sh
+export CHESS_SYZYGY_PROBETOOL=/tmp/perlgigachess-syzygy/probetool/regular/probetool
+```
+
+The helper clones both `syzygy1/tb` and `syzygy1/probetool`, builds
+`probetool`, and leaves everything outside the repo tree.

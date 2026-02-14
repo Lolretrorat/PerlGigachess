@@ -13,7 +13,6 @@ use Time::HiRes qw/ clock /;
 use FindBin qw( $RealBin );
 use lib $RealBin;
 
-use Chess::Constant;
 use Chess::State;
 
 # Some sample perft tests

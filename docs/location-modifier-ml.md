@@ -4,9 +4,27 @@
 Turn raw classical game data into empirically grounded piece-square tables used by `Chess::LocationModifer`. The target artifact is a hash that mirrors `%location_modifiers`, populated with centipawn offsets learned from millions of positions. The workflow below keeps the Perl engine untouched while experiments iterate quickly in Python.
 
 ## Data Requirements
-- Source PGN: monthly Lichess or CCRL dumps provide billions of moves. Start with a 5–10M game sample filtered to classical/rapid controls so middlegame patterns dominate.
+- Source PGN: use Lichess standard monthly dumps from https://database.lichess.org/#standard_games. Start with a 5–10M game sample filtered to classical/rapid controls so middlegame patterns dominate.
 - Metadata: result (`1-0`, `0-1`, `1/2-1/2`), player ratings, and termination reason.
-- Storage: expect ≈40 GB compressed PGN. Process in streaming fashion to avoid holding full sets in memory.
+- Storage: expect ≈40 GB compressed PGN. Prefer ephemeral `/tmp` processing and delete archives after rebuilds.
+
+Example one-shot rebuild (opening book + location modifiers, auto-cleanup):
+
+```bash
+script/rebuild_from_lichess.sh \
+  --url https://database.lichess.org/standard/lichess_db_standard_rated_2025-01.pgn.zst
+```
+
+Incremental month append with source confirmation + duplicate-source protection:
+
+```bash
+script/rebuild_from_lichess.sh \
+  --append \
+  --confirm-source lichess_db_standard_rated_2025-02.pgn.zst \
+  --url https://database.lichess.org/standard/lichess_db_standard_rated_2025-02.pgn.zst
+```
+
+Append mode records ingested sources in `data/lichess_ingest_manifest.json`.
 
 ## Feature Pipeline
 1. Parse PGNs with `python-chess` via `analysis/game_feature_extract.py`:
@@ -38,6 +56,6 @@ Turn raw classical game data into empirically grounded piece-square tables used 
 
 ## Integration Plan
 1. Export the coefficient table to JSON matching `%location_modifiers` (piece => square => score).
-2. Run `perl script/update_location_modifiers.pl jsons/location_modifiers.json` to validate the structure and install it under `jsons/location_modifiers.json` (or `--output` for custom paths) so `Chess::LocationModifer` picks it up on load.
+2. Run `perl script/update_location_modifiers.pl data/location_modifiers.json` to validate the structure and install it under `data/location_modifiers.json` (or `--output` for custom paths) so `Chess::LocationModifer` picks it up on load.
 3. Gate updates through CI: run `perl perft.pl 4` plus a 100-game self-play suite comparing the old and new tables.
 4. Document the workflow in `AGENTS.md` and keep the training notebook under `analysis/` for reproducibility.

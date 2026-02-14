@@ -56,7 +56,7 @@ sub run_interactive {
     }
 
     my $move;
-    if (! $state->[1]) {
+    if (! $state->[Chess::State::TURN]) {
       print "> ";
       my $input = <STDIN>;
       last unless defined $input;
@@ -94,6 +94,8 @@ sub run_interactive {
 sub run_uci {
   my ($state, $depth) = @_;
   my $debug = 0;
+  my $move_overhead_ms = 100;
+  my $own_book = 1;
   my %history;
   _record_position($state, \%history);
 
@@ -104,7 +106,8 @@ sub run_uci {
       print "id name PerlGigachess\n";
       print "id author Greg Kennedy\n";
       print "option name Depth type spin default $depth min 1 max 20\n";
-      print "option name OwnBook type check default false\n";
+      print "option name MoveOverhead type spin default $move_overhead_ms min 0 max 1000\n";
+      print "option name OwnBook type check default true\n";
       print "uciok\n";
     } elsif ($input =~ m/^debug (on|off)$/) {
       $debug = ($1 eq 'on') ? 1 : 0;
@@ -115,6 +118,17 @@ sub run_uci {
       if ($name eq 'depth') {
         my $new_depth = $value =~ /(\d+)/ ? $1 : $depth;
         $depth = _normalize_depth($new_depth);
+      } elsif ($name eq 'moveoverhead') {
+        my $new_overhead = $value =~ /(-?\d+)/ ? $1 : $move_overhead_ms;
+        $new_overhead = int($new_overhead);
+        $new_overhead = 0 if $new_overhead < 0;
+        $new_overhead = 1000 if $new_overhead > 1000;
+        $move_overhead_ms = $new_overhead;
+      } elsif ($name eq 'ownbook') {
+        my $normalized = lc $value;
+        $normalized =~ s/^\s+//;
+        $normalized =~ s/\s+$//;
+        $own_book = ($normalized eq 'true' || $normalized eq '1') ? 1 : 0;
       }
     } elsif ($input eq 'isready') {
       print "readyok\n";
@@ -138,11 +152,21 @@ sub run_uci {
       _record_position($state, \%history);
 
       foreach my $temp (split / /, $moves) {
-        my $encoded = $state->encode_move($temp);
-        $state = $state->make_move($encoded);
+        my $encoded = eval { $state->encode_move($temp) };
+        if (! $encoded || $@) {
+          print "info string ignored invalid move token '$temp' in position command\n";
+          last;
+        }
+        my $next_state = eval { $state->make_move($encoded) };
+        if (! defined $next_state || $@) {
+          print "info string ignored illegal move token '$temp' in position command\n";
+          last;
+        }
+        $state = $next_state;
         _record_position($state, \%history);
       }
     } elsif ($input =~ m/^go/) {
+      my %go = _parse_go_command($input);
       my $status = _current_draw_status($state, \%history);
       if ($status->{force}) {
         print "info string Forced draw: $status->{force}\n";
@@ -151,8 +175,35 @@ sub run_uci {
       } elsif ($status->{claim}) {
         print "info string Draw available: $status->{claim}\n";
       }
-      my $engine = Chess::Engine->new(\$state, $depth);
-      my $move = $engine->think();
+      my $go_depth = defined $go{depth} ? _normalize_depth($go{depth}) : $depth;
+      my $engine = Chess::Engine->new(\$state, $go_depth);
+      my %time_args = (move_overhead_ms => $move_overhead_ms);
+      if (defined $go{movetime}) {
+        $time_args{movetime_ms} = $go{movetime};
+      } else {
+        my $remaining_ms = $state->[Chess::State::TURN] ? $go{btime} : $go{wtime};
+        my $increment_ms = $state->[Chess::State::TURN] ? $go{binc} : $go{winc};
+        $time_args{remaining_ms} = $remaining_ms if defined $remaining_ms;
+        $time_args{increment_ms} = $increment_ms if defined $increment_ms;
+        $time_args{movestogo} = $go{movestogo} if defined $go{movestogo};
+      }
+      $time_args{use_book} = $own_book;
+      my ($move, $score, $searched_depth) = $engine->think(sub {
+        my ($cur_depth, $cur_score, $candidate_move) = @_;
+        return unless defined $candidate_move;
+        my $candidate_uci = eval { $state->decode_move($candidate_move) };
+        $candidate_uci = '0000' unless defined $candidate_uci && length $candidate_uci;
+        my $cp = int($cur_score // 0);
+        print "info depth $cur_depth score cp $cp pv $candidate_uci\n";
+        print "info string Thinking... depth $cur_depth candidate $candidate_uci eval $cp\n";
+      }, \%time_args);
+      if (!defined $move) {
+        print "bestmove 0000\n";
+        next;
+      }
+      if (defined $score && defined $searched_depth) {
+        print "info depth $searched_depth score cp " . int($score) . "\n";
+      }
       print "bestmove " . $state->decode_move($move) . "\n";
     } elsif ($input eq 'quit') {
       exit 0;
@@ -221,4 +272,30 @@ sub _normalize_depth {
   $value = 1 if $value < 1;
   $value = 20 if $value > 20;
   return $value;
+}
+
+sub _parse_go_command {
+  my ($input) = @_;
+  my %go;
+  my @tokens = split /\s+/, $input;
+  shift @tokens; # consume 'go'
+
+  while (@tokens) {
+    my $token = shift @tokens;
+    if ($token eq 'wtime' || $token eq 'btime' || $token eq 'winc' || $token eq 'binc'
+        || $token eq 'movestogo' || $token eq 'movetime' || $token eq 'depth') {
+      last unless @tokens;
+      my $value = shift @tokens;
+      next unless defined $value && $value =~ /^-?\d+$/;
+      $go{$token} = int($value);
+    } elsif ($token eq 'ponder') {
+      $go{ponder} = 1;
+    } elsif ($token eq 'infinite') {
+      $go{infinite} = 1;
+    } elsif ($token eq 'searchmoves') {
+      last;
+    }
+  }
+
+  return %go;
 }

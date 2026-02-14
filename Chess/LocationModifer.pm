@@ -9,134 +9,26 @@ use File::Path qw(make_path);
 use File::Spec;
 use JSON::PP;
 use List::Util qw(sum);
+use parent qw(Exporter);
 
 use Chess::Constant;
 use Chess::State;
 
-require Exporter;
-our @ISA = qw(Exporter);
+sub _empty_square_table {
+    my %table;
+    for my $file (qw(a b c d e f g h)) {
+        for my $rank (1 .. 8) {
+            $table{"$file$rank"} = 0;
+        }
+    }
+    return \%table;
+}
 
-our %location_modifiers = (
-    KING => {
-        a1 => 0, a2 => 0, a3 => 0, a4 => 0, a5 => 0, a6 => 0, a7 => 0, a8 => 0,
-        b1 => 0, b2 => 0, b3 => 0, b4 => 0, b5 => 0, b6 => 0, b7 => 0, b8 => 0,
-        c1 => 0, c2 => 0, c3 => 0, c4 => 0, c5 => 0, c6 => 0, c7 => 0, c8 => 0,
-        d1 => 0, d2 => 0, d3 => 0, d4 => 0, d5 => 0, d6 => 0, d7 => 0, d8 => 0,
-        e1 => 0, e2 => 0, e3 => 0, e4 => 0, e5 => 0, e6 => 0, e7 => 0, e8 => 0,
-        f1 => 0, f2 => 0, f3 => 0, f4 => 0, f5 => 0, f6 => 0, f7 => 0, f8 => 0,
-        g1 => 0, g2 => 0, g3 => 0, g4 => 0, g5 => 0, g6 => 0, g7 => 0, g8 => 0,
-        h1 => 0, h2 => 0, h3 => 0, h4 => 0, h5 => 0, h6 => 0, h7 => 0, h8 => 0,
-    },
-    QUEEN => {
-        a1 => 0, a2 => 0, a3 => 0, a4 => 0, a5 => 0, a6 => 0, a7 => 0, a8 => 0,
-        b1 => 0, b2 => 0, b3 => 0, b4 => 0, b5 => 0, b6 => 0, b7 => 0, b8 => 0,
-        c1 => 0, c2 => 0, c3 => 0, c4 => 0, c5 => 0, c6 => 0, c7 => 0, c8 => 0,
-        d1 => 0, d2 => 0, d3 => 0, d4 => 0, d5 => 0, d6 => 0, d7 => 0, d8 => 0,
-        e1 => 0, e2 => 0, e3 => 0, e4 => 0, e5 => 0, e6 => 0, e7 => 0, e8 => 0,
-        f1 => 0, f2 => 0, f3 => 0, f4 => 0, f5 => 0, f6 => 0, f7 => 0, f8 => 0,
-        g1 => 0, g2 => 0, g3 => 0, g4 => 0, g5 => 0, g6 => 0, g7 => 0, g8 => 0,
-        h1 => 0, h2 => 0, h3 => 0, h4 => 0, h5 => 0, h6 => 0, h7 => 0, h8 => 0,
-    },
-    ROOK => {
-        a1 => 0, a2 => 0, a3 => 0, a4 => 0, a5 => 0, a6 => 0, a7 => 0, a8 => 0,
-        b1 => 0, b2 => 0, b3 => 0, b4 => 0, b5 => 0, b6 => 0, b7 => 0, b8 => 0,
-        c1 => 0, c2 => 0, c3 => 0, c4 => 0, c5 => 0, c6 => 0, c7 => 0, c8 => 0,
-        d1 => 0, d2 => 0, d3 => 0, d4 => 0, d5 => 0, d6 => 0, d7 => 0, d8 => 0,
-        e1 => 0, e2 => 0, e3 => 0, e4 => 0, e5 => 0, e6 => 0, e7 => 0, e8 => 0,
-        f1 => 0, f2 => 0, f3 => 0, f4 => 0, f5 => 0, f6 => 0, f7 => 0, f8 => 0,
-        g1 => 0, g2 => 0, g3 => 0, g4 => 0, g5 => 0, g6 => 0, g7 => 0, g8 => 0,
-        h1 => 0, h2 => 0, h3 => 0, h4 => 0, h5 => 0, h6 => 0, h7 => 0, h8 => 0,
-    },
-    BISHOP => {
-        a1 => 0, a2 => 0, a3 => 0, a4 => 0, a5 => 0, a6 => 0, a7 => 0, a8 => 0,
-        b1 => 0, b2 => 0, b3 => 0, b4 => 0, b5 => 0, b6 => 0, b7 => 0, b8 => 0,
-        c1 => 0, c2 => 0, c3 => 0, c4 => 0, c5 => 0, c6 => 0, c7 => 0, c8 => 0,
-        d1 => 0, d2 => 0, d3 => 0, d4 => 0, d5 => 0, d6 => 0, d7 => 0, d8 => 0,
-        e1 => 0, e2 => 0, e3 => 0, e4 => 0, e5 => 0, e6 => 0, e7 => 0, e8 => 0,
-        f1 => 0, f2 => 0, f3 => 0, f4 => 0, f5 => 0, f6 => 0, f7 => 0, f8 => 0,
-        g1 => 0, g2 => 0, g3 => 0, g4 => 0, g5 => 0, g6 => 0, g7 => 0, g8 => 0,
-        h1 => 0, h2 => 0, h3 => 0, h4 => 0, h5 => 0, h6 => 0, h7 => 0, h8 => 0,
-    },
-    KNIGHT => {
-        a1 => 0, a2 => 0, a3 => 0, a4 => 0, a5 => 0, a6 => 0, a7 => 0, a8 => 0,
-        b1 => 0, b2 => 0, b3 => 0, b4 => 0, b5 => 0, b6 => 0, b7 => 0, b8 => 0,
-        c1 => 0, c2 => 0, c3 => 0, c4 => 0, c5 => 0, c6 => 0, c7 => 0, c8 => 0,
-        d1 => 0, d2 => 0, d3 => 0, d4 => 0, d5 => 0, d6 => 0, d7 => 0, d8 => 0,
-        e1 => 0, e2 => 0, e3 => 0, e4 => 0, e5 => 0, e6 => 0, e7 => 0, e8 => 0,
-        f1 => 0, f2 => 0, f3 => 0, f4 => 0, f5 => 0, f6 => 0, f7 => 0, f8 => 0,
-        g1 => 0, g2 => 0, g3 => 0, g4 => 0, g5 => 0, g6 => 0, g7 => 0, g8 => 0,
-        h1 => 0, h2 => 0, h3 => 0, h4 => 0, h5 => 0, h6 => 0, h7 => 0, h8 => 0,
-    },
-    PAWN => {
-        a1 => 0, a2 => 0, a3 => 0, a4 => 0, a5 => 0, a6 => 0, a7 => 0, a8 => 0,
-        b1 => 0, b2 => 0, b3 => 0, b4 => 0, b5 => 0, b6 => 0, b7 => 0, b8 => 0,
-        c1 => 0, c2 => 0, c3 => 0, c4 => 0, c5 => 0, c6 => 0, c7 => 0, c8 => 0,
-        d1 => 0, d2 => 0, d3 => 0, d4 => 0, d5 => 0, d6 => 0, d7 => 0, d8 => 0,
-        e1 => 0, e2 => 0, e3 => 0, e4 => 0, e5 => 0, e6 => 0, e7 => 0, e8 => 0,
-        f1 => 0, f2 => 0, f3 => 0, f4 => 0, f5 => 0, f6 => 0, f7 => 0, f8 => 0,
-        g1 => 0, g2 => 0, g3 => 0, g4 => 0, g5 => 0, g6 => 0, g7 => 0, g8 => 0,
-        h1 => 0, h2 => 0, h3 => 0, h4 => 0, h5 => 0, h6 => 0, h7 => 0, h8 => 0,
-    },
-    OPP_KING => {
-        a1 => 0, a2 => 0, a3 => 0, a4 => 0, a5 => 0, a6 => 0, a7 => 0, a8 => 0,
-        b1 => 0, b2 => 0, b3 => 0, b4 => 0, b5 => 0, b6 => 0, b7 => 0, b8 => 0,
-        c1 => 0, c2 => 0, c3 => 0, c4 => 0, c5 => 0, c6 => 0, c7 => 0, c8 => 0,
-        d1 => 0, d2 => 0, d3 => 0, d4 => 0, d5 => 0, d6 => 0, d7 => 0, d8 => 0,
-        e1 => 0, e2 => 0, e3 => 0, e4 => 0, e5 => 0, e6 => 0, e7 => 0, e8 => 0,
-        f1 => 0, f2 => 0, f3 => 0, f4 => 0, f5 => 0, f6 => 0, f7 => 0, f8 => 0,
-        g1 => 0, g2 => 0, g3 => 0, g4 => 0, g5 => 0, g6 => 0, g7 => 0, g8 => 0,
-        h1 => 0, h2 => 0, h3 => 0, h4 => 0, h5 => 0, h6 => 0, h7 => 0, h8 => 0,
-    },
-    OPP_QUEEN => {
-        a1 => 0, a2 => 0, a3 => 0, a4 => 0, a5 => 0, a6 => 0, a7 => 0, a8 => 0,
-        b1 => 0, b2 => 0, b3 => 0, b4 => 0, b5 => 0, b6 => 0, b7 => 0, b8 => 0,
-        c1 => 0, c2 => 0, c3 => 0, c4 => 0, c5 => 0, c6 => 0, c7 => 0, c8 => 0,
-        d1 => 0, d2 => 0, d3 => 0, d4 => 0, d5 => 0, d6 => 0, d7 => 0, d8 => 0,
-        e1 => 0, e2 => 0, e3 => 0, e4 => 0, e5 => 0, e6 => 0, e7 => 0, e8 => 0,
-        f1 => 0, f2 => 0, f3 => 0, f4 => 0, f5 => 0, f6 => 0, f7 => 0, f8 => 0,
-        g1 => 0, g2 => 0, g3 => 0, g4 => 0, g5 => 0, g6 => 0, g7 => 0, g8 => 0,
-        h1 => 0, h2 => 0, h3 => 0, h4 => 0, h5 => 0, h6 => 0, h7 => 0, h8 => 0,
-    },
-    OPP_ROOK => {
-        a1 => 0, a2 => 0, a3 => 0, a4 => 0, a5 => 0, a6 => 0, a7 => 0, a8 => 0,
-        b1 => 0, b2 => 0, b3 => 0, b4 => 0, b5 => 0, b6 => 0, b7 => 0, b8 => 0,
-        c1 => 0, c2 => 0, c3 => 0, c4 => 0, c5 => 0, c6 => 0, c7 => 0, c8 => 0,
-        d1 => 0, d2 => 0, d3 => 0, d4 => 0, d5 => 0, d6 => 0, d7 => 0, d8 => 0,
-        e1 => 0, e2 => 0, e3 => 0, e4 => 0, e5 => 0, e6 => 0, e7 => 0, e8 => 0,
-        f1 => 0, f2 => 0, f3 => 0, f4 => 0, f5 => 0, f6 => 0, f7 => 0, f8 => 0,
-        g1 => 0, g2 => 0, g3 => 0, g4 => 0, g5 => 0, g6 => 0, g7 => 0, g8 => 0,
-        h1 => 0, h2 => 0, h3 => 0, h4 => 0, h5 => 0, h6 => 0, h7 => 0, h8 => 0,
-    },
-    OPP_BISHOP => {
-        a1 => 0, a2 => 0, a3 => 0, a4 => 0, a5 => 0, a6 => 0, a7 => 0, a8 => 0,
-        b1 => 0, b2 => 0, b3 => 0, b4 => 0, b5 => 0, b6 => 0, b7 => 0, b8 => 0,
-        c1 => 0, c2 => 0, c3 => 0, c4 => 0, c5 => 0, c6 => 0, c7 => 0, c8 => 0,
-        d1 => 0, d2 => 0, d3 => 0, d4 => 0, d5 => 0, d6 => 0, d7 => 0, d8 => 0,
-        e1 => 0, e2 => 0, e3 => 0, e4 => 0, e5 => 0, e6 => 0, e7 => 0, e8 => 0,
-        f1 => 0, f2 => 0, f3 => 0, f4 => 0, f5 => 0, f6 => 0, f7 => 0, f8 => 0,
-        g1 => 0, g2 => 0, g3 => 0, g4 => 0, g5 => 0, g6 => 0, g7 => 0, g8 => 0,
-        h1 => 0, h2 => 0, h3 => 0, h4 => 0, h5 => 0, h6 => 0, h7 => 0, h8 => 0,
-    },
-    OPP_KNIGHT => {
-        a1 => 0, a2 => 0, a3 => 0, a4 => 0, a5 => 0, a6 => 0, a7 => 0, a8 => 0,
-        b1 => 0, b2 => 0, b3 => 0, b4 => 0, b5 => 0, b6 => 0, b7 => 0, b8 => 0,
-        c1 => 0, c2 => 0, c3 => 0, c4 => 0, c5 => 0, c6 => 0, c7 => 0, c8 => 0,
-        d1 => 0, d2 => 0, d3 => 0, d4 => 0, d5 => 0, d6 => 0, d7 => 0, d8 => 0,
-        e1 => 0, e2 => 0, e3 => 0, e4 => 0, e5 => 0, e6 => 0, e7 => 0, e8 => 0,
-        f1 => 0, f2 => 0, f3 => 0, f4 => 0, f5 => 0, f6 => 0, f7 => 0, f8 => 0,
-        g1 => 0, g2 => 0, g3 => 0, g4 => 0, g5 => 0, g6 => 0, g7 => 0, g8 => 0,
-        h1 => 0, h2 => 0, h3 => 0, h4 => 0, h5 => 0, h6 => 0, h7 => 0, h8 => 0,
-    },
-    OPP_PAWN => {
-        a1 => 0, a2 => 0, a3 => 0, a4 => 0, a5 => 0, a6 => 0, a7 => 0, a8 => 0,
-        b1 => 0, b2 => 0, b3 => 0, b4 => 0, b5 => 0, b6 => 0, b7 => 0, b8 => 0,
-        c1 => 0, c2 => 0, c3 => 0, c4 => 0, c5 => 0, c6 => 0, c7 => 0, c8 => 0,
-        d1 => 0, d2 => 0, d3 => 0, d4 => 0, d5 => 0, d6 => 0, d7 => 0, d8 => 0,
-        e1 => 0, e2 => 0, e3 => 0, e4 => 0, e5 => 0, e6 => 0, e7 => 0, e8 => 0,
-        f1 => 0, f2 => 0, f3 => 0, f4 => 0, f5 => 0, f6 => 0, f7 => 0, f8 => 0,
-        g1 => 0, g2 => 0, g3 => 0, g4 => 0, g5 => 0, g6 => 0, g7 => 0, g8 => 0,
-        h1 => 0, h2 => 0, h3 => 0, h4 => 0, h5 => 0, h6 => 0, h7 => 0, h8 => 0,
-    },
+our %location_modifiers = map {
+    $_ => _empty_square_table()
+} qw(
+    KING QUEEN ROOK BISHOP KNIGHT PAWN
+    OPP_KING OPP_QUEEN OPP_ROOK OPP_BISHOP OPP_KNIGHT OPP_PAWN
 );
 
 our @EXPORT_OK = qw(%location_modifiers load_from_file save_to_file train_from_stream default_store_path);
@@ -238,6 +130,7 @@ sub train_from_stream {
 
     my $max_games = $opts{max_games};
     my $scale = $opts{scale} // 60;
+    my $accumulate = exists $opts{accumulate} ? ($opts{accumulate} ? 1 : 0) : 0;
     my ($processed, $skipped_games, $skipped_moves) = (0, 0, 0);
     my @buffer;
 
@@ -258,7 +151,7 @@ sub train_from_stream {
         $ok ? $processed++ : $skipped_games++;
     }
 
-    _apply_counts(\%counts, $scale);
+    _apply_counts(\%counts, $scale, $accumulate);
     _sync_opponent_modifiers();
 
     return {
@@ -328,6 +221,12 @@ sub _process_game_lines {
             next;
         }
 
+        my $next_state = $state->make_move($move);
+        if (!$next_state) {
+            ${$skipped_moves_ref}++;
+            next;
+        }
+
         my $uci = $state->decode_move($move);
         my $to_square = substr($uci, 2, 2);
         my $board = $state->[Chess::State::BOARD];
@@ -340,12 +239,7 @@ sub _process_game_lines {
             ${$skipped_moves_ref}++;
         }
 
-        my $next_state = $state->make_move($move);
-        if ($next_state) {
-            $state = $next_state;
-        } else {
-            ${$skipped_moves_ref}++;
-        }
+        $state = $next_state;
     }
 
     return 1;
@@ -447,8 +341,9 @@ sub _find_castle_move {
 }
 
 sub _apply_counts {
-    my ($counts, $scale) = @_;
+    my ($counts, $scale, $accumulate) = @_;
     my $square_total = scalar @ALL_SQUARES || 64;
+    $accumulate = $accumulate ? 1 : 0;
 
     for my $piece (@TRAINABLE_PIECES) {
         my $square_counts = $counts->{$piece} || next;
@@ -458,7 +353,12 @@ sub _apply_counts {
             my $hits = $square_counts->{$square} || 1;
             my $ratio = $hits / ($mean || 1);
             my $score = int(log($ratio) * $scale);
-            $location_modifiers{$piece}{$square} = $score;
+            if ($accumulate) {
+                my $existing = $location_modifiers{$piece}{$square} // 0;
+                $location_modifiers{$piece}{$square} = int($existing + $score);
+            } else {
+                $location_modifiers{$piece}{$square} = $score;
+            }
         }
     }
 }

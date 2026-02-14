@@ -7,9 +7,25 @@ use Chess::State ();
 use File::Basename qw(dirname);
 use File::Spec;
 use JSON::PP;
+use Chess::TableUtil qw(
+  canonical_fen_key
+  relaxed_fen_key
+  normalize_uci_move
+  merge_weighted_moves
+);
 
 my %table;
 my %relaxed_table;
+my %syzygy_cache;
+my %syzygy_failure_backoff_until;
+
+my %syzygy_wdl_rank = (
+  2  => 5_000_000,  # win
+  1  => 4_000_000,  # cursed win
+  0  => 3_000_000,  # draw
+  -1 => 2_000_000,  # blessed loss
+  -2 => 1_000_000,  # loss
+);
 
 sub _table_path {
   my $module_dir = dirname(__FILE__);
@@ -27,7 +43,9 @@ sub _load_tables {
   my $json_text = do {
     open my $fh, '<', $path or return;
     local $/;
-    <$fh>;
+    my $raw = <$fh>;
+    close $fh;
+    $raw;
   };
 
   my $data = eval { JSON::PP->new->relaxed->decode($json_text) };
@@ -36,12 +54,12 @@ sub _load_tables {
   foreach my $entry (@$data) {
     next unless ref $entry eq 'HASH';
     my $key = $entry->{key} || next;
-    my $relaxed = _relaxed_key_from_canonical($key);
+    my $relaxed = relaxed_fen_key($key);
     my $moves = $entry->{moves} || [];
     my %by_uci;
     foreach my $move (@$moves) {
       if (ref $move eq 'HASH') {
-        my $uci = _normalize_uci($move->{uci});
+        my $uci = normalize_uci_move($move->{uci});
         next unless defined $uci;
         my $weight = $move->{weight};
         $weight = 1 unless defined $weight && $weight =~ /-?\d+(?:\.\d+)?/;
@@ -59,7 +77,7 @@ sub _load_tables {
           $by_uci{$uci} = { uci => $uci, weight => $weight, rank => $rank };
         }
       } elsif (! ref $move) {
-        my $uci = _normalize_uci($move);
+        my $uci = normalize_uci_move($move);
         next unless defined $uci;
         if (exists $by_uci{$uci}) {
           $by_uci{$uci}{weight} += 1;
@@ -74,17 +92,23 @@ sub _load_tables {
       $b->{rank} <=> $a->{rank} || $b->{weight} <=> $a->{weight}
     } values %by_uci;
 
-    _merge_entries(\%table, $key, \@parsed);
-    _merge_entries(\%relaxed_table, $relaxed, \@parsed) if defined $relaxed;
+    merge_weighted_moves(\%table, $key, \@parsed, { with_rank => 1 });
+    merge_weighted_moves(\%relaxed_table, $relaxed, \@parsed, { with_rank => 1 }) if defined $relaxed;
   }
 }
 
 sub choose_move {
   my ($state) = @_;
-  my $key = _canonical_key($state);
+  my $syzygy_entries = tablebase_entries($state);
+  if ($syzygy_entries && @$syzygy_entries) {
+    my $syzygy_move = _choose_ranked_table_move($state, $syzygy_entries);
+    return $syzygy_move if $syzygy_move;
+  }
+
+  my $key = canonical_fen_key($state);
   my $entries = $table{$key};
   if (! $entries) {
-    my $relaxed = _relaxed_key_from_canonical($key);
+    my $relaxed = relaxed_fen_key($key);
     $entries = $relaxed_table{$relaxed} if defined $relaxed;
   }
 
@@ -98,65 +122,80 @@ sub choose_move {
   return;
 }
 
-sub _canonical_key {
+sub tablebase_entries {
   my ($state) = @_;
+  return unless _env_bool('CHESS_SYZYGY_ENABLED', 1);
+  return unless _piece_count($state) <= _env_int('CHESS_SYZYGY_MAX_PIECES', 7, 2, 16);
+
+  my @tb_paths = _syzygy_paths();
+  return unless @tb_paths;
+
+  my $key = canonical_fen_key($state);
+  return if _in_syzygy_failure_backoff($key);
+
+  my $ttl = _env_int('CHESS_SYZYGY_CACHE_TTL', 30 * 24 * 3600, 0);
+  if ($ttl > 0) {
+    my $entry = $syzygy_cache{$key};
+    if (ref $entry eq 'HASH') {
+      my $age = time() - ($entry->{ts} // 0);
+      if ($age <= $ttl && ref $entry->{data} eq 'ARRAY') {
+        return $entry->{data};
+      }
+    }
+  }
+
   my $fen = $state->get_fen;
-  my ($placement, $turn, $castle, $ep) = split / /, $fen;
-  return join(' ', $placement, $turn, $castle, $ep);
-}
-
-sub _relaxed_key_from_canonical {
-  my ($key) = @_;
-  return unless defined $key;
-  my ($placement, $turn) = split / /, $key;
-  return unless defined $placement && defined $turn;
-  return join(' ', $placement, $turn);
-}
-
-sub _merge_entries {
-  my ($target, $key, $entries) = @_;
-  return unless defined $key && ref $entries eq 'ARRAY' && @$entries;
-
-  my %merged = map {
-    $_->{uci} => {
-      uci => $_->{uci},
-      weight => ($_->{weight} // 0),
-      rank => ($_->{rank} // 0),
-    }
-  } @{ $target->{$key} || [] };
-
-  foreach my $entry (@$entries) {
-    next unless ref $entry eq 'HASH';
-    my $uci = $entry->{uci} // next;
-    if (exists $merged{$uci}) {
-      $merged{$uci}{weight} += ($entry->{weight} // 0);
-      my $rank = $entry->{rank} // 0;
-      $merged{$uci}{rank} = $rank if $rank > $merged{$uci}{rank};
-    } else {
-      $merged{$uci} = {
-        uci => $uci,
-        weight => ($entry->{weight} // 1),
-        rank => ($entry->{rank} // ($entry->{weight} // 1)),
-      };
-    }
+  my $payload = _probe_syzygy($fen, \@tb_paths);
+  if (! $payload || ref $payload ne 'HASH' || ref $payload->{moves} ne 'ARRAY') {
+    _mark_syzygy_failure($key);
+    return;
   }
 
-  my @sorted = sort {
+  my @entries;
+  foreach my $move (@{$payload->{moves}}) {
+    next unless ref $move eq 'HASH';
+    my $uci = normalize_uci_move($move->{uci});
+    next unless defined $uci;
+
+    my $wdl = _numeric_or($move->{wdl}, -3);
+    my $rank = $syzygy_wdl_rank{$wdl} // 0;
+    my $dtz = _maybe_numeric($move->{dtz});
+    my $dtm = _maybe_numeric($move->{dtm});
+
+    if (defined $dtz) {
+      my $clamped = $dtz > 400 ? 400 : $dtz;
+      if ($wdl > 0) {
+        $rank += (400 - $clamped) * 10;
+      } elsif ($wdl < 0) {
+        $rank += $clamped * 10;
+      } else {
+        $rank += (400 - $clamped);
+      }
+    }
+    if (defined $dtm) {
+      my $clamped = $dtm > 600 ? 600 : $dtm;
+      $rank += ($wdl > 0) ? (600 - $clamped) : $clamped;
+    }
+
+    my $weight = _numeric_or($move->{weight}, 1);
+    $weight = 1 if $weight < 1;
+
+    push @entries, {
+      uci    => $uci,
+      rank   => $rank,
+      weight => $weight,
+    };
+  }
+
+  @entries = sort {
     $b->{rank} <=> $a->{rank} || $b->{weight} <=> $a->{weight}
-  } values %merged;
-  $target->{$key} = \@sorted if @sorted;
-}
+  } @entries;
 
-sub _normalize_uci {
-  my ($uci) = @_;
-  return unless defined $uci;
-  $uci =~ s/\s+//g;
-  return unless length $uci;
-
-  if ($uci =~ /^([a-h][1-8])[x-]?([a-h][1-8])(?:=?([nbrqNBRQ]))?[+#]?$/) {
-    return lc($1 . $2 . ($3 // ''));
-  }
-  return;
+  $syzygy_cache{$key} = {
+    ts   => time(),
+    data => \@entries,
+  };
+  return \@entries;
 }
 
 sub _choose_ranked_table_move {
@@ -264,7 +303,7 @@ sub _legal_move_details {
     my $new_state = $state->make_move($move);
     next unless defined $new_state;
 
-    my $uci = _normalize_uci($state->decode_move($move));
+    my $uci = normalize_uci_move($state->decode_move($move));
     next unless defined $uci;
 
     my @opp_legal = grep {
@@ -285,6 +324,122 @@ sub _legal_move_details {
     };
   }
   return \%details;
+}
+
+sub _probe_syzygy {
+  my ($fen, $tb_paths) = @_;
+  my $script = _probe_script_path();
+  return unless -e $script;
+
+  my @cmd = ($script, '--fen', $fen);
+  foreach my $path (@$tb_paths) {
+    push @cmd, ('--tb-path', $path);
+  }
+
+  my $output = '';
+  my $ok = eval {
+    open my $fh, '-|', @cmd or die "spawn failed";
+    local $/;
+    $output = <$fh>;
+    close $fh or die "probe failed";
+    1;
+  };
+  return unless $ok;
+  return unless defined $output && length $output;
+
+  my $data = eval { JSON::PP->new->decode($output) };
+  return if $@;
+  return $data;
+}
+
+sub _probe_script_path {
+  if (defined $ENV{CHESS_SYZYGY_PROBE_SCRIPT} && length $ENV{CHESS_SYZYGY_PROBE_SCRIPT}) {
+    return $ENV{CHESS_SYZYGY_PROBE_SCRIPT};
+  }
+  my $module_dir = dirname(__FILE__);
+  my $root = File::Spec->catdir($module_dir, '..');
+  return File::Spec->catfile($root, 'script', 'probe_syzygy.pl');
+}
+
+sub _syzygy_paths {
+  my $raw = $ENV{CHESS_SYZYGY_PATH} // '';
+  return unless length $raw;
+
+  my $sep = ($^O eq 'MSWin32') ? ';' : ':';
+  my %seen;
+  my @paths = grep {
+    !$seen{$_}++
+  } grep {
+    defined $_ && length $_ && -d $_
+  } map {
+    my $path = $_;
+    $path =~ s/^\s+//;
+    $path =~ s/\s+$//;
+    $path;
+  } split /\Q$sep\E/, $raw;
+
+  return @paths;
+}
+
+sub _piece_count {
+  my ($state) = @_;
+  my $board = $state->[Chess::State::BOARD];
+  my $count = 0;
+
+  for my $rank (2 .. 9) {
+    my $base = $rank * 10;
+    for my $file (1 .. 8) {
+      my $piece = $board->[$base + $file] // 0;
+      my $abs_piece = abs($piece);
+      $count++ if $abs_piece >= PAWN && $abs_piece <= KING;
+    }
+  }
+
+  return $count;
+}
+
+sub _env_bool {
+  my ($name, $default) = @_;
+  return $default unless exists $ENV{$name};
+  my $value = lc($ENV{$name} // '');
+  return 1 if $value =~ /^(?:1|true|on|yes)$/;
+  return 0 if $value =~ /^(?:0|false|off|no)$/;
+  return $default ? 1 : 0;
+}
+
+sub _env_int {
+  my ($name, $default, $min, $max) = @_;
+  my $value = exists $ENV{$name} ? $ENV{$name} : $default;
+  $value = $default unless defined $value && $value =~ /^-?\d+$/;
+  $value = int($value);
+  $value = $min if defined $min && $value < $min;
+  $value = $max if defined $max && $value > $max;
+  return $value;
+}
+
+sub _numeric_or {
+  my ($value, $default) = @_;
+  return $default unless defined $value && $value =~ /^-?\d+(?:\.\d+)?$/;
+  return $value + 0;
+}
+
+sub _maybe_numeric {
+  my ($value) = @_;
+  return unless defined $value && $value =~ /^-?\d+(?:\.\d+)?$/;
+  my $num = abs($value + 0);
+  return $num;
+}
+
+sub _in_syzygy_failure_backoff {
+  my ($key) = @_;
+  my $until = $syzygy_failure_backoff_until{$key} // 0;
+  return $until > time();
+}
+
+sub _mark_syzygy_failure {
+  my ($key) = @_;
+  my $seconds = _env_int('CHESS_SYZYGY_FAILURE_BACKOFF_SECS', 120, 1, 3600);
+  $syzygy_failure_backoff_until{$key} = time() + $seconds;
 }
 
 _load_tables();
