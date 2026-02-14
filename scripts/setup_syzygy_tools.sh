@@ -9,7 +9,7 @@ PROBETOOL_REPO="${PROBETOOL_REPO:-https://github.com/syzygy1/probetool}"
 usage() {
   cat <<USAGE
 Usage:
-  script/setup_syzygy_tools.sh [target_dir]
+  scripts/setup_syzygy_tools.sh [target_dir]
 
 Defaults:
   target_dir: /tmp/perlgigachess-syzygy

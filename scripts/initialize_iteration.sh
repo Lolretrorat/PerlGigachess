@@ -2,24 +2,24 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-SCRIPT_DIR="$ROOT_DIR/script"
+SCRIPT_DIR="$ROOT_DIR/scripts"
 SELF_NAME="$(basename "$0")"
 
 usage() {
   cat <<'USAGE'
 Usage:
-  script/initialize_iteration.sh [init options]
-  script/initialize_iteration.sh list
-  script/initialize_iteration.sh run <script_name> [args...]
+  scripts/initialize_iteration.sh [init options]
+  scripts/initialize_iteration.sh list
+  scripts/initialize_iteration.sh run <script_name> [args...]
 
 Commands:
   init (default)  Run iteration bootstrap sequence.
-  list            List runnable scripts in script/.
-  run             Run a specific script from script/.
+  list            List runnable scripts in scripts/.
+  run             Run a specific script from scripts/.
 
 Init options:
-  --skip-env                  Skip environment setup (script/setup_env.sh)
-  --with-syzygy-tools         Also run script/setup_syzygy_tools.sh
+  --skip-env                  Skip environment setup (scripts/setup_env.sh)
+  --with-syzygy-tools         Also run scripts/setup_syzygy_tools.sh
   --syzygy-tools-dir <dir>    Target dir for syzygy setup (default: /tmp/perlgigachess-syzygy)
   --lichess-url <url>         Lichess .pgn.zst URL for rebuild_from_lichess.sh
   --confirm-lichess-source <source_id>
@@ -28,16 +28,16 @@ Init options:
   --tmp-dir <dir>             Temp dir passed to rebuild_from_lichess.sh (default: /tmp)
   --keep-download             Keep downloaded Lichess archive
   --skip-rebuild              Do not run rebuild_from_lichess.sh
-  --skip-dry-run              Skip script/lichess_dry_run.pl
+  --skip-dry-run              Skip scripts/lichess_dry_run.pl
   --location-json <path>      Import external location table via update_location_modifiers.pl
   --rebuild-opt <arg>         Extra arg for rebuild_from_lichess.sh (repeatable)
   -h, --help                  Show this message
 
 Examples:
-  script/initialize_iteration.sh
-  script/initialize_iteration.sh --with-syzygy-tools
-  script/initialize_iteration.sh --lichess-url https://database.lichess.org/standard/lichess_db_standard_rated_2025-01.pgn.zst --confirm-lichess-source lichess_db_standard_rated_2025-01.pgn.zst
-  script/initialize_iteration.sh run rebuild_from_lichess.sh --url https://database.lichess.org/standard/lichess_db_standard_rated_2025-01.pgn.zst
+  scripts/initialize_iteration.sh
+  scripts/initialize_iteration.sh --with-syzygy-tools
+  scripts/initialize_iteration.sh --lichess-url https://database.lichess.org/standard/lichess_db_standard_rated_2025-01.pgn.zst --confirm-lichess-source lichess_db_standard_rated_2025-01.pgn.zst
+  scripts/initialize_iteration.sh run rebuild_from_lichess.sh --url https://database.lichess.org/standard/lichess_db_standard_rated_2025-01.pgn.zst
 USAGE
 }
 
@@ -54,7 +54,7 @@ run_script() {
   local script_path="$SCRIPT_DIR/$script_name"
   if [[ ! -f "$script_path" ]]; then
     echo "Unknown script: $script_name" >&2
-    echo "Use 'script/$SELF_NAME list' to see available scripts." >&2
+    echo "Use 'scripts/$SELF_NAME list' to see available scripts." >&2
     exit 1
   fi
   if [[ "$script_name" == "$SELF_NAME" ]]; then
@@ -239,7 +239,7 @@ main() {
     run)
       local script_name="${1:-}"
       if [[ -z "$script_name" ]]; then
-        echo "Usage: script/$SELF_NAME run <script_name> [args...]" >&2
+        echo "Usage: scripts/$SELF_NAME run <script_name> [args...]" >&2
         exit 1
       fi
       shift

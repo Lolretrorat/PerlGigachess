@@ -47,7 +47,7 @@ sub _resolve_probetool_path {
     push @candidates, $ENV{CHESS_SYZYGY_PROBETOOL};
   }
   push @candidates,
-    'script/probetool',
+    'scripts/probetool',
     '/tmp/syzygy_probetool/regular/probetool';
 
   for my $path (@candidates) {

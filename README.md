@@ -13,12 +13,12 @@ Dependencies are isolated with a Python virtual environment and a local Perl
 lib. Run (sourcing applies the exports to your current shell):
 
 ```bash
-source script/setup_env.sh
+source scripts/setup_env.sh
 ```
 
 The helper installs Python packages from `requirements.txt` into `.venv` and
 Perl modules declared in `cpanfile` under `.perl5`. If you execute the script
-normally (`./script/setup_env.sh`), it still installs everything and prints the
+normally (`./scripts/setup_env.sh`), it still installs everything and prints the
 commands needed to activate the environments later.
 
 If `cpanm` is missing, install `App::cpanminus` (e.g., `cpan App::cpanminus`)
@@ -29,25 +29,25 @@ before running the helper.
 Use one command to bootstrap a new bot iteration:
 
 ```bash
-script/initialize_iteration.sh
+scripts/initialize_iteration.sh
 ```
 
 By default this runs:
-- `script/setup_env.sh`
-- `script/lichess_dry_run.pl`
+- `scripts/setup_env.sh`
+- `scripts/lichess_dry_run.pl`
 
 Optional heavier steps can be enabled:
 
 ```bash
-script/initialize_iteration.sh \
+scripts/initialize_iteration.sh \
   --with-syzygy-tools \
   --lichess-url https://database.lichess.org/standard/lichess_db_standard_rated_2025-01.pgn.zst \
   --confirm-lichess-source lichess_db_standard_rated_2025-01.pgn.zst
 ```
 
 Wrapper utilities:
-- `script/initialize_iteration.sh list` to list scripts in `script/`
-- `script/initialize_iteration.sh run <script_name> [args...]` to run any script via one entrypoint
+- `scripts/initialize_iteration.sh list` to list scripts in `scripts/`
+- `scripts/initialize_iteration.sh run <script_name> [args...]` to run any script via one entrypoint
 
 When `--lichess-url` is used, the wrapper requires `--confirm-lichess-source`
 and runs rebuild in append mode with source-manifest dedupe.
@@ -93,11 +93,11 @@ game, and posts moves back to Lichess.
 - `CHESS_SYZYGY_PYTHON` — python executable used for legacy fallback probing
   (default `python3`).
 - `CHESS_SYZYGY_PROBE_SCRIPT` — optional override path for the Syzygy probe
-  helper (defaults to `script/probe_syzygy.pl`).
+  helper (defaults to `scripts/probe_syzygy.pl`).
 
 The bridge talks to Lichess directly over TLS sockets, so as long as Perl can
 load `IO::Socket::SSL`, `Net::SSLeay`, and `Mozilla::CA` (installed under
-`.perl5` via `script/setup_env.sh`) no external binaries such as `curl` are
+`.perl5` via `scripts/setup_env.sh`) no external binaries such as `curl` are
 required.
 
 ## Local Openings
@@ -107,7 +107,7 @@ required.
 To rebuild it from local PGN files:
 
 ```bash
-perl script/build_opening_book.pl --max-plies 18 --max-games 200000 \
+perl scripts/build_opening_book.pl --max-plies 18 --max-games 200000 \
   --output data/opening_book.json /path/to/games.pgn.zst
 ```
 
@@ -117,14 +117,14 @@ For Lichess monthly dumps, you can process in `/tmp` and auto-delete the
 archive after rebuilding:
 
 ```bash
-script/rebuild_from_lichess.sh \
+scripts/rebuild_from_lichess.sh \
   --url https://database.lichess.org/standard/lichess_db_standard_rated_2025-01.pgn.zst
 ```
 
 To append a month and exclude duplicate source ingests:
 
 ```bash
-script/rebuild_from_lichess.sh \
+scripts/rebuild_from_lichess.sh \
   --append \
   --confirm-source lichess_db_standard_rated_2025-01.pgn.zst \
   --url https://database.lichess.org/standard/lichess_db_standard_rated_2025-01.pgn.zst
@@ -169,18 +169,18 @@ zstdcat lichess_db_standard_rated_2024-01.pgn.zst | ./init train-location --game
 
 The command updates `data/location_modifiers.json`, which the module loads at
 startup. To validate and install JSON exported from other tooling, run
-`perl script/update_location_modifiers.pl path/to/tables.json`. The pipeline and
+`perl scripts/update_location_modifiers.pl path/to/tables.json`. The pipeline and
 feature format are described in `docs/location-modifier-ml.md`.
 
 To train from a fresh Lichess dump without keeping large files in the repo,
-reuse `script/rebuild_from_lichess.sh` and tune `--location-games`.
+reuse `scripts/rebuild_from_lichess.sh` and tune `--location-games`.
 
 ## Syzygy Tooling
 
 To use upstream C Syzygy probing, bootstrap tools into `/tmp`:
 
 ```bash
-script/setup_syzygy_tools.sh
+scripts/setup_syzygy_tools.sh
 export CHESS_SYZYGY_PROBETOOL=/tmp/perlgigachess-syzygy/probetool/regular/probetool
 ```
 

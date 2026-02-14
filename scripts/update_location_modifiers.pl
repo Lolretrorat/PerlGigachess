@@ -15,10 +15,10 @@ use Chess::LocationModifer qw(default_store_path);
 
 my $output;
 GetOptions('output=s' => \$output)
-  or die "Usage: perl script/update_location_modifiers.pl [--output path] source.json\n";
+  or die "Usage: perl scripts/update_location_modifiers.pl [--output path] source.json\n";
 
 my $input = shift @ARGV
-  or die "Usage: perl script/update_location_modifiers.pl [--output path] source.json\n";
+  or die "Usage: perl scripts/update_location_modifiers.pl [--output path] source.json\n";
 
 my $json_text = do {
   open my $fh, '<', $input or die "Cannot read $input: $!";
@@ -31,8 +31,8 @@ my $json_text = do {
 my $tables = decode_json($json_text);
 
 my @pieces = qw(
-  KING QUEEN ROOK BISHOP KNIGHT PAWN
-  OPP_KING OPP_QUEEN OPP_ROOK OPP_BISHOP OPP_KNIGHT OPP_PAWN
+  KING QUEEN BISHOP KNIGHT ROOK PAWN
+  OPP_KING OPP_QUEEN OPP_BISHOP OPP_KNIGHT OPP_ROOK OPP_PAWN
 );
 my @files = qw(a b c d e f g h);
 my @ranks = (1 .. 8);

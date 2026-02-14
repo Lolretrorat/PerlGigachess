@@ -27,8 +27,8 @@ sub _empty_square_table {
 our %location_modifiers = map {
     $_ => _empty_square_table()
 } qw(
-    KING QUEEN ROOK BISHOP KNIGHT PAWN
-    OPP_KING OPP_QUEEN OPP_ROOK OPP_BISHOP OPP_KNIGHT OPP_PAWN
+    KING QUEEN BISHOP KNIGHT ROOK PAWN
+    OPP_KING OPP_QUEEN OPP_BISHOP OPP_KNIGHT OPP_ROOK OPP_PAWN
 );
 
 our @EXPORT_OK = qw(%location_modifiers load_from_file save_to_file train_from_stream default_store_path);
@@ -43,7 +43,7 @@ my @ALL_SQUARES = map {
     map { "$file$_" } @RANKS;
 } @FILES;
 
-my @TRAINABLE_PIECES = qw(KING QUEEN ROOK BISHOP KNIGHT PAWN);
+my @TRAINABLE_PIECES = qw(KING QUEEN BISHOP KNIGHT ROOK PAWN);
 
 my %PIECE_FROM_CHAR = (
     ''  => PAWN,

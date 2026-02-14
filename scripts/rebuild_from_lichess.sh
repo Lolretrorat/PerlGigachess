@@ -27,7 +27,7 @@ ALLOW_DUPLICATE_SOURCE=0
 usage() {
   cat <<USAGE
 Usage:
-  script/rebuild_from_lichess.sh --url <lichess .pgn.zst url> [options]
+  scripts/rebuild_from_lichess.sh --url <lichess .pgn.zst url> [options]
 
 Options:
   --tmp-dir <dir>                  Download directory (default: /tmp)
@@ -51,10 +51,10 @@ Options:
   --location-scale <n>             Scale passed to ./init train-location
 
 Examples:
-  script/rebuild_from_lichess.sh \
+  scripts/rebuild_from_lichess.sh \
     --url https://database.lichess.org/standard/lichess_db_standard_rated_2025-01.pgn.zst
 
-  script/rebuild_from_lichess.sh \
+  scripts/rebuild_from_lichess.sh \
     --append \
     --confirm-source lichess_db_standard_rated_2025-01.pgn.zst \
     --url https://database.lichess.org/standard/lichess_db_standard_rated_2025-01.pgn.zst
@@ -325,7 +325,7 @@ if [[ "$RUN_BOOK" -eq 1 ]]; then
   if [[ "$APPEND_MODE" -eq 1 ]]; then
     DELTA_BOOK_PATH="$(mktemp "$TMP_DIR/opening_book_delta_XXXXXX.json")"
     echo "==> Building monthly opening delta at $DELTA_BOOK_PATH"
-    perl "$ROOT_DIR/script/build_opening_book.pl" \
+    perl "$ROOT_DIR/scripts/build_opening_book.pl" \
       --output "$DELTA_BOOK_PATH" \
       --max-plies "$BOOK_MAX_PLIES" \
       --max-games "$BOOK_MAX_GAMES" \
@@ -334,13 +334,13 @@ if [[ "$RUN_BOOK" -eq 1 ]]; then
       "$ARCHIVE_PATH"
 
     echo "==> Merging opening delta into $BOOK_OUTPUT"
-    perl "$ROOT_DIR/script/merge_opening_book.pl" \
+    perl "$ROOT_DIR/scripts/merge_opening_book.pl" \
       --base "$BOOK_OUTPUT" \
       --delta "$DELTA_BOOK_PATH" \
       --output "$BOOK_OUTPUT"
   else
     echo "==> Rebuilding opening book at $BOOK_OUTPUT"
-    perl "$ROOT_DIR/script/build_opening_book.pl" \
+    perl "$ROOT_DIR/scripts/build_opening_book.pl" \
       --output "$BOOK_OUTPUT" \
       --max-plies "$BOOK_MAX_PLIES" \
       --max-games "$BOOK_MAX_GAMES" \

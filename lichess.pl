@@ -27,6 +27,7 @@ use Config;
 use IO::Socket::SSL qw(SSL_VERIFY_PEER);
 use Socket qw(AF_INET);
 use Time::HiRes qw(time);
+use Fcntl qw(:flock);
 use Chess::State;
 use Chess::Engine ();
 
@@ -58,6 +59,8 @@ my $ssl_ca_file = Mozilla::CA::SSL_ca_file();
 my $user_agent  = 'PerlGigachess/0.1';
 my $bot_id = $ENV{LICHESS_BOT_ID} // '';
 my $last_tls_error = '';
+my $game_url_log_path = $ENV{LICHESS_GAME_URL_LOG} // '/data/lichess_game_urls.log';
+my %logged_finished_games;
 
 unless (caller) {
   exit main();
@@ -263,10 +266,63 @@ sub handle_event {
   } elsif ($type eq 'gameStart') {
     start_game($event->{game});
   } elsif ($type eq 'gameFinish') {
-    log_info("Game $event->{game}->{id} finished");
+    my $game = (ref $event->{game} eq 'HASH') ? $event->{game} : $event;
+    my $game_id = (ref $game eq 'HASH' && defined $game->{id}) ? $game->{id} : 'unknown';
+    log_info("Game $game_id finished");
+    log_finished_game_url($game);
   } else {
     log_info("Unhandled event type '$type'");
   }
+}
+
+sub log_finished_game_url {
+  my ($game) = @_;
+  return unless ref $game eq 'HASH';
+
+  my $game_id = $game->{id} // '';
+  if (length $game_id && $logged_finished_games{$game_id}) {
+    log_debug("Skipping duplicate game URL log for $game_id");
+    return;
+  }
+
+  my $url = game_url_from_payload($game);
+  unless (defined $url && length $url) {
+    log_warn('Unable to determine URL for finished game');
+    return;
+  }
+
+  my $fh;
+  unless (open $fh, '>>', $game_url_log_path) {
+    log_warn("Unable to append game URL to $game_url_log_path: $!");
+    return;
+  }
+
+  flock($fh, LOCK_EX);
+  print {$fh} "$url\n";
+  close $fh;
+
+  $logged_finished_games{$game_id} = 1 if length $game_id;
+  log_info("Logged finished game URL: $url");
+}
+
+sub game_url_from_payload {
+  my ($game) = @_;
+  return unless ref $game eq 'HASH';
+
+  if (defined $game->{url} && length $game->{url}) {
+    return normalize_lichess_url($game->{url});
+  }
+
+  return unless defined $game->{id} && length $game->{id};
+  return "https://lichess.org/$game->{id}";
+}
+
+sub normalize_lichess_url {
+  my ($url) = @_;
+  return unless defined $url && length $url;
+  return $url if $url =~ m{^https?://};
+  $url = "/$url" unless $url =~ m{^/};
+  return "https://lichess.org$url";
 }
 
 sub handle_challenge {
@@ -848,45 +904,6 @@ sub send_move {
   return $res;
 }
 
-sub api_abort_game {
-  my ($game_id) = @_;
-  return http_request('POST', "/bot/game/$game_id/abort");
-}
-
-sub api_resign_game {
-  my ($game_id) = @_;
-  return http_request('POST', "/bot/game/$game_id/resign");
-}
-
-sub api_claim_draw {
-  my ($game_id) = @_;
-  return http_request('POST', "/bot/game/$game_id/claim-draw");
-}
-
-sub api_claim_victory {
-  my ($game_id) = @_;
-  return http_request('POST', "/bot/game/$game_id/claim-victory");
-}
-
-sub api_handle_takeback {
-  my ($game_id, $accept) = @_;
-  my $decision = $accept ? 'yes' : 'no';
-  return http_request('POST', "/bot/game/$game_id/takeback/$decision");
-}
-
-sub api_send_chat {
-  my ($game_id, $room, $text) = @_;
-  $text //= '';
-  if (length $text > 140) {
-    log_warn("Chat message too long ($game_id): " . length($text));
-    return { success => 0, status => 0, status_line => 'chat too long', content => '' };
-  }
-  return http_request('POST', "/bot/game/$game_id/chat", {
-    form => { room => $room, text => $text },
-    accept => 'application/json',
-  });
-}
-
 sub uci_handshake {
   my ($engine_out, $engine_in) = @_;
   print {$engine_in} "uci\n";
@@ -938,14 +955,6 @@ sub _emit_log {
   my ($level, $msg) = @_;
   my $ts = scalar gmtime;
   warn "[$ts] $level $msg\n";
-}
-
-sub mask_secret {
-  my ($text) = @_;
-  return $text unless defined $token && length $token;
-  my $needle = "Bearer $token";
-  $text =~ s/\Q$needle\E/Bearer <redacted>/g;
-  return $text;
 }
 
 sub _drain_ndjson {
@@ -1002,17 +1011,6 @@ sub _consume_chunked {
     return 0 unless defined $chunk;
     $cb->($chunk);
     _read_exact($fh, 2); # consume CRLF
-  }
-  return 1;
-}
-
-sub _consume_raw {
-  my ($fh, $cb) = @_;
-  while (1) {
-    my $chunk = '';
-    my $rv = sysread($fh, $chunk, 4096);
-    last unless $rv;
-    $cb->($chunk);
   }
   return 1;
 }

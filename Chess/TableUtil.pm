@@ -9,7 +9,11 @@ our @EXPORT_OK = qw(
   relaxed_fen_key
   normalize_uci_move
   merge_weighted_moves
+  idx_to_square
+  board_indices
 );
+
+my @BOARD_INDICES = _build_board_indices();
 
 sub canonical_fen_key {
   my ($state) = @_;
@@ -88,6 +92,28 @@ sub merge_weighted_moves {
     { uci => $_, weight => $weights{$_} }
   } sort { $weights{$b} <=> $weights{$a} } keys %weights;
   $target->{$key} = \@merged if @merged;
+}
+
+sub idx_to_square {
+  my ($idx, $turn) = @_;
+  my $file = ($idx % 10) - 1;
+  return unless $file >= 0 && $file < 8;
+  my $rank = $turn ? 10 - int($idx / 10) : int($idx / 10) - 1;
+  return unless $rank >= 1 && $rank <= 8;
+  return chr(ord('a') + $file) . $rank;
+}
+
+sub board_indices {
+  return @BOARD_INDICES;
+}
+
+sub _build_board_indices {
+  my @indices;
+  for my $rank (1 .. 8) {
+    my $base = ($rank + 1) * 10;
+    push @indices, map { $base + $_ } (1 .. 8);
+  }
+  return @indices;
 }
 
 1;

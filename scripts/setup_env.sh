@@ -57,6 +57,6 @@ Activate the Python venv and Perl libs in new shells with:
   export PERL_LOCAL_LIB_ROOT="$ROOT_DIR/.perl5\${PERL_LOCAL_LIB_ROOT:+:\$PERL_LOCAL_LIB_ROOT}"
   export PERL_MB_OPT="--install_base $ROOT_DIR/.perl5"
   export PERL_MM_OPT="INSTALL_BASE=$ROOT_DIR/.perl5"
-Or rerun this script via 'source script/setup_env.sh' to apply them automatically.
+Or rerun this script via 'source scripts/setup_env.sh' to apply them automatically.
 EOF
 fi

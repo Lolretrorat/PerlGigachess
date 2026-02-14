@@ -17,9 +17,10 @@ use lib $RealBin;
 use Chess::Constant;
 use Chess::State;
 use Chess::Engine;
+use Chess::TableUtil qw(canonical_fen_key);
 
 my $uci_mode = 0;
-my $depth = 14;
+my $depth = 15;
 my $fen;
 
 GetOptions(
@@ -231,23 +232,16 @@ sub print_board {
   print " a b c d e f g h\n";
 }
 
-sub _repetition_key {
-  my ($state) = @_;
-  my $fen = $state->get_fen;
-  my ($placement, $turn, $castle, $ep) = split / /, $fen;
-  return join(' ', $placement, $turn, $castle, $ep);
-}
-
 sub _record_position {
   my ($state, $history) = @_;
-  my $key = _repetition_key($state);
+  my $key = canonical_fen_key($state);
   my $count = ++$history->{$key};
   return _current_draw_status($state, $history, $count);
 }
 
 sub _current_draw_status {
   my ($state, $history, $count_override) = @_;
-  my $key = _repetition_key($state);
+  my $key = canonical_fen_key($state);
   my $count = defined $count_override ? $count_override : ($history->{$key} // 0);
   my $halfmove = $state->[Chess::State::HALFMOVE] // 0;
 

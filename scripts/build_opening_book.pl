@@ -8,6 +8,7 @@ use lib "$RealBin/..";
 
 use Chess::Constant;
 use Chess::State;
+use Chess::TableUtil qw(canonical_fen_key);
 use File::Spec;
 use File::Path qw(make_path);
 use Getopt::Long qw(GetOptions);
@@ -343,7 +344,7 @@ sub _process_game {
 
     $ply++;
     if ($ply <= $max_plies) {
-      my $key = _canonical_key($state);
+      my $key = canonical_fen_key($state);
       my $uci = $candidate->{uci};
       my $stats = ($counts->{$key}{$uci} ||= {
         played => 0,
@@ -437,12 +438,6 @@ sub _tokenize_movetext {
   return @tokens;
 }
 
-sub _canonical_key {
-  my ($state) = @_;
-  my ($placement, $turn, $castle, $ep) = split / /, $state->get_fen;
-  return join(' ', $placement, $turn, $castle, $ep);
-}
-
 sub _san_to_candidate {
   my ($state, $token) = @_;
   my $san = $token // '';
@@ -472,7 +467,6 @@ sub _san_to_candidate {
   }
 
   my $board = $state->[Chess::State::BOARD];
-  my $turn = $state->[Chess::State::TURN];
   my @candidates;
 
   for my $move (@{ $state->generate_pseudo_moves }) {
@@ -480,9 +474,9 @@ sub _san_to_candidate {
     next unless defined $next;
 
     my $uci = $state->decode_move($move);
-    my $from = _idx_to_square($move->[0], $turn);
-    my $to = _idx_to_square($move->[1], $turn);
-    next unless defined $from && defined $to;
+    my $from = substr($uci, 0, 2);
+    my $to = substr($uci, 2, 2);
+    next unless $from =~ /^[a-h][1-8]$/ && $to =~ /^[a-h][1-8]$/;
 
     my $piece = $board->[ $move->[0] ] // 0;
     my $piece_char = _piece_to_san($piece);
@@ -538,13 +532,4 @@ sub _piece_to_san {
   return 'Q' if $piece == QUEEN;
   return 'K' if $piece == KING;
   return '';
-}
-
-sub _idx_to_square {
-  my ($idx, $turn) = @_;
-  my $file = ($idx % 10) - 1;
-  return unless $file >= 0 && $file < 8;
-  my $rank = $turn ? 10 - int($idx / 10) : int($idx / 10) - 1;
-  return unless $rank >= 1 && $rank <= 8;
-  return chr(ord('a') + $file) . $rank;
 }

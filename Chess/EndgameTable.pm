@@ -12,6 +12,7 @@ use Chess::TableUtil qw(
   relaxed_fen_key
   normalize_uci_move
   merge_weighted_moves
+  board_indices
 );
 
 my %table;
@@ -258,7 +259,7 @@ sub _is_basic_mating_material {
   my $board = $state->[Chess::State::BOARD];
 
   my ($friendly_king, $enemy_king, $friendly_queen, $friendly_rook, $other_friendly, $enemy_other) = (0, 0, 0, 0, 0, 0);
-  foreach my $idx (_board_indices()) {
+  foreach my $idx (board_indices()) {
     my $piece = $board->[$idx] // 0;
     next unless $piece;
     if ($piece > 0) {
@@ -285,15 +286,6 @@ sub _is_basic_mating_material {
   return 1 if $friendly_queen == 1 && $friendly_rook == 0 && $other_friendly == 0;
   return 1 if $friendly_rook == 1 && $friendly_queen == 0 && $other_friendly == 0;
   return 0;
-}
-
-sub _board_indices {
-  my @indices;
-  for my $rank (1 .. 8) {
-    my $base = ($rank + 1) * 10;
-    push @indices, map { $base + $_ } (1 .. 8);
-  }
-  return @indices;
 }
 
 sub _legal_move_details {
@@ -358,7 +350,7 @@ sub _probe_script_path {
   }
   my $module_dir = dirname(__FILE__);
   my $root = File::Spec->catdir($module_dir, '..');
-  return File::Spec->catfile($root, 'script', 'probe_syzygy.pl');
+  return File::Spec->catfile($root, 'scripts', 'probe_syzygy.pl');
 }
 
 sub _syzygy_paths {
