@@ -172,7 +172,7 @@ sub _choose_ranked_table_move {
     my $detail = $legal->{$uci} or next;
     my $rank = $entry->{rank} // $entry->{weight} // 0;
 
-    # Stockfish-inspired tablebase preference:
+    # Tablebase preference:
     # first use table rank, then tie-break by restricting the opponent.
     my $score = 1_000_000 * $rank;
     $score += 500_000 if $detail->{mate};
