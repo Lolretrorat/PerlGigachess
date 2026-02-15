@@ -53,5 +53,5 @@ Append mode records ingested sources in `data/lichess_ingest_manifest.json`.
 ## Integration Plan
 1. Export the coefficient table to JSON matching `%location_modifiers` (piece => square => score).
 2. Run `perl scripts/update_location_modifiers.pl data/location_modifiers.json` to validate the structure and install it under `data/location_modifiers.json` (or `--output` for custom paths) so `Chess::LocationModifer` picks it up on load.
-3. Gate updates through CI: run `perl perft.pl 4` plus a 100-game self-play suite comparing the old and new tables.
+3. Gate updates through CI: run `perl tests/perft.pl 4` plus a 100-game self-play suite comparing the old and new tables.
 4. Document the workflow in `AGENTS.md` and keep the training notebook under `analysis/` for reproducibility.

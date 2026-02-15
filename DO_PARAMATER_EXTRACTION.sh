@@ -256,11 +256,18 @@ if [[ ! -f "$PGN_PATH" ]]; then
   exit 1
 fi
 
+RUN_MIGRATION_TIMESTAMP="$MIGRATION_TIMESTAMP"
+if [[ -z "$RUN_MIGRATION_TIMESTAMP" ]]; then
+  RUN_MIGRATION_TIMESTAMP="$(date -u +%Y%m%d%H%M%S)"
+fi
+RUN_MIGRATION_BUNDLE="V${RUN_MIGRATION_TIMESTAMP}__${MIGRATION_SUFFIX}"
+
 nb_env=(
   ENGINE_TRAINING_INPUT_SOURCE_MODE=existing_pgn
   ENGINE_TRAINING_PGN_PATH="$PGN_PATH"
   ENGINE_TRAINING_APPLY_ENGINE_PATCH=0
   ENGINE_TRAINING_MIGRATION_SUFFIX="$MIGRATION_SUFFIX"
+  ENGINE_TRAINING_MIGRATION_TIMESTAMP="$RUN_MIGRATION_TIMESTAMP"
 )
 
 if [[ -n "$MIN_PARAM_SCORE" ]]; then
@@ -272,9 +279,6 @@ fi
 if [[ -n "$MAX_GAMES" ]]; then
   nb_env+=(ENGINE_TRAINING_MAX_GAMES="$MAX_GAMES")
 fi
-if [[ -n "$MIGRATION_TIMESTAMP" ]]; then
-  nb_env+=(ENGINE_TRAINING_MIGRATION_TIMESTAMP="$MIGRATION_TIMESTAMP")
-fi
 if [[ "$ALLOW_GENERIC_PGN_GAMES" -eq 1 ]]; then
   nb_env+=(ENGINE_TRAINING_ALLOW_GENERIC_PGN_GAMES=1)
 fi
@@ -282,18 +286,18 @@ fi
 echo "==> Running engine parameter extraction notebook"
 (cd "$ROOT_DIR" && env "${nb_env[@]}" "$PYTHON_BIN" "$NOTEBOOK_RUNNER" --notebook "$ENGINE_NOTEBOOK")
 
-latest_bundle="$("$MIGRATION_HELPER" list | tail -n 1)"
-if [[ -z "$latest_bundle" ]]; then
-  echo "No migration bundle found after notebook run." >&2
+latest_bundle="$RUN_MIGRATION_BUNDLE"
+bundle_dir="$ROOT_DIR/engineMigration/$latest_bundle"
+if [[ ! -d "$bundle_dir" ]]; then
+  echo "Expected migration bundle from this run not found: $bundle_dir" >&2
   exit 1
 fi
 
-bundle_dir="$ROOT_DIR/engineMigration/$latest_bundle"
 shopt -s nullglob
 patches=("$bundle_dir"/*_engine_patch.diff)
 shopt -u nullglob
 
-echo "==> Latest bundle: $latest_bundle"
+echo "==> Bundle: $latest_bundle"
 echo "    Path: $bundle_dir"
 if [[ "${#patches[@]}" -gt 0 ]]; then
   echo "    Patch: ${patches[0]}"

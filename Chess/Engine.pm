@@ -509,6 +509,29 @@ sub _is_king_safety_critical_move {
   return 0;
 }
 
+sub _is_tactical_queen_move {
+  my ($state, $move, $new_state, $is_capture) = @_;
+  my $board = $state->[Chess::State::BOARD];
+  my $from_piece = abs($board->[$move->[0]] // 0);
+  return 0 unless $from_piece == QUEEN;
+
+  # Captures and direct checks are already tactical by definition.
+  return 1 if $is_capture;
+  return 1 if $new_state->is_checked;
+
+  # Preserve quiet queen moves that pressure enemy king/ring from LMR.
+  my $new_board = $new_state->[Chess::State::BOARD];
+  my $enemy_king_idx = _find_piece_idx($new_board, KING);
+  return 0 unless defined $enemy_king_idx;
+
+  my @ring = _king_ring_indices($new_board, $enemy_king_idx);
+  for my $sq ($enemy_king_idx, @ring) {
+    return 1 if _is_square_attacked_by_side($new_board, $sq, -1);
+  }
+
+  return 0;
+}
+
 sub _unsafe_capture_penalty {
   my ($state, $move, $from_piece, $to_piece) = @_;
   return 0 unless $to_piece < 0;
@@ -985,8 +1008,10 @@ sub _search {
     my $is_capture = _is_capture_state($state, $move);
     my $new_state = $state->make_move($move);
     next unless defined $new_state;
+    my $gives_check = $new_state->is_checked ? 1 : 0;
     my $quiet_hanging_move = _is_quiet_hanging_move($new_state, $move, $is_capture);
     my $king_safety_critical = _is_king_safety_critical_move($state, $move, $new_state, $own_king_danger);
+    my $tactical_queen_move = _is_tactical_queen_move($state, $move, $new_state, $is_capture);
 
     $legal_moves++;
     my $child_prev_move_key = _move_key($move);
@@ -998,13 +1023,15 @@ sub _search {
     } else {
       my $reduction = 0;
       if (! $in_check
-        && $depth >= 3
+        && $depth >= 4
         && $move_index >= 3
         && !defined $move->[2]
         && !defined $move->[3]
         && ! $is_capture
+        && ! $gives_check
         && ! $quiet_hanging_move
         && ! $king_safety_critical
+        && ! $tactical_queen_move
         && $own_king_danger < LMR_KING_DANGER_THRESHOLD)
       {
         $reduction = 1;

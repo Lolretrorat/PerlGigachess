@@ -4,7 +4,7 @@ This repository contains a minimalist Perl chess engine along with several entry
 points:
 
 - `play.pl` — interactive CLI (default) or `--uci` for a headless engine loop.
-- `perft.pl` — perft validation driver.
+- `tests/perft.pl` — perft validation driver (`perft.pl` remains as a compatibility shim).
 - `lichess.pl` — Bot API bridge that lets the engine play on lichess.org.
 
 ## Development Environment
@@ -50,6 +50,13 @@ Master pipeline wrappers:
 - `DO_LOCATION_MODIFIER.sh` runs ingest + location modifier training + validation.
 - `DO_PARAMATER_EXTRACTION.sh` runs ingest + engine training notebook and emits a migration bundle.
 - `DO_ENGINE_PIPELINE.sh` runs parameter extraction, applies the newest patch when present, and validates via `perl -c` + `perft`.
+
+Regression tests live under `tests/`:
+
+```bash
+tests/run_regressions.sh
+perl tests/regression_hyhMjQD2_kg8.pl --depth 3 --movetime 10000
+```
 
 ## Running the Lichess bridge
 

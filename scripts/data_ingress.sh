@@ -223,6 +223,9 @@ extract_game_id() {
 }
 
 fetch_own_urls_to_pgn() {
+  local delta_pgn_output="${1:-}"
+  local failed_url_output="${2:-}"
+
   if [[ ! -f "$OWN_URL_LOG" ]]; then
     echo "List file not found: $OWN_URL_LOG" >&2
     exit 1
@@ -231,6 +234,14 @@ fetch_own_urls_to_pgn() {
   mkdir -p "$(dirname "$OWN_PGN_OUTPUT")"
   if [[ "$OWN_APPEND" -ne 1 ]]; then
     : > "$OWN_PGN_OUTPUT"
+  fi
+  if [[ -n "$delta_pgn_output" ]]; then
+    mkdir -p "$(dirname "$delta_pgn_output")"
+    : > "$delta_pgn_output"
+  fi
+  if [[ -n "$failed_url_output" ]]; then
+    mkdir -p "$(dirname "$failed_url_output")"
+    : > "$failed_url_output"
   fi
 
   declare -A seen=()
@@ -262,12 +273,28 @@ fetch_own_urls_to_pgn() {
     seen[$game_id]=1
 
     local url="https://lichess.org/game/export/$game_id"
-    if curl -fsSL "$url" >> "$OWN_PGN_OUTPUT"; then
+    if [[ -n "$delta_pgn_output" ]]; then
+      if curl -fsSL "$url" | tee -a "$OWN_PGN_OUTPUT" >> "$delta_pgn_output"; then
+        printf '\n\n' >> "$OWN_PGN_OUTPUT"
+        printf '\n\n' >> "$delta_pgn_output"
+        fetched=$((fetched + 1))
+        echo "Fetched $game_id" >&2
+      else
+        failed=$((failed + 1))
+        if [[ -n "$failed_url_output" ]]; then
+          printf '%s\n' "$game_id" >> "$failed_url_output"
+        fi
+        echo "Failed $game_id ($url)" >&2
+      fi
+    elif curl -fsSL "$url" >> "$OWN_PGN_OUTPUT"; then
       printf '\n\n' >> "$OWN_PGN_OUTPUT"
       fetched=$((fetched + 1))
       echo "Fetched $game_id" >&2
     else
       failed=$((failed + 1))
+      if [[ -n "$failed_url_output" ]]; then
+        printf '%s\n' "$game_id" >> "$failed_url_output"
+      fi
       echo "Failed $game_id ($url)" >&2
     fi
   done < "$OWN_URL_LOG"
@@ -315,25 +342,39 @@ build_book_delta_and_merge() {
 }
 
 run_own_urls_ingress() {
+  local delta_pgn=""
+  local failed_urls=""
+
+  delta_pgn="$(mktemp "$TMP_DIR/own_urls_delta_XXXXXX.pgn")"
+  failed_urls="$(mktemp "$TMP_DIR/own_urls_failed_XXXXXX.log")"
+  tmp_files+=("$delta_pgn" "$failed_urls")
+
   echo "==> Ingesting own game URLs from $OWN_URL_LOG"
-  fetch_own_urls_to_pgn
+  fetch_own_urls_to_pgn "$delta_pgn" "$failed_urls"
 
-  if [[ ! -s "$OWN_PGN_OUTPUT" ]]; then
-    echo "==> No games exported from OWN-URLS source; skipping local pipeline"
-    return
-  fi
+  if [[ ! -s "$delta_pgn" ]]; then
+    echo "==> No newly fetched games from OWN-URLS source; skipping local pipeline"
+  else
+    if [[ "$RUN_BOOK" -eq 1 ]]; then
+      build_book_delta_and_merge "$delta_pgn"
+    fi
 
-  if [[ "$RUN_BOOK" -eq 1 ]]; then
-    build_book_delta_and_merge "$OWN_PGN_OUTPUT"
-  fi
-
-  if [[ "$RUN_LOCATION" -eq 1 ]]; then
-    train_location_from_pgn "$OWN_PGN_OUTPUT"
+    if [[ "$RUN_LOCATION" -eq 1 ]]; then
+      train_location_from_pgn "$delta_pgn"
+    fi
   fi
 
   if [[ "$CLEAR_OWN_URL_LOG" -eq 1 ]]; then
-    : > "$OWN_URL_LOG"
-    echo "==> Cleared own URL log: $OWN_URL_LOG"
+    if [[ -s "$failed_urls" ]]; then
+      cp "$failed_urls" "$OWN_URL_LOG"
+      local retained_failed
+      retained_failed="$(wc -l < "$failed_urls")"
+      retained_failed="${retained_failed//[[:space:]]/}"
+      echo "==> Cleared processed OWN-URL entries; retained $retained_failed failed entries in $OWN_URL_LOG"
+    else
+      : > "$OWN_URL_LOG"
+      echo "==> Cleared own URL log: $OWN_URL_LOG"
+    fi
   fi
 }
 

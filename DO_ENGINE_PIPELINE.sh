@@ -24,7 +24,7 @@ Purpose:
 Engine options:
   --no-apply                      Do not apply migration patch to Chess/Engine.pm
   --require-patch                 Exit non-zero when no patch was generated
-  --skip-perft                    Skip perl perft.pl validation
+  --skip-perft                    Skip perl tests/perft.pl validation
   --perft-depth <int>             Perft depth (default: 4)
   -h, --help                      Show this message
 
@@ -120,7 +120,7 @@ echo "==> Syntax check Chess::Engine"
 
 if [[ "$RUN_PERFT" -eq 1 ]]; then
   echo "==> Running perft depth $PERFT_DEPTH"
-  (cd "$ROOT_DIR" && perl perft.pl "$PERFT_DEPTH")
+  (cd "$ROOT_DIR" && perl tests/perft.pl "$PERFT_DEPTH")
 else
   echo "==> Skipping perft (--skip-perft)"
 fi
