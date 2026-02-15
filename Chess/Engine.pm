@@ -40,6 +40,27 @@ use constant MID_ENDGAME_HORIZON_REDUCTION => 8;       # Higher => assumes fewer
 use constant DEEP_ENDGAME_HORIZON_REDUCTION => 12;     # Higher => assumes much fewer moves left in deep endgames.
 use constant TIME_EMERGENCY_MS => 1500;                # Higher => enters emergency time-saving mode earlier.
 use constant QUIESCE_EMERGENCY_MAX_DEPTH => 2;         # Lower => cuts tactical depth more when low on time.
+use constant TIME_PANIC_60S_MS => 60_000;              # Remaining clock threshold for first panic profile.
+use constant TIME_PANIC_30S_MS => 30_000;              # Remaining clock threshold for second panic profile.
+use constant TIME_PANIC_10S_MS => 10_000;              # Remaining clock threshold for final panic profile.
+use constant TIME_PANIC_60S_RESERVE_PCT => 0.10;       # Reserve share below 60s to avoid flagging.
+use constant TIME_PANIC_30S_RESERVE_PCT => 0.16;       # Reserve share below 30s to avoid flagging.
+use constant TIME_PANIC_10S_RESERVE_PCT => 0.25;       # Reserve share below 10s to avoid flagging.
+use constant TIME_PANIC_60S_MIN_HORIZON => 48;         # Minimum move horizon below 60s.
+use constant TIME_PANIC_30S_MIN_HORIZON => 64;         # Minimum move horizon below 30s.
+use constant TIME_PANIC_10S_MIN_HORIZON => 96;         # Minimum move horizon below 10s.
+use constant TIME_PANIC_60S_BUDGET_SHARE => 0.10;      # Soft budget cap share of remaining clock below 60s.
+use constant TIME_PANIC_30S_BUDGET_SHARE => 0.07;      # Soft budget cap share of remaining clock below 30s.
+use constant TIME_PANIC_10S_BUDGET_SHARE => 0.045;     # Soft budget cap share of remaining clock below 10s.
+use constant TIME_PANIC_60S_INC_WEIGHT => 0.40;        # Increment contribution below 60s.
+use constant TIME_PANIC_30S_INC_WEIGHT => 0.30;        # Increment contribution below 30s.
+use constant TIME_PANIC_10S_INC_WEIGHT => 0.20;        # Increment contribution below 10s.
+use constant TIME_PANIC_60S_HARD_SCALE => 1.35;        # Hard-deadline scale below 60s.
+use constant TIME_PANIC_30S_HARD_SCALE => 1.25;        # Hard-deadline scale below 30s.
+use constant TIME_PANIC_10S_HARD_SCALE => 1.15;        # Hard-deadline scale below 10s.
+use constant TIME_PANIC_60S_QUIESCE_MAX_DEPTH => 3;    # Quiesce depth cap below 60s.
+use constant TIME_PANIC_30S_QUIESCE_MAX_DEPTH => 2;    # Quiesce depth cap below 30s.
+use constant TIME_PANIC_10S_QUIESCE_MAX_DEPTH => 1;    # Quiesce depth cap below 10s.
 use constant TT_MAX_ENTRIES => 200_000;                # Higher => larger TT memory footprint, fewer evictions.
 use constant COUNTERMOVE_BONUS => 180;                 # Higher => counter-move heuristic impacts ordering more.
 use constant EASY_MOVE_MIN_DEPTH => 4;                 # Higher => require deeper confirmation before early stop.
@@ -711,6 +732,39 @@ sub _configure_time_limits {
   } elsif (defined $opts->{remaining_ms} && $opts->{remaining_ms} > 0) {
     my $remaining_ms = max(1, int($opts->{remaining_ms}));
     my $inc_ms = max(0, int($opts->{increment_ms} // 0));
+    my $panic_level = 0;
+    my $panic_reserve_pct = 0.05;
+    my $panic_min_horizon = 0;
+    my $panic_budget_share = 0;
+    my $panic_inc_weight = TIME_INC_WEIGHT;
+    my $panic_hard_scale = TIME_HARD_SCALE;
+
+    if ($remaining_ms <= TIME_PANIC_10S_MS) {
+      $panic_level = 3;
+      $panic_reserve_pct = TIME_PANIC_10S_RESERVE_PCT;
+      $panic_min_horizon = TIME_PANIC_10S_MIN_HORIZON;
+      $panic_budget_share = TIME_PANIC_10S_BUDGET_SHARE;
+      $panic_inc_weight = TIME_PANIC_10S_INC_WEIGHT;
+      $panic_hard_scale = TIME_PANIC_10S_HARD_SCALE;
+      $search_quiesce_limit = min($search_quiesce_limit, TIME_PANIC_10S_QUIESCE_MAX_DEPTH);
+    } elsif ($remaining_ms <= TIME_PANIC_30S_MS) {
+      $panic_level = 2;
+      $panic_reserve_pct = TIME_PANIC_30S_RESERVE_PCT;
+      $panic_min_horizon = TIME_PANIC_30S_MIN_HORIZON;
+      $panic_budget_share = TIME_PANIC_30S_BUDGET_SHARE;
+      $panic_inc_weight = TIME_PANIC_30S_INC_WEIGHT;
+      $panic_hard_scale = TIME_PANIC_30S_HARD_SCALE;
+      $search_quiesce_limit = min($search_quiesce_limit, TIME_PANIC_30S_QUIESCE_MAX_DEPTH);
+    } elsif ($remaining_ms <= TIME_PANIC_60S_MS) {
+      $panic_level = 1;
+      $panic_reserve_pct = TIME_PANIC_60S_RESERVE_PCT;
+      $panic_min_horizon = TIME_PANIC_60S_MIN_HORIZON;
+      $panic_budget_share = TIME_PANIC_60S_BUDGET_SHARE;
+      $panic_inc_weight = TIME_PANIC_60S_INC_WEIGHT;
+      $panic_hard_scale = TIME_PANIC_60S_HARD_SCALE;
+      $search_quiesce_limit = min($search_quiesce_limit, TIME_PANIC_60S_QUIESCE_MAX_DEPTH);
+    }
+
     my $movestogo = int($opts->{movestogo} // 0);
     $movestogo = 0 if $movestogo < 0;
     my $horizon = $movestogo ? min(40, max(8, $movestogo)) : TIME_DEFAULT_HORIZON;
@@ -720,16 +774,19 @@ sub _configure_time_limits {
     if ($piece_count <= DEEP_ENDGAME_PIECE_THRESHOLD) {
       $horizon = max(6, $horizon - DEEP_ENDGAME_HORIZON_REDUCTION);
     }
+    if ($panic_min_horizon > 0) {
+      $horizon = max($horizon, $panic_min_horizon);
+    }
 
     my $reserve_ms = $opts->{reserve_ms};
     if (!defined $reserve_ms) {
-      $reserve_ms = max(TIME_RESERVE_MS, int($remaining_ms * 0.05));
+      $reserve_ms = max(TIME_RESERVE_MS, int($remaining_ms * $panic_reserve_pct));
     }
     $reserve_ms = max(0, int($reserve_ms));
 
     my $usable_ms = max(0, $remaining_ms - $reserve_ms - $move_overhead_ms);
     my $base_ms = $horizon ? int($usable_ms / $horizon) : $usable_ms;
-    $budget_ms = int($base_ms + $inc_ms * TIME_INC_WEIGHT);
+    $budget_ms = int($base_ms + $inc_ms * $panic_inc_weight);
 
     my $max_share = TIME_MAX_SHARE;
     $max_share = MID_ENDGAME_TIME_MAX_SHARE if $piece_count <= MID_ENDGAME_PIECE_THRESHOLD;
@@ -738,6 +795,11 @@ sub _configure_time_limits {
     $max_budget_ms = max(TIME_MIN_BUDGET_MS, $max_budget_ms);
     $budget_ms = min($budget_ms, $max_budget_ms);
     $budget_ms = max(TIME_MIN_BUDGET_MS, $budget_ms);
+    if ($panic_level > 0) {
+      my $panic_cap = int($remaining_ms * $panic_budget_share + $inc_ms * $panic_inc_weight);
+      $panic_cap = max(TIME_MIN_BUDGET_MS, $panic_cap);
+      $budget_ms = min($budget_ms, $panic_cap);
+    }
 
     if ($remaining_ms <= TIME_EMERGENCY_MS) {
       my $emergency_cap = max(TIME_MIN_BUDGET_MS, int(($remaining_ms - $move_overhead_ms) * 0.35));
@@ -750,7 +812,7 @@ sub _configure_time_limits {
     }
 
     $hard_ms = min(
-      int($budget_ms * TIME_HARD_SCALE),
+      int($budget_ms * $panic_hard_scale),
       max($budget_ms, $remaining_ms - int($reserve_ms * 0.5) - $move_overhead_ms)
     );
     $hard_ms = max($budget_ms, $hard_ms);
