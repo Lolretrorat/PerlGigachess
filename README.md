@@ -60,7 +60,7 @@ and runs rebuild in append mode with source-manifest dedupe.
    requests succeed.
 3. Store the token in a `.env` file (same directory as the scripts):
    ```
-   LICHESS_TOKEN=lip_kmfsKa2rBUqvzfOPwXg8
+   LICHESS_TOKEN=lip_<TOKEN>
    ```
    The script reads `.env` on startup and also respects any variable already set
    in the process environment.
