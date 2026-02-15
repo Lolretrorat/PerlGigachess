@@ -105,7 +105,7 @@ sub run_uci {
 
     if ($input eq 'uci') {
       print "id name PerlGigachess\n";
-      print "id author Greg Kennedy\n";
+      print "id author Lolretrorat\n";
       print "option name Depth type spin default $depth min 1 max 20\n";
       print "option name MoveOverhead type spin default $move_overhead_ms min 0 max 1000\n";
       print "option name OwnBook type check default true\n";
