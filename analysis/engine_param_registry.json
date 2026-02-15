@@ -1,0 +1,485 @@
+{
+  "version": 1,
+  "description": "Bounded hyperparameter registry for Engine.pm auto-tuning",
+  "parameters": [
+    {
+      "name": "UNSAFE_CAPTURE_HANGING_BONUS",
+      "group": "capture_safety",
+      "type": "int",
+      "min": 8,
+      "max": 96,
+      "step": 1,
+      "max_step_change": 14,
+      "direction": "increase",
+      "base_weight": 1.0,
+      "feature_weights": {
+        "played_is_capture": 0.35,
+        "threatened_ours": 0.30,
+        "opponent_checks_after": 0.20,
+        "king_ring_attacked": 0.15
+      },
+      "signal_weights": {
+        "capture_risk_delta": 0.45,
+        "hanging_risk_delta": 0.35,
+        "severe_rate": 0.20
+      }
+    },
+    {
+      "name": "UNSAFE_CAPTURE_KING_EXPOSURE_WEIGHT",
+      "group": "capture_safety",
+      "type": "int",
+      "min": 1,
+      "max": 14,
+      "step": 1,
+      "max_step_change": 3,
+      "direction": "increase",
+      "base_weight": 0.9,
+      "feature_weights": {
+        "played_is_capture": 0.30,
+        "king_ring_attacked": 0.30,
+        "king_file_open": 0.20,
+        "opponent_checks_after": 0.20
+      },
+      "signal_weights": {
+        "capture_risk_delta": 0.40,
+        "check_risk_delta": 0.35,
+        "king_file_risk": 0.25
+      }
+    },
+    {
+      "name": "UNSAFE_CAPTURE_DEFENDED_SCALE",
+      "group": "capture_safety",
+      "type": "float",
+      "min": 0.20,
+      "max": 0.90,
+      "step": 0.05,
+      "max_step_change": 3,
+      "direction": "increase",
+      "base_weight": 0.75,
+      "feature_weights": {
+        "played_is_capture": 0.30,
+        "threatened_ours": 0.30,
+        "material_cp": 0.15,
+        "mobility_delta": 0.25
+      },
+      "signal_weights": {
+        "capture_risk_delta": 0.50,
+        "hanging_risk_delta": 0.30,
+        "instability_risk": 0.20
+      }
+    },
+    {
+      "name": "HANGING_MOVE_GUARD_BONUS",
+      "group": "capture_safety",
+      "type": "int",
+      "min": 6,
+      "max": 40,
+      "step": 1,
+      "max_step_change": 6,
+      "direction": "increase",
+      "base_weight": 0.8,
+      "feature_weights": {
+        "threatened_ours": 0.45,
+        "threatened_delta": 0.25,
+        "king_ring_attacked": 0.15,
+        "legal_moves": 0.15
+      },
+      "signal_weights": {
+        "hanging_risk_delta": 0.55,
+        "capture_risk_delta": 0.20,
+        "avg_cp_loss_risk": 0.25
+      }
+    },
+    {
+      "name": "HANGING_DEFENDED_SCALE",
+      "group": "capture_safety",
+      "type": "float",
+      "min": 0.10,
+      "max": 0.85,
+      "step": 0.05,
+      "max_step_change": 2,
+      "direction": "increase",
+      "base_weight": 0.6,
+      "feature_weights": {
+        "threatened_ours": 0.40,
+        "threatened_theirs": 0.20,
+        "played_is_capture": 0.20,
+        "opponent_checks_after": 0.20
+      },
+      "signal_weights": {
+        "hanging_risk_delta": 0.60,
+        "severe_rate": 0.20,
+        "capture_risk_delta": 0.20
+      }
+    },
+    {
+      "name": "KING_DANGER_CHECK_PENALTY",
+      "group": "king_safety",
+      "type": "int",
+      "min": 4,
+      "max": 36,
+      "step": 1,
+      "max_step_change": 8,
+      "direction": "increase",
+      "base_weight": 1.0,
+      "feature_weights": {
+        "opponent_checks_after": 0.40,
+        "king_in_check": 0.25,
+        "king_ring_attacked": 0.20,
+        "king_file_open": 0.15
+      },
+      "signal_weights": {
+        "check_risk_delta": 0.45,
+        "king_ring_risk_delta": 0.30,
+        "severe_rate": 0.25
+      }
+    },
+    {
+      "name": "KING_DANGER_RING_ATTACK_PENALTY",
+      "group": "king_safety",
+      "type": "int",
+      "min": 1,
+      "max": 12,
+      "step": 1,
+      "max_step_change": 3,
+      "direction": "increase",
+      "base_weight": 0.85,
+      "feature_weights": {
+        "king_ring_attacked": 0.45,
+        "king_ring_undefended": 0.30,
+        "opponent_checks_after": 0.15,
+        "king_file_open": 0.10
+      },
+      "signal_weights": {
+        "king_ring_risk_delta": 0.55,
+        "check_risk_delta": 0.25,
+        "king_file_risk": 0.20
+      }
+    },
+    {
+      "name": "KING_DANGER_RING_UNDEFENDED_PENALTY",
+      "group": "king_safety",
+      "type": "int",
+      "min": 1,
+      "max": 10,
+      "step": 1,
+      "max_step_change": 2,
+      "direction": "increase",
+      "base_weight": 0.75,
+      "feature_weights": {
+        "king_ring_undefended": 0.50,
+        "king_ring_attacked": 0.25,
+        "threatened_ours": 0.25
+      },
+      "signal_weights": {
+        "king_ring_risk_delta": 0.55,
+        "hanging_risk_delta": 0.25,
+        "check_risk_delta": 0.20
+      }
+    },
+    {
+      "name": "KING_DANGER_SHIELD_MISSING_PENALTY",
+      "group": "king_safety",
+      "type": "int",
+      "min": 1,
+      "max": 10,
+      "step": 1,
+      "max_step_change": 2,
+      "direction": "increase",
+      "base_weight": 0.7,
+      "feature_weights": {
+        "king_file_open": 0.40,
+        "king_adj_files_open": 0.30,
+        "king_ring_attacked": 0.20,
+        "is_castled": 0.10
+      },
+      "signal_weights": {
+        "king_file_risk": 0.45,
+        "king_ring_risk_delta": 0.35,
+        "opening_risk": 0.20
+      }
+    },
+    {
+      "name": "KING_DANGER_OPEN_FILE_PENALTY",
+      "group": "king_safety",
+      "type": "int",
+      "min": 1,
+      "max": 8,
+      "step": 1,
+      "max_step_change": 2,
+      "direction": "increase",
+      "base_weight": 0.65,
+      "feature_weights": {
+        "king_file_open": 0.55,
+        "king_adj_files_open": 0.25,
+        "opponent_checks_after": 0.20
+      },
+      "signal_weights": {
+        "king_file_risk": 0.60,
+        "check_risk_delta": 0.25,
+        "opening_risk": 0.15
+      }
+    },
+    {
+      "name": "KING_DANGER_ADJ_FILE_PENALTY",
+      "group": "king_safety",
+      "type": "int",
+      "min": 1,
+      "max": 6,
+      "step": 1,
+      "max_step_change": 2,
+      "direction": "increase",
+      "base_weight": 0.55,
+      "feature_weights": {
+        "king_adj_files_open": 0.60,
+        "king_file_open": 0.25,
+        "king_ring_attacked": 0.15
+      },
+      "signal_weights": {
+        "king_file_risk": 0.65,
+        "king_ring_risk_delta": 0.20,
+        "opening_risk": 0.15
+      }
+    },
+    {
+      "name": "LMR_KING_DANGER_THRESHOLD",
+      "group": "king_safety",
+      "type": "int",
+      "min": 4,
+      "max": 24,
+      "step": 1,
+      "max_step_change": 4,
+      "direction": "decrease",
+      "base_weight": 0.9,
+      "feature_weights": {
+        "king_ring_attacked": 0.35,
+        "opponent_checks_after": 0.30,
+        "king_file_open": 0.20,
+        "best_matches_played": 0.15
+      },
+      "signal_weights": {
+        "king_ring_risk_delta": 0.40,
+        "check_risk_delta": 0.35,
+        "instability_risk": 0.25
+      }
+    },
+    {
+      "name": "QUIESCE_CHECK_BONUS",
+      "group": "tactical_horizon",
+      "type": "int",
+      "min": 40,
+      "max": 260,
+      "step": 2,
+      "max_step_change": 20,
+      "direction": "increase",
+      "base_weight": 0.95,
+      "feature_weights": {
+        "opponent_checks_after": 0.40,
+        "played_gives_check": 0.20,
+        "king_in_check": 0.20,
+        "threatened_ours": 0.20
+      },
+      "signal_weights": {
+        "severe_rate": 0.35,
+        "check_risk_delta": 0.35,
+        "instability_risk": 0.30
+      }
+    },
+    {
+      "name": "QUIESCE_CHECK_MAX_DEPTH",
+      "group": "tactical_horizon",
+      "type": "int",
+      "min": 1,
+      "max": 4,
+      "step": 1,
+      "max_step_change": 1,
+      "direction": "increase",
+      "base_weight": 0.65,
+      "feature_weights": {
+        "opponent_checks_after": 0.50,
+        "king_in_check": 0.30,
+        "played_gives_check": 0.20
+      },
+      "signal_weights": {
+        "severe_rate": 0.45,
+        "check_risk_delta": 0.35,
+        "avg_cp_loss_risk": 0.20
+      }
+    },
+    {
+      "name": "EXTRA_DEPTH_ON_UNSTABLE",
+      "group": "search_stability",
+      "type": "int",
+      "min": 1,
+      "max": 10,
+      "step": 1,
+      "max_step_change": 2,
+      "direction": "increase",
+      "base_weight": 0.85,
+      "feature_weights": {
+        "best_matches_played": 0.35,
+        "legal_moves": 0.20,
+        "mobility_delta": 0.20,
+        "opponent_checks_after": 0.25
+      },
+      "signal_weights": {
+        "instability_risk": 0.50,
+        "avg_cp_loss_risk": 0.25,
+        "severe_rate": 0.25
+      }
+    },
+    {
+      "name": "SCORE_STABILITY_DELTA",
+      "group": "search_stability",
+      "type": "int",
+      "min": 1,
+      "max": 8,
+      "step": 1,
+      "max_step_change": 2,
+      "direction": "decrease",
+      "base_weight": 0.7,
+      "feature_weights": {
+        "best_matches_played": 0.45,
+        "legal_moves": 0.20,
+        "king_ring_attacked": 0.15,
+        "threatened_ours": 0.20
+      },
+      "signal_weights": {
+        "instability_risk": 0.60,
+        "severe_rate": 0.20,
+        "avg_cp_loss_risk": 0.20
+      }
+    },
+    {
+      "name": "ASPIRATION_WINDOW",
+      "group": "search_stability",
+      "type": "int",
+      "min": 12,
+      "max": 80,
+      "step": 2,
+      "max_step_change": 8,
+      "direction": "increase",
+      "base_weight": 0.55,
+      "feature_weights": {
+        "best_matches_played": 0.40,
+        "legal_moves": 0.25,
+        "material_cp": 0.15,
+        "mobility_delta": 0.20
+      },
+      "signal_weights": {
+        "instability_risk": 0.50,
+        "avg_cp_loss_risk": 0.30,
+        "severe_rate": 0.20
+      }
+    },
+    {
+      "name": "COUNTERMOVE_BONUS",
+      "group": "search_stability",
+      "type": "int",
+      "min": 80,
+      "max": 320,
+      "step": 5,
+      "max_step_change": 10,
+      "direction": "increase",
+      "base_weight": 0.5,
+      "feature_weights": {
+        "best_matches_played": 0.50,
+        "legal_moves": 0.20,
+        "opponent_checks_after": 0.15,
+        "threatened_ours": 0.15
+      },
+      "signal_weights": {
+        "instability_risk": 0.45,
+        "avg_cp_loss_risk": 0.30,
+        "opening_risk": 0.25
+      }
+    },
+    {
+      "name": "DEVELOPMENT_MINOR_PENALTY",
+      "group": "opening_discipline",
+      "type": "int",
+      "min": 1,
+      "max": 10,
+      "step": 1,
+      "max_step_change": 2,
+      "direction": "increase",
+      "base_weight": 0.7,
+      "feature_weights": {
+        "opening_phase": 0.40,
+        "opening_development_lag": 0.35,
+        "center_control_delta": 0.15,
+        "is_castled": 0.10
+      },
+      "signal_weights": {
+        "opening_risk": 0.55,
+        "development_risk": 0.30,
+        "avg_cp_loss_risk": 0.15
+      }
+    },
+    {
+      "name": "EARLY_ROOK_MOVE_PENALTY",
+      "group": "opening_discipline",
+      "type": "int",
+      "min": 1,
+      "max": 10,
+      "step": 1,
+      "max_step_change": 2,
+      "direction": "increase",
+      "base_weight": 0.55,
+      "feature_weights": {
+        "opening_phase": 0.45,
+        "opening_development_lag": 0.30,
+        "is_castled": 0.25
+      },
+      "signal_weights": {
+        "opening_risk": 0.60,
+        "development_risk": 0.25,
+        "king_file_risk": 0.15
+      }
+    },
+    {
+      "name": "EARLY_QUEEN_MOVE_PENALTY",
+      "group": "opening_discipline",
+      "type": "int",
+      "min": 1,
+      "max": 14,
+      "step": 1,
+      "max_step_change": 3,
+      "direction": "increase",
+      "base_weight": 0.75,
+      "feature_weights": {
+        "opening_phase": 0.45,
+        "opening_development_lag": 0.25,
+        "center_control_delta": 0.20,
+        "best_matches_played": 0.10
+      },
+      "signal_weights": {
+        "opening_risk": 0.60,
+        "development_risk": 0.25,
+        "instability_risk": 0.15
+      }
+    },
+    {
+      "name": "UNCASTLED_KING_PENALTY",
+      "group": "opening_discipline",
+      "type": "int",
+      "min": 2,
+      "max": 14,
+      "step": 1,
+      "max_step_change": 3,
+      "direction": "increase",
+      "base_weight": 0.8,
+      "feature_weights": {
+        "is_castled": 0.45,
+        "king_file_open": 0.25,
+        "opening_phase": 0.20,
+        "opening_development_lag": 0.10
+      },
+      "signal_weights": {
+        "opening_risk": 0.40,
+        "king_file_risk": 0.40,
+        "check_risk_delta": 0.20
+      }
+    }
+  ]
+}
