@@ -1,0 +1,283 @@
+{
+  "generated_at_utc": "2026-02-15T14:05:16.662882+00:00",
+  "pgn_path": "/home/josh/code/PerlGigachess/data/lichess_games_export.pgn",
+  "engine_cmd": [
+    "perl",
+    "play.pl",
+    "--uci",
+    "--depth",
+    "8"
+  ],
+  "input_source_mode": "existing_pgn",
+  "migration": {
+    "dir": "/home/josh/code/PerlGigachess/engineMigration/V20260215140333__engine_training_recommendations_smallsample",
+    "name": "V20260215140333__engine_training_recommendations_smallsample",
+    "check_cmd": "scripts/apply_engine_migration.sh check V20260215140333__engine_training_recommendations_smallsample",
+    "apply_cmd": "scripts/apply_engine_migration.sh apply V20260215140333__engine_training_recommendations_smallsample"
+  },
+  "config": {
+    "engine_name": "Perl-GigaChess",
+    "allow_generic_pgn_games": false,
+    "generic_side_mode": "white",
+    "max_ply_per_game": 20,
+    "max_games": 40,
+    "opening_ply_limit": 14,
+    "search_movetime_ms": 250,
+    "eval_movetime_ms": 250,
+    "analyze_played_eval": true,
+    "enable_book_compare": true,
+    "min_rows_for_model": 24,
+    "severe_cp_loss": 150,
+    "holdout_fraction": 0.25,
+    "candidate_scales": [
+      0.6,
+      1.0,
+      1.4
+    ],
+    "max_constant_updates": 14,
+    "min_param_score_for_update": 0.03,
+    "training_reference_games": 50,
+    "training_volume_exponent": 0.5
+  },
+  "summary_before": {
+    "generated_at_utc": "2026-02-15T14:05:16.211061+00:00",
+    "games": 8,
+    "engine_moves": 71,
+    "moves_with_eval": 71,
+    "bestmove_match_rate": 0.36619718309859156,
+    "avg_cp_loss": 2.5211267605633805,
+    "critical_80cp": 1,
+    "severe_150cp": 0,
+    "capture_critical": 1,
+    "quiet_critical": 0,
+    "critical_with_opp_checks": 0,
+    "book_disagreements_opening": 25,
+    "capture_avg_cp_loss": 6.055555555555555,
+    "quiet_avg_cp_loss": 1.320754716981132,
+    "check_pressure_avg_cp_loss": -3.4615384615384617,
+    "opening_avg_cp_loss": 3.22
+  },
+  "summary_after": null,
+  "train_summary": {
+    "generated_at_utc": "2026-02-15T14:05:16.463609+00:00",
+    "games": 6,
+    "engine_moves": 51,
+    "moves_with_eval": 51,
+    "bestmove_match_rate": 0.45098039215686275,
+    "avg_cp_loss": 0.9607843137254902,
+    "critical_80cp": 1,
+    "severe_150cp": 0,
+    "capture_critical": 1,
+    "quiet_critical": 0,
+    "critical_with_opp_checks": 0,
+    "book_disagreements_opening": 16,
+    "capture_avg_cp_loss": 3.5,
+    "quiet_avg_cp_loss": 0.0,
+    "check_pressure_avg_cp_loss": -14.875,
+    "opening_avg_cp_loss": 0.7777777777777778
+  },
+  "holdout_summary": {
+    "generated_at_utc": "2026-02-15T14:05:16.467794+00:00",
+    "games": 2,
+    "engine_moves": 20,
+    "moves_with_eval": 20,
+    "bestmove_match_rate": 0.15,
+    "avg_cp_loss": 6.5,
+    "critical_80cp": 0,
+    "severe_150cp": 0,
+    "capture_critical": 0,
+    "quiet_critical": 0,
+    "critical_with_opp_checks": 0,
+    "book_disagreements_opening": 9,
+    "capture_avg_cp_loss": 15.0,
+    "quiet_avg_cp_loss": 4.375,
+    "check_pressure_avg_cp_loss": 14.8,
+    "opening_avg_cp_loss": 9.5
+  },
+  "training_counts": {
+    "games_requested": 40,
+    "games_loaded": 8,
+    "games_with_labels": 71,
+    "games_train": 6,
+    "games_holdout": 2,
+    "training_volume_weight": 0.34641016151377546
+  },
+  "model_metrics": {
+    "rows": 71,
+    "train_rows": 51,
+    "holdout_rows": 20,
+    "mae": 23.249640800441234,
+    "r2": -0.4653359677153952,
+    "split_mode": "game_holdout",
+    "train_games": 6,
+    "holdout_games": 2,
+    "training_volume_weight": 0.34641016151377546
+  },
+  "feature_importance": [
+    {
+      "feature": "legal_moves",
+      "importance": 0.2683015725349607
+    },
+    {
+      "feature": "opponent_legal_moves_after",
+      "importance": 0.24195673465850767
+    },
+    {
+      "feature": "king_ring_attacked",
+      "importance": 0.15593000321916153
+    },
+    {
+      "feature": "mobility_delta",
+      "importance": 0.11081358939277847
+    },
+    {
+      "feature": "center_control_delta",
+      "importance": 0.04377001032185859
+    },
+    {
+      "feature": "material_cp",
+      "importance": 0.03719906226052124
+    },
+    {
+      "feature": "piece_count_theirs",
+      "importance": 0.03330189774782579
+    },
+    {
+      "feature": "best_matches_played",
+      "importance": 0.02200127089473262
+    },
+    {
+      "feature": "played_gives_check",
+      "importance": 0.019290499222892863
+    },
+    {
+      "feature": "non_pawn_material_cp",
+      "importance": 0.014849313719545086
+    },
+    {
+      "feature": "opponent_checks_after",
+      "importance": 0.014731155678240612
+    },
+    {
+      "feature": "piece_count_ours",
+      "importance": 0.014252305866436742
+    },
+    {
+      "feature": "is_castled",
+      "importance": 0.0075420138108828905
+    },
+    {
+      "feature": "threatened_delta",
+      "importance": 0.004455131542841623
+    },
+    {
+      "feature": "opening_development_lag",
+      "importance": 0.003886132914912263
+    },
+    {
+      "feature": "book_differs_nobook",
+      "importance": 0.0032622308868168587
+    },
+    {
+      "feature": "opening_phase",
+      "importance": 0.001455519843263334
+    },
+    {
+      "feature": "threatened_ours",
+      "importance": 0.0011138428116959577
+    },
+    {
+      "feature": "played_is_capture",
+      "importance": 0.0009545482985353463
+    },
+    {
+      "feature": "threatened_theirs",
+      "importance": 0.0007748171883263339
+    },
+    {
+      "feature": "king_adj_files_open",
+      "importance": 0.0001583471852635282
+    },
+    {
+      "feature": "king_in_check",
+      "importance": 0.0
+    },
+    {
+      "feature": "king_ring_undefended",
+      "importance": 0.0
+    },
+    {
+      "feature": "king_file_open",
+      "importance": 0.0
+    },
+    {
+      "feature": "mid_endgame_phase",
+      "importance": 0.0
+    },
+    {
+      "feature": "endgame_phase",
+      "importance": 0.0
+    }
+  ],
+  "parameter_registry_path": "/home/josh/code/PerlGigachess/analysis/engine_param_registry.json",
+  "signal_context_train": {
+    "avg_cp_loss_risk": 0.004367201426024955,
+    "severe_rate": 0.0,
+    "bestmove_miss_rate": 0.6862745098039216,
+    "instability_risk": 0.3783244206773619,
+    "capture_risk_delta": 0.019444444444444445,
+    "hanging_risk_delta": 0.00828125,
+    "check_risk_delta": 0.0,
+    "king_ring_risk_delta": 0.513768115942029,
+    "king_file_risk": 0.0,
+    "opening_risk": 0.0035353535353535356,
+    "development_risk": 0.06388888888888888,
+    "endgame_risk": 0.0
+  },
+  "signal_context_holdout": {
+    "avg_cp_loss_risk": 0.029545454545454545,
+    "severe_rate": 0.0,
+    "bestmove_miss_rate": 1.0,
+    "instability_risk": 0.5559090909090909,
+    "capture_risk_delta": 0.059027777777777776,
+    "hanging_risk_delta": 0.0,
+    "check_risk_delta": 0.06148148148148148,
+    "king_ring_risk_delta": 0.0,
+    "king_file_risk": 0.0,
+    "opening_risk": 0.04318181818181818,
+    "development_risk": 0.06018518518518519,
+    "endgame_risk": 0.0
+  },
+  "group_pressure_train": {
+    "search_stability": 0.05609547713201586,
+    "king_safety": 0.04219874140688028,
+    "tactical_horizon": 0.01658772867070025,
+    "capture_safety": 0.005939509101728395,
+    "opening_discipline": 0.005170256002480903
+  },
+  "group_pressure_holdout": {
+    "search_stability": 0.08157664328295827,
+    "tactical_horizon": 0.02905426439963431,
+    "king_safety": 0.008927735042277804,
+    "capture_safety": 0.01019036969873794,
+    "opening_discipline": 0.010136772404859358
+  },
+  "optimizer_training_volume_weight": 0.34641016151377546,
+  "selected_candidate": {
+    "name": "scale_1.0",
+    "scale": 1.0,
+    "proxy_score": -0.08594217586909107,
+    "estimated_cp_loss_reduction": 0.0
+  },
+  "proposed_constant_updates": {
+    "KING_DANGER_CHECK_PENALTY": 23.0,
+    "ASPIRATION_WINDOW": 26.0,
+    "COUNTERMOVE_BONUS": 185.0
+  },
+  "applied_patch": false,
+  "changed_constants": [
+    "ASPIRATION_WINDOW",
+    "COUNTERMOVE_BONUS",
+    "KING_DANGER_CHECK_PENALTY"
+  ]
+}

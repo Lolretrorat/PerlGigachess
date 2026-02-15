@@ -1,0 +1,29 @@
+--- /home/josh/code/PerlGigachess/Chess/Engine.pm
++++ /home/josh/code/PerlGigachess/Chess/Engine.pm
+@@ -19,7 +19,7 @@
+ use constant QUIESCE_CHECK_BONUS => 128;               # Higher => checks are searched earlier inside quiescence.
+ use constant INF_SCORE => 1_000_000;                   # Search sentinel bound; should stay above any real eval.
+ use constant MATE_SCORE => 900_000;                    # Higher => mate threats dominate eval more strongly.
+-use constant ASPIRATION_WINDOW => 24;                  # Higher => fewer re-searches, but less pruning focus.
++use constant ASPIRATION_WINDOW => 26;                  # Higher => fewer re-searches, but less pruning focus.
+ 
+ use constant TT_FLAG_EXACT => 0;                       # TT exact-score entry type marker.
+ use constant TT_FLAG_LOWER => 1;                       # TT lower-bound entry type marker (fail-high).
+@@ -62,7 +62,7 @@
+ use constant TIME_PANIC_30S_QUIESCE_MAX_DEPTH => 2;    # Quiesce depth cap below 30s.
+ use constant TIME_PANIC_10S_QUIESCE_MAX_DEPTH => 1;    # Quiesce depth cap below 10s.
+ use constant TT_MAX_ENTRIES => 200_000;                # Higher => larger TT memory footprint, fewer evictions.
+-use constant COUNTERMOVE_BONUS => 180;                 # Higher => counter-move heuristic impacts ordering more.
++use constant COUNTERMOVE_BONUS => 185;                 # Higher => counter-move heuristic impacts ordering more.
+ use constant EASY_MOVE_MIN_DEPTH => 4;                 # Higher => require deeper confirmation before early stop.
+ use constant EASY_MOVE_DEPTH_CAP => 5;                 # Higher => allow easier early-stop logic at deeper levels.
+ use constant MID_ENDGAME_PIECE_THRESHOLD => 16;        # Higher => applies endgame heuristics earlier.
+@@ -83,7 +83,7 @@
+ use constant UNSAFE_CAPTURE_KING_EXPOSURE_WEIGHT => 7; # Higher => prioritize king shelter over greedy captures.
+ use constant KING_DANGER_RING_ATTACK_PENALTY => 6;     # Higher => penalize attacked king-ring squares more.
+ use constant KING_DANGER_RING_UNDEFENDED_PENALTY => 3; # Higher => penalize undefended ring attacks more.
+-use constant KING_DANGER_CHECK_PENALTY => 22;          # Higher => direct check against king hurts eval more.
++use constant KING_DANGER_CHECK_PENALTY => 23;          # Higher => direct check against king hurts eval more.
+ use constant KING_DANGER_SHIELD_MISSING_PENALTY => 3;  # Higher => missing pawn shield costs more.
+ use constant KING_DANGER_OPEN_FILE_PENALTY => 3;       # Higher => open king file is punished more.
+ use constant KING_DANGER_ADJ_FILE_PENALTY => 2;        # Higher => adjacent open files near king hurt more.

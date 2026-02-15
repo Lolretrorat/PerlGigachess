@@ -1,0 +1,11 @@
+{
+  "checkpoint_every_games": 250,
+  "games_completed": 8,
+  "games_total": 8,
+  "generated_at_utc": "2026-02-15T14:05:16.169089+00:00",
+  "migration_dir": "/home/josh/code/PerlGigachess/engineMigration/V20260215140333__engine_training_recommendations_smallsample",
+  "pgn_path": "/home/josh/code/PerlGigachess/data/lichess_games_export.pgn",
+  "rows_completed": 71,
+  "status": "completed",
+  "write_checkpoint_rows": true
+}

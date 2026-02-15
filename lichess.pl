@@ -295,18 +295,91 @@ sub log_finished_game_url {
 
   return unless ensure_parent_dir($game_url_log_path);
 
-  my $fh;
-  unless (open $fh, '>>', $game_url_log_path) {
-    log_warn("Unable to append game URL to $game_url_log_path: $!");
-    return;
+  my $max_attempts = 3;
+  for (my $attempt = 1; $attempt <= $max_attempts; $attempt++) {
+    my $fh;
+    unless (open $fh, '+>>', $game_url_log_path) {
+      log_warn("Unable to append game URL to $game_url_log_path (attempt $attempt): $!");
+      if ($attempt < $max_attempts) {
+        select undef, undef, undef, 0.2 * $attempt;
+        next;
+      }
+      return;
+    }
+    $fh->autoflush(1);
+
+    unless (flock($fh, LOCK_EX)) {
+      log_warn("Unable to lock game URL log $game_url_log_path (attempt $attempt): $!");
+      close $fh;
+      if ($attempt < $max_attempts) {
+        select undef, undef, undef, 0.2 * $attempt;
+        next;
+      }
+      return;
+    }
+
+    my $already_logged = 0;
+    if (seek($fh, 0, 0)) {
+      while (my $line = <$fh>) {
+        $line =~ s/[\r\n]+$//;
+        if ($line eq $url) {
+          $already_logged = 1;
+          last;
+        }
+      }
+    } else {
+      log_warn("Unable to scan existing game URL log entries: $!");
+    }
+
+    my $write_ok = 1;
+    if (!$already_logged) {
+      unless (seek($fh, 0, 2)) {
+        log_warn("Unable to seek to end of game URL log: $!");
+        $write_ok = 0;
+      } elsif (!print {$fh} "$url\n") {
+        log_warn("Unable to append game URL to $game_url_log_path: $!");
+        $write_ok = 0;
+      }
+    }
+
+    my $closed = close $fh;
+    unless ($closed) {
+      log_warn("Unable to close game URL log $game_url_log_path: $!");
+      $write_ok = 0;
+    }
+
+    if ($already_logged || $write_ok) {
+      $logged_finished_games{$game_id} = 1 if length $game_id;
+      if ($already_logged) {
+        log_debug("Game URL already logged: $url");
+      } else {
+        log_info("Logged finished game URL: $url");
+      }
+      return;
+    }
+
+    if ($attempt < $max_attempts) {
+      select undef, undef, undef, 0.2 * $attempt;
+    }
   }
 
-  flock($fh, LOCK_EX);
-  print {$fh} "$url\n";
-  close $fh;
+  log_warn("Failed to persist finished game URL after $max_attempts attempts: $url");
+}
 
-  $logged_finished_games{$game_id} = 1 if length $game_id;
-  log_info("Logged finished game URL: $url");
+sub maybe_log_finished_from_status {
+  my ($game) = @_;
+  return unless ref $game eq 'HASH';
+  return unless is_terminal_game_status($game->{status});
+  log_finished_game_url($game);
+}
+
+sub is_terminal_game_status {
+  my ($status) = @_;
+  return 0 unless defined $status && length $status;
+  my $normalized = lc $status;
+  return 0 if $normalized eq 'created';
+  return 0 if $normalized eq 'started';
+  return 1;
 }
 
 sub ensure_parent_dir {
@@ -527,6 +600,7 @@ sub play_game {
   } else {
     log_info("Game stream $game_id finished");
   }
+  maybe_log_finished_from_status(\%game);
 
   kill 'TERM', $engine_pid;
   waitpid($engine_pid, 0);
@@ -555,6 +629,7 @@ sub handle_game_event {
     update_turn_from_event($game, $event);
     print {$engine_in} "ucinewgame\n";
     maybe_move($game, $engine_out, $engine_in);
+    maybe_log_finished_from_status($game);
   } elsif ($type eq 'gameState') {
     log_debug("gameState payload: " . encode_json($event)) if $debug;
     log_debug("gameState for $game->{id}: moves=$event->{moves}");
@@ -567,6 +642,7 @@ sub handle_game_event {
     $game->{pending_move} = undef if $game->{pending_move};
     update_turn_from_event($game, $event);
     maybe_move($game, $engine_out, $engine_in);
+    maybe_log_finished_from_status($game);
   } elsif ($type eq 'chatLine') {
     log_info("Chat <$event->{username}> $event->{text}") if $event->{text};
   }

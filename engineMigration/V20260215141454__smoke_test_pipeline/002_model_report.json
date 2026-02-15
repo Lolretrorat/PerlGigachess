@@ -1,0 +1,620 @@
+{
+  "generated_at_utc": "2026-02-15T14:15:57.051999+00:00",
+  "summary": {
+    "generated_at_utc": "2026-02-15T14:15:56.623754+00:00",
+    "games": 1,
+    "engine_moves": 10,
+    "moves_with_eval": 10,
+    "bestmove_match_rate": 0.1,
+    "avg_cp_loss": 0.4,
+    "critical_80cp": 0,
+    "severe_150cp": 0,
+    "capture_critical": 0,
+    "quiet_critical": 0,
+    "critical_with_opp_checks": 0,
+    "book_disagreements_opening": 6,
+    "capture_avg_cp_loss": 0.0,
+    "quiet_avg_cp_loss": 0.5714285714285714,
+    "check_pressure_avg_cp_loss": 7.25,
+    "opening_avg_cp_loss": 7.857142857142857
+  },
+  "train_summary": {
+    "generated_at_utc": "2026-02-15T14:15:56.886230+00:00",
+    "games": 1,
+    "engine_moves": 10,
+    "moves_with_eval": 10,
+    "bestmove_match_rate": 0.1,
+    "avg_cp_loss": 0.4,
+    "critical_80cp": 0,
+    "severe_150cp": 0,
+    "capture_critical": 0,
+    "quiet_critical": 0,
+    "critical_with_opp_checks": 0,
+    "book_disagreements_opening": 6,
+    "capture_avg_cp_loss": 0.0,
+    "quiet_avg_cp_loss": 0.5714285714285714,
+    "check_pressure_avg_cp_loss": 7.25,
+    "opening_avg_cp_loss": 7.857142857142857
+  },
+  "holdout_summary": {
+    "engine_moves": 0,
+    "games": 0
+  },
+  "training_counts": {
+    "games_requested": 1,
+    "games_loaded": 1,
+    "games_with_labels": 10,
+    "games_train": 1,
+    "games_holdout": 0,
+    "training_volume_weight": 0.15
+  },
+  "model_metrics": {
+    "rows": 10,
+    "train_rows": 10,
+    "holdout_rows": 0,
+    "mae": null,
+    "r2": null,
+    "split_mode": "tiny_sample_correlation_fallback",
+    "train_games": 1,
+    "holdout_games": 0,
+    "training_volume_weight": 0.15
+  },
+  "feature_importance": [
+    {
+      "feature": "opening_development_lag",
+      "importance": 0.6517719184645694
+    },
+    {
+      "feature": "legal_moves",
+      "importance": 0.5933306249004453
+    },
+    {
+      "feature": "material_cp",
+      "importance": 0.5853931145377331
+    },
+    {
+      "feature": "non_pawn_material_cp",
+      "importance": 0.5853931145377331
+    },
+    {
+      "feature": "opening_phase",
+      "importance": 0.585393114537733
+    },
+    {
+      "feature": "piece_count_ours",
+      "importance": 0.5506672159326422
+    },
+    {
+      "feature": "piece_count_theirs",
+      "importance": 0.5506672159326422
+    },
+    {
+      "feature": "mobility_delta",
+      "importance": 0.5406084081878981
+    },
+    {
+      "feature": "center_control_delta",
+      "importance": 0.5142375017866893
+    },
+    {
+      "feature": "opponent_legal_moves_after",
+      "importance": 0.505216536417856
+    },
+    {
+      "feature": "book_differs_nobook",
+      "importance": 0.47835021784319015
+    },
+    {
+      "feature": "king_file_open",
+      "importance": 0.3454043664322256
+    },
+    {
+      "feature": "opponent_checks_after",
+      "importance": 0.28742973616016254
+    },
+    {
+      "feature": "best_matches_played",
+      "importance": 0.12676437493100803
+    },
+    {
+      "feature": "king_ring_attacked",
+      "importance": 0.12676437493100803
+    },
+    {
+      "feature": "threatened_ours",
+      "importance": 0.10021237747924286
+    },
+    {
+      "feature": "threatened_delta",
+      "importance": 0.10021237747924286
+    },
+    {
+      "feature": "played_is_capture",
+      "importance": 0.013457312977878949
+    },
+    {
+      "feature": "played_gives_check",
+      "importance": 0.0
+    },
+    {
+      "feature": "threatened_theirs",
+      "importance": 0.0
+    },
+    {
+      "feature": "king_in_check",
+      "importance": 0.0
+    },
+    {
+      "feature": "king_ring_undefended",
+      "importance": 0.0
+    },
+    {
+      "feature": "king_adj_files_open",
+      "importance": 0.0
+    },
+    {
+      "feature": "is_castled",
+      "importance": 0.0
+    },
+    {
+      "feature": "mid_endgame_phase",
+      "importance": 0.0
+    },
+    {
+      "feature": "endgame_phase",
+      "importance": 0.0
+    }
+  ],
+  "parameter_registry_path": "/home/josh/code/PerlGigachess/analysis/engine_param_registry.json",
+  "parameter_registry_size": 22,
+  "signal_context_train": {
+    "avg_cp_loss_risk": 0.0018181818181818182,
+    "severe_rate": 0.0,
+    "bestmove_miss_rate": 1.0,
+    "instability_risk": 0.5503636363636364,
+    "capture_risk_delta": 0.0,
+    "hanging_risk_delta": 0.0,
+    "check_risk_delta": 0.06342592592592593,
+    "king_ring_risk_delta": 0.0,
+    "king_file_risk": 0.0,
+    "opening_risk": 0.03571428571428571,
+    "development_risk": 0.10555555555555556,
+    "endgame_risk": 0.0
+  },
+  "signal_context_holdout": {
+    "avg_cp_loss_risk": 0.0,
+    "severe_rate": 0.0,
+    "bestmove_miss_rate": 0.0,
+    "instability_risk": 0.0,
+    "capture_risk_delta": 0.0,
+    "hanging_risk_delta": 0.0,
+    "check_risk_delta": 0.0,
+    "king_ring_risk_delta": 0.0,
+    "king_file_risk": 0.0,
+    "opening_risk": 0.0,
+    "development_risk": 0.0,
+    "endgame_risk": 0.0
+  },
+  "group_pressure_train": {
+    "search_stability": 0.03365952578565473,
+    "tactical_horizon": 0.012657848364839092,
+    "king_safety": 0.003469561871774902,
+    "opening_discipline": 0.006106044224453844,
+    "capture_safety": 0.0016260680849638411
+  },
+  "group_pressure_holdout": {
+    "opening_discipline": 0.0012960311247063713,
+    "search_stability": 0.000807069535654732,
+    "king_safety": 0.0005203916877922176,
+    "capture_safety": 0.0005456459258729318,
+    "tactical_horizon": 0.00045919748100071056
+  },
+  "optimizer_training_volume_weight": 0.15,
+  "parameter_weights": [
+    {
+      "name": "EXTRA_DEPTH_ON_UNSTABLE",
+      "group": "search_stability",
+      "type": "int",
+      "direction": "increase",
+      "current": 6.0,
+      "min": 1.0,
+      "max": 10.0,
+      "step": 1.0,
+      "max_step_change": 2.0,
+      "base_weight": 0.85,
+      "training_volume_weight": 0.15,
+      "feature_score": 0.04736911991675884,
+      "signal_score": 0.2756363636363636,
+      "group_score": 0.5256363636363637,
+      "composite_score": 0.04366657164878644
+    },
+    {
+      "name": "SCORE_STABILITY_DELTA",
+      "group": "search_stability",
+      "type": "int",
+      "direction": "decrease",
+      "current": 2.0,
+      "min": 1.0,
+      "max": 8.0,
+      "step": 1.0,
+      "max_step_change": 2.0,
+      "base_weight": 0.7,
+      "training_volume_weight": 0.15,
+      "feature_score": 0.029658762849949574,
+      "signal_score": 0.33058181818181814,
+      "group_score": 0.5256363636363637,
+      "composite_score": 0.03760803401984894
+    },
+    {
+      "name": "ASPIRATION_WINDOW",
+      "group": "search_stability",
+      "type": "int",
+      "direction": "increase",
+      "current": 24.0,
+      "min": 12.0,
+      "max": 80.0,
+      "step": 2.0,
+      "max_step_change": 8.0,
+      "base_weight": 0.55,
+      "training_volume_weight": 0.15,
+      "feature_score": 0.054544139647374944,
+      "signal_score": 0.27572727272727277,
+      "group_score": 0.5256363636363637,
+      "composite_score": 0.02837585330418169
+    },
+    {
+      "name": "COUNTERMOVE_BONUS",
+      "group": "search_stability",
+      "type": "int",
+      "direction": "increase",
+      "current": 180.0,
+      "min": 80.0,
+      "max": 320.0,
+      "step": 5.0,
+      "max_step_change": 10.0,
+      "base_weight": 0.5,
+      "training_volume_weight": 0.15,
+      "feature_score": 0.03317021738073,
+      "signal_score": 0.2571376623376624,
+      "group_score": 0.5256363636363637,
+      "composite_score": 0.02498764416980186
+    },
+    {
+      "name": "QUIESCE_CHECK_BONUS",
+      "group": "tactical_horizon",
+      "type": "int",
+      "direction": "increase",
+      "current": 128.0,
+      "min": 40.0,
+      "max": 260.0,
+      "step": 2.0,
+      "max_step_change": 20.0,
+      "base_weight": 0.95,
+      "training_volume_weight": 0.15,
+      "feature_score": 0.018645112967652956,
+      "signal_score": 0.18730816498316497,
+      "group_score": 0.13227180134680136,
+      "composite_score": 0.018355309709477095
+    },
+    {
+      "name": "LMR_KING_DANGER_THRESHOLD",
+      "group": "king_safety",
+      "type": "int",
+      "direction": "decrease",
+      "current": 4.0,
+      "min": 4.0,
+      "max": 24.0,
+      "step": 1.0,
+      "max_step_change": 4.0,
+      "base_weight": 0.9,
+      "training_volume_weight": 0.15,
+      "feature_score": 0.030200760876508796,
+      "signal_score": 0.15978998316498316,
+      "group_score": 0.025370370370370373,
+      "composite_score": 0.009906747248211193
+    },
+    {
+      "name": "EARLY_QUEEN_MOVE_PENALTY",
+      "group": "opening_discipline",
+      "type": "int",
+      "direction": "increase",
+      "current": 4.0,
+      "min": 1.0,
+      "max": 14.0,
+      "step": 1.0,
+      "max_step_change": 3.0,
+      "base_weight": 0.75,
+      "training_volume_weight": 0.15,
+      "feature_score": 0.07483404525671847,
+      "signal_score": 0.13037200577200575,
+      "group_score": 0.051309523809523805,
+      "composite_score": 0.009414708388406032
+    },
+    {
+      "name": "QUIESCE_CHECK_MAX_DEPTH",
+      "group": "tactical_horizon",
+      "type": "int",
+      "direction": "increase",
+      "current": 1.0,
+      "min": 1.0,
+      "max": 4.0,
+      "step": 1.0,
+      "max_step_change": 1.0,
+      "base_weight": 0.65,
+      "training_volume_weight": 0.15,
+      "feature_score": 0.019846627816580094,
+      "signal_score": 0.022562710437710437,
+      "group_score": 0.13227180134680136,
+      "composite_score": 0.00696038702020109
+    },
+    {
+      "name": "DEVELOPMENT_MINOR_PENALTY",
+      "group": "opening_discipline",
+      "type": "int",
+      "direction": "increase",
+      "current": 2.0,
+      "min": 1.0,
+      "max": 10.0,
+      "step": 1.0,
+      "max_step_change": 2.0,
+      "base_weight": 0.7,
+      "training_volume_weight": 0.15,
+      "feature_score": 0.074491456853637,
+      "signal_score": 0.05158225108225108,
+      "group_score": 0.051309523809523805,
+      "composite_score": 0.005884343321199103
+    },
+    {
+      "name": "UNSAFE_CAPTURE_DEFENDED_SCALE",
+      "group": "capture_safety",
+      "type": "float",
+      "direction": "increase",
+      "current": 0.55,
+      "min": 0.2,
+      "max": 0.9,
+      "step": 0.05,
+      "max_step_change": 3.0,
+      "base_weight": 0.75,
+      "training_volume_weight": 0.15,
+      "feature_score": 0.035499551569453974,
+      "signal_score": 0.11007272727272728,
+      "group_score": 0.0,
+      "composite_score": 0.005132853546676351
+    },
+    {
+      "name": "UNCASTLED_KING_PENALTY",
+      "group": "opening_discipline",
+      "type": "int",
+      "direction": "increase",
+      "current": 5.0,
+      "min": 2.0,
+      "max": 14.0,
+      "step": 1.0,
+      "max_step_change": 3.0,
+      "base_weight": 0.8,
+      "training_volume_weight": 0.15,
+      "feature_score": 0.03709387463348789,
+      "signal_score": 0.026970899470899472,
+      "group_score": 0.051309523809523805,
+      "composite_score": 0.004793745054695772
+    },
+    {
+      "name": "EARLY_ROOK_MOVE_PENALTY",
+      "group": "opening_discipline",
+      "type": "int",
+      "direction": "increase",
+      "current": 3.0,
+      "min": 1.0,
+      "max": 10.0,
+      "step": 1.0,
+      "max_step_change": 2.0,
+      "base_weight": 0.55,
+      "training_volume_weight": 0.15,
+      "feature_score": 0.06338090275268074,
+      "signal_score": 0.047817460317460314,
+      "group_score": 0.051309523809523805,
+      "composite_score": 0.00433138013351447
+    },
+    {
+      "name": "KING_DANGER_CHECK_PENALTY",
+      "group": "king_safety",
+      "type": "int",
+      "direction": "increase",
+      "current": 22.0,
+      "min": 4.0,
+      "max": 36.0,
+      "step": 1.0,
+      "max_step_change": 8.0,
+      "base_weight": 1.0,
+      "training_volume_weight": 0.15,
+      "feature_score": 0.026533373405890952,
+      "signal_score": 0.028541666666666667,
+      "group_score": 0.025370370370370373,
+      "composite_score": 0.004006938702176729
+    },
+    {
+      "name": "KING_DANGER_RING_ATTACK_PENALTY",
+      "group": "king_safety",
+      "type": "int",
+      "direction": "increase",
+      "current": 6.0,
+      "min": 1.0,
+      "max": 12.0,
+      "step": 1.0,
+      "max_step_change": 3.0,
+      "base_weight": 0.85,
+      "training_volume_weight": 0.15,
+      "feature_score": 0.018601542709447166,
+      "signal_score": 0.015856481481481482,
+      "group_score": 0.025370370370370373,
+      "composite_score": 0.0026375598252020146
+    },
+    {
+      "name": "KING_DANGER_OPEN_FILE_PENALTY",
+      "group": "king_safety",
+      "type": "int",
+      "direction": "increase",
+      "current": 3.0,
+      "min": 1.0,
+      "max": 8.0,
+      "step": 1.0,
+      "max_step_change": 2.0,
+      "base_weight": 0.65,
+      "training_volume_weight": 0.15,
+      "feature_score": 0.034173317025223776,
+      "signal_score": 0.021213624338624337,
+      "group_score": 0.025370370370370373,
+      "composite_score": 0.0025034196125474197
+    },
+    {
+      "name": "KING_DANGER_RING_UNDEFENDED_PENALTY",
+      "group": "king_safety",
+      "type": "int",
+      "direction": "increase",
+      "current": 3.0,
+      "min": 1.0,
+      "max": 10.0,
+      "step": 1.0,
+      "max_step_change": 2.0,
+      "base_weight": 0.75,
+      "training_volume_weight": 0.15,
+      "feature_score": 0.007836216231977059,
+      "signal_score": 0.012685185185185186,
+      "group_score": 0.025370370370370373,
+      "composite_score": 0.0019601690318861507
+    },
+    {
+      "name": "KING_DANGER_SHIELD_MISSING_PENALTY",
+      "group": "king_safety",
+      "type": "int",
+      "direction": "increase",
+      "current": 3.0,
+      "min": 1.0,
+      "max": 10.0,
+      "step": 1.0,
+      "max_step_change": 2.0,
+      "base_weight": 0.7,
+      "training_volume_weight": 0.15,
+      "feature_score": 0.022580919288350397,
+      "signal_score": 0.007142857142857143,
+      "group_score": 0.025370370370370373,
+      "composite_score": 0.0019354493050553585
+    },
+    {
+      "name": "UNSAFE_CAPTURE_KING_EXPOSURE_WEIGHT",
+      "group": "capture_safety",
+      "type": "int",
+      "direction": "increase",
+      "current": 7.0,
+      "min": 1.0,
+      "max": 14.0,
+      "step": 1.0,
+      "max_step_change": 3.0,
+      "base_weight": 0.9,
+      "training_volume_weight": 0.15,
+      "feature_score": 0.023287798409384483,
+      "signal_score": 0.022199074074074072,
+      "group_score": 0.0,
+      "composite_score": 0.0016776768070533808
+    },
+    {
+      "name": "KING_DANGER_ADJ_FILE_PENALTY",
+      "group": "king_safety",
+      "type": "int",
+      "direction": "increase",
+      "current": 2.0,
+      "min": 1.0,
+      "max": 6.0,
+      "step": 1.0,
+      "max_step_change": 2.0,
+      "base_weight": 0.55,
+      "training_volume_weight": 0.15,
+      "feature_score": 0.014550719839118093,
+      "signal_score": 0.005357142857142856,
+      "group_score": 0.025370370370370373,
+      "composite_score": 0.0013366493773454488
+    },
+    {
+      "name": "HANGING_MOVE_GUARD_BONUS",
+      "group": "capture_safety",
+      "type": "int",
+      "direction": "increase",
+      "current": 18.0,
+      "min": 6.0,
+      "max": 40.0,
+      "step": 1.0,
+      "max_step_change": 6.0,
+      "base_weight": 0.8,
+      "training_volume_weight": 0.15,
+      "feature_score": 0.024603808195242445,
+      "signal_score": 0.00045454545454545455,
+      "group_score": 0.0,
+      "composite_score": 0.0006095823057767278
+    },
+    {
+      "name": "UNSAFE_CAPTURE_HANGING_BONUS",
+      "group": "capture_safety",
+      "type": "int",
+      "direction": "increase",
+      "current": 51.0,
+      "min": 8.0,
+      "max": 96.0,
+      "step": 1.0,
+      "max_step_change": 14.0,
+      "base_weight": 1.0,
+      "training_volume_weight": 0.15,
+      "feature_score": 0.015366685163558491,
+      "signal_score": 0.0,
+      "group_score": 0.0,
+      "composite_score": 0.00046100055490675475
+    },
+    {
+      "name": "HANGING_DEFENDED_SCALE",
+      "group": "capture_safety",
+      "type": "float",
+      "direction": "increase",
+      "current": 0.4,
+      "min": 0.1,
+      "max": 0.85,
+      "step": 0.05,
+      "max_step_change": 2.0,
+      "base_weight": 0.6,
+      "training_volume_weight": 0.15,
+      "feature_score": 0.013845956133666112,
+      "signal_score": 0.0,
+      "group_score": 0.0,
+      "composite_score": 0.00024922721040599
+    }
+  ],
+  "candidate_results": [
+    {
+      "name": "scale_0.6",
+      "scale": 0.6,
+      "proxy_score": -1000000000.0,
+      "estimated_cp_loss_reduction": 0.0,
+      "changed_constants": []
+    },
+    {
+      "name": "scale_1.0",
+      "scale": 1.0,
+      "proxy_score": -1000000000.0,
+      "estimated_cp_loss_reduction": 0.0,
+      "changed_constants": []
+    },
+    {
+      "name": "scale_1.4",
+      "scale": 1.4,
+      "proxy_score": -1000000000.0,
+      "estimated_cp_loss_reduction": 0.0,
+      "changed_constants": []
+    }
+  ],
+  "selected_candidate": {
+    "name": "scale_0.6",
+    "scale": 0.6,
+    "proxy_score": -1000000000.0,
+    "estimated_cp_loss_reduction": 0.0,
+    "changed_constants": []
+  },
+  "proposed_constant_updates": {}
+}
