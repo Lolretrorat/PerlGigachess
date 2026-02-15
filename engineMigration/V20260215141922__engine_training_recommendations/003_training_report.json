@@ -1,0 +1,275 @@
+{
+  "generated_at_utc": "2026-02-15T14:19:43.482332+00:00",
+  "pgn_path": "/home/josh/code/PerlGigachess/data/lichess_games_export.pgn",
+  "engine_cmd": [
+    "perl",
+    "play.pl",
+    "--uci",
+    "--depth",
+    "8"
+  ],
+  "input_source_mode": "existing_pgn",
+  "migration": {
+    "dir": "/home/josh/code/PerlGigachess/engineMigration/V20260215141922__engine_training_recommendations",
+    "name": "V20260215141922__engine_training_recommendations",
+    "check_cmd": "scripts/apply_engine_migration.sh check V20260215141922__engine_training_recommendations",
+    "apply_cmd": "scripts/apply_engine_migration.sh apply V20260215141922__engine_training_recommendations"
+  },
+  "config": {
+    "engine_name": "Perl-GigaChess",
+    "allow_generic_pgn_games": false,
+    "generic_side_mode": "white",
+    "max_ply_per_game": 20,
+    "max_games": 40,
+    "opening_ply_limit": 14,
+    "search_movetime_ms": 250,
+    "eval_movetime_ms": 250,
+    "analyze_played_eval": true,
+    "enable_book_compare": true,
+    "min_rows_for_model": 24,
+    "severe_cp_loss": 150,
+    "holdout_fraction": 0.25,
+    "candidate_scales": [
+      0.6,
+      1.0,
+      1.4
+    ],
+    "max_constant_updates": 14,
+    "min_param_score_for_update": 0.12,
+    "training_reference_games": 20000,
+    "training_volume_exponent": 0.5
+  },
+  "summary_before": {
+    "generated_at_utc": "2026-02-15T14:19:43.097362+00:00",
+    "games": 2,
+    "engine_moves": 15,
+    "moves_with_eval": 15,
+    "bestmove_match_rate": 0.26666666666666666,
+    "avg_cp_loss": -0.2,
+    "critical_80cp": 0,
+    "severe_150cp": 0,
+    "capture_critical": 0,
+    "quiet_critical": 0,
+    "critical_with_opp_checks": 0,
+    "book_disagreements_opening": 10,
+    "capture_avg_cp_loss": -3.5,
+    "quiet_avg_cp_loss": 0.3076923076923077,
+    "check_pressure_avg_cp_loss": -2.0,
+    "opening_avg_cp_loss": 0.8333333333333334
+  },
+  "summary_after": null,
+  "train_summary": {
+    "generated_at_utc": "2026-02-15T14:19:43.349255+00:00",
+    "games": 2,
+    "engine_moves": 11,
+    "moves_with_eval": 11,
+    "bestmove_match_rate": 0.18181818181818182,
+    "avg_cp_loss": 1.3636363636363635,
+    "critical_80cp": 0,
+    "severe_150cp": 0,
+    "capture_critical": 0,
+    "quiet_critical": 0,
+    "critical_with_opp_checks": 0,
+    "book_disagreements_opening": 8,
+    "capture_avg_cp_loss": -3.5,
+    "quiet_avg_cp_loss": 2.4444444444444446,
+    "check_pressure_avg_cp_loss": 2.5,
+    "opening_avg_cp_loss": 2.0
+  },
+  "holdout_summary": {
+    "generated_at_utc": "2026-02-15T14:19:43.352344+00:00",
+    "games": 2,
+    "engine_moves": 4,
+    "moves_with_eval": 4,
+    "bestmove_match_rate": 0.5,
+    "avg_cp_loss": -4.5,
+    "critical_80cp": 0,
+    "severe_150cp": 0,
+    "capture_critical": 0,
+    "quiet_critical": 0,
+    "critical_with_opp_checks": 0,
+    "book_disagreements_opening": 2,
+    "capture_avg_cp_loss": null,
+    "quiet_avg_cp_loss": -4.5,
+    "check_pressure_avg_cp_loss": -20.0,
+    "opening_avg_cp_loss": -2.6666666666666665
+  },
+  "training_counts": {
+    "games_requested": 40,
+    "games_loaded": 2,
+    "games_with_labels": 15,
+    "games_train": 2,
+    "games_holdout": 2,
+    "training_volume_weight": 0.15
+  },
+  "model_metrics": {
+    "rows": 15,
+    "train_rows": 11,
+    "holdout_rows": 4,
+    "mae": 17.665618717561603,
+    "r2": 0.3039971963547575,
+    "split_mode": "row_split",
+    "train_games": 2,
+    "holdout_games": 2,
+    "training_volume_weight": 0.15
+  },
+  "feature_importance": [
+    {
+      "feature": "legal_moves",
+      "importance": 0.7411175074255839
+    },
+    {
+      "feature": "mobility_delta",
+      "importance": 0.09528517364272102
+    },
+    {
+      "feature": "king_file_open",
+      "importance": 0.052962422046073945
+    },
+    {
+      "feature": "opponent_legal_moves_after",
+      "importance": 0.03464042132756671
+    },
+    {
+      "feature": "center_control_delta",
+      "importance": 0.029397069329985925
+    },
+    {
+      "feature": "opening_development_lag",
+      "importance": 0.01556191026308774
+    },
+    {
+      "feature": "book_differs_nobook",
+      "importance": 0.014666240583358392
+    },
+    {
+      "feature": "best_matches_played",
+      "importance": 0.012537182534629687
+    },
+    {
+      "feature": "played_is_capture",
+      "importance": 0.0025660843102301256
+    },
+    {
+      "feature": "threatened_delta",
+      "importance": 0.0006081461195956633
+    },
+    {
+      "feature": "opponent_checks_after",
+      "importance": 0.0001762189988109625
+    },
+    {
+      "feature": "piece_count_theirs",
+      "importance": 0.00015813949910869725
+    },
+    {
+      "feature": "piece_count_ours",
+      "importance": 0.00015702025696091244
+    },
+    {
+      "feature": "threatened_ours",
+      "importance": 8.988019031520797e-05
+    },
+    {
+      "feature": "king_ring_attacked",
+      "importance": 5.143706151588801e-05
+    },
+    {
+      "feature": "is_castled",
+      "importance": 2.424021043771488e-05
+    },
+    {
+      "feature": "material_cp",
+      "importance": 6.401912394542322e-07
+    },
+    {
+      "feature": "king_adj_files_open",
+      "importance": 1.9638903038969117e-07
+    },
+    {
+      "feature": "opening_phase",
+      "importance": 6.961974762833074e-08
+    },
+    {
+      "feature": "played_gives_check",
+      "importance": 0.0
+    },
+    {
+      "feature": "non_pawn_material_cp",
+      "importance": 0.0
+    },
+    {
+      "feature": "threatened_theirs",
+      "importance": 0.0
+    },
+    {
+      "feature": "king_in_check",
+      "importance": 0.0
+    },
+    {
+      "feature": "king_ring_undefended",
+      "importance": 0.0
+    },
+    {
+      "feature": "mid_endgame_phase",
+      "importance": 0.0
+    },
+    {
+      "feature": "endgame_phase",
+      "importance": 0.0
+    }
+  ],
+  "parameter_registry_path": "/home/josh/code/PerlGigachess/analysis/engine_param_registry.json",
+  "signal_context_train": {
+    "avg_cp_loss_risk": 0.006198347107438016,
+    "severe_rate": 0.0,
+    "bestmove_miss_rate": 1.0,
+    "instability_risk": 0.5512396694214876,
+    "capture_risk_delta": 0.0,
+    "hanging_risk_delta": 0.0,
+    "check_risk_delta": 0.00992063492063492,
+    "king_ring_risk_delta": 0.0,
+    "king_file_risk": 0.0,
+    "opening_risk": 0.00909090909090909,
+    "development_risk": 0.045,
+    "endgame_risk": 0.0
+  },
+  "signal_context_holdout": {
+    "avg_cp_loss_risk": 0.0,
+    "severe_rate": 0.0,
+    "bestmove_miss_rate": 0.625,
+    "instability_risk": 0.34375,
+    "capture_risk_delta": 0.025,
+    "hanging_risk_delta": 0.028125,
+    "check_risk_delta": 0.0,
+    "king_ring_risk_delta": 0.025,
+    "king_file_risk": 0.0,
+    "opening_risk": 0.0,
+    "development_risk": 0.0,
+    "endgame_risk": 0.0
+  },
+  "group_pressure_train": {
+    "search_stability": 0.03627554394841002,
+    "tactical_horizon": 0.01043395507390386,
+    "king_safety": 0.0015330807181854846,
+    "opening_discipline": 0.002432507487281175,
+    "capture_safety": 0.0016289211897579103
+  },
+  "group_pressure_holdout": {
+    "search_stability": 0.023810410780796386,
+    "tactical_horizon": 0.006286299361954825,
+    "king_safety": 0.0017089972045501746,
+    "capture_safety": 0.0032002139002434474,
+    "opening_discipline": 0.000729463716835238
+  },
+  "optimizer_training_volume_weight": 0.15,
+  "selected_candidate": {
+    "name": "scale_0.6",
+    "scale": 0.6,
+    "proxy_score": -1000000000.0,
+    "estimated_cp_loss_reduction": 0.0
+  },
+  "proposed_constant_updates": {},
+  "applied_patch": false,
+  "changed_constants": []
+}
