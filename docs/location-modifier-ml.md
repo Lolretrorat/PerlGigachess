@@ -11,17 +11,13 @@ Turn raw classical game data into empirically grounded piece-square tables used 
 Example one-shot rebuild (opening book + location modifiers, auto-cleanup):
 
 ```bash
-scripts/rebuild_from_lichess.sh \
-  --url https://database.lichess.org/standard/lichess_db_standard_rated_2025-01.pgn.zst
+scripts/data_ingress.sh LICHESS-DB-PGNS 2025-01
 ```
 
-Incremental month append with source confirmation + duplicate-source protection:
+Incremental month append with duplicate-source protection:
 
 ```bash
-scripts/rebuild_from_lichess.sh \
-  --append \
-  --confirm-source lichess_db_standard_rated_2025-02.pgn.zst \
-  --url https://database.lichess.org/standard/lichess_db_standard_rated_2025-02.pgn.zst
+scripts/data_ingress.sh LICHESS-DB-PGNS 2025-02
 ```
 
 Append mode records ingested sources in `data/lichess_ingest_manifest.json`.

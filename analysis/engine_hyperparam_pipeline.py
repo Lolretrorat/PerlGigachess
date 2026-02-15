@@ -221,6 +221,7 @@ def _build_parameter_rows(
     registry: Dict[str, Any],
     signal_context: Dict[str, float],
     importance_norm: Dict[str, float],
+    training_volume_weight: float = 1.0,
 ) -> List[Dict[str, Any]]:
     rows: List[Dict[str, Any]] = []
     for spec in registry.get("parameters", []):
@@ -267,8 +268,9 @@ def _build_parameter_rows(
             group_score = signal_context.get("avg_cp_loss_risk", 0.0)
 
         base_weight = float(spec.get("base_weight", 1.0))
+        effective_weight = base_weight * _clamp(training_volume_weight, 0.05, 1.5)
         composite = _clamp(
-            base_weight * (0.45 * group_score + 0.35 * signal_score + 0.20 * feature_score),
+            effective_weight * (0.45 * group_score + 0.35 * signal_score + 0.20 * feature_score),
             0.0,
             1.5,
         )
@@ -285,6 +287,7 @@ def _build_parameter_rows(
                 "step": float(spec.get("step", 1.0)),
                 "max_step_change": float(spec.get("max_step_change", 1.0)),
                 "base_weight": base_weight,
+                "training_volume_weight": float(training_volume_weight),
                 "feature_score": float(feature_score),
                 "signal_score": float(signal_score),
                 "group_score": float(group_score),
@@ -388,6 +391,7 @@ def optimize_constants_from_registry(
     candidate_scales: Iterable[float],
     min_param_score: float,
     max_updates: int,
+    training_volume_weight: float = 1.0,
 ) -> Dict[str, Any]:
     registry = load_parameter_registry(registry_path)
     importance_norm = normalize_feature_importance(feature_importance)
@@ -395,10 +399,22 @@ def optimize_constants_from_registry(
     signal_context_train = build_signal_context(df_train_eval, summary_train, severe_cp_loss)
     signal_context_holdout = build_signal_context(df_holdout_eval, summary_holdout, severe_cp_loss)
 
-    param_rows = _build_parameter_rows(constants, registry, signal_context_train, importance_norm)
+    param_rows = _build_parameter_rows(
+        constants,
+        registry,
+        signal_context_train,
+        importance_norm,
+        training_volume_weight=training_volume_weight,
+    )
     group_pressure_train = _group_pressures(param_rows)
 
-    holdout_rows = _build_parameter_rows(constants, registry, signal_context_holdout, importance_norm)
+    holdout_rows = _build_parameter_rows(
+        constants,
+        registry,
+        signal_context_holdout,
+        importance_norm,
+        training_volume_weight=training_volume_weight,
+    )
     group_pressure_holdout = _group_pressures(holdout_rows)
 
     candidate_results: List[Dict[str, Any]] = []
@@ -439,6 +455,7 @@ def optimize_constants_from_registry(
         "signal_context_holdout": signal_context_holdout,
         "group_pressure_train": group_pressure_train,
         "group_pressure_holdout": group_pressure_holdout,
+        "training_volume_weight": float(training_volume_weight),
         "parameter_rows": param_rows,
         "candidate_results": candidate_results,
         "selected_candidate": selected,
