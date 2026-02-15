@@ -16,7 +16,7 @@ use Time::HiRes qw(time);
 use constant LOCATION_WEIGHT => 0.15;                  # Higher => piece-square tables influence eval more.
 use constant QUIESCE_MAX_DEPTH => 4;                   # Higher => deeper quiescence (more tactics, more time).
 use constant QUIESCE_CHECK_MAX_DEPTH => 1;             # Higher => include checking moves deeper in quiescence.
-use constant QUIESCE_CHECK_BONUS => 110;               # Higher => checks are searched earlier inside quiescence.
+use constant QUIESCE_CHECK_BONUS => 128;               # Higher => checks are searched earlier inside quiescence.
 use constant INF_SCORE => 1_000_000;                   # Search sentinel bound; should stay above any real eval.
 use constant MATE_SCORE => 900_000;                    # Higher => mate threats dominate eval more strongly.
 use constant ASPIRATION_WINDOW => 24;                  # Higher => fewer re-searches, but less pruning focus.
@@ -52,20 +52,20 @@ use constant MID_ENDGAME_EASY_MOVE_EXTRA_DEPTH => 2;   # Higher => delay easy-mo
 use constant DEVELOPMENT_MINOR_PENALTY => 2;           # Higher => punishes undeveloped minors more.
 use constant EARLY_ROOK_MOVE_PENALTY => 3;             # Higher => discourages early rook moves before development.
 use constant EARLY_QUEEN_MOVE_PENALTY => 4;            # Higher => discourages early queen activity.
-use constant UNCASTLED_KING_PENALTY => 4;              # Higher => penalizes staying uncastled more.
+use constant UNCASTLED_KING_PENALTY => 5;              # Higher => penalizes staying uncastled more.
 use constant CENTRAL_KING_PENALTY => 3;                # Higher => penalizes central uncastled king more.
-use constant HANGING_DEFENDED_SCALE => 0.35;           # Higher => softens hanging penalty less when defended.
-use constant HANGING_MOVE_GUARD_BONUS => 14;           # Higher => penalizes quiet self-pins/hangs more.
-use constant LMR_KING_DANGER_THRESHOLD => 8;          # Lower => disables LMR sooner in king-danger positions.
-use constant UNSAFE_CAPTURE_HANGING_BONUS => 38;       # Higher => stronger penalty for grabbing into danger.
-use constant UNSAFE_CAPTURE_DEFENDED_SCALE => 0.45;    # Higher => keep more penalty even if capture square defended.
-use constant UNSAFE_CAPTURE_KING_EXPOSURE_WEIGHT => 4; # Higher => prioritize king shelter over greedy captures.
-use constant KING_DANGER_RING_ATTACK_PENALTY => 3;     # Higher => penalize attacked king-ring squares more.
-use constant KING_DANGER_RING_UNDEFENDED_PENALTY => 1; # Higher => penalize undefended ring attacks more.
-use constant KING_DANGER_CHECK_PENALTY => 14;          # Higher => direct check against king hurts eval more.
-use constant KING_DANGER_SHIELD_MISSING_PENALTY => 2;  # Higher => missing pawn shield costs more.
-use constant KING_DANGER_OPEN_FILE_PENALTY => 2;       # Higher => open king file is punished more.
-use constant KING_DANGER_ADJ_FILE_PENALTY => 1;        # Higher => adjacent open files near king hurt more.
+use constant HANGING_DEFENDED_SCALE => 0.4;           # Higher => softens hanging penalty less when defended.
+use constant HANGING_MOVE_GUARD_BONUS => 18;           # Higher => penalizes quiet self-pins/hangs more.
+use constant LMR_KING_DANGER_THRESHOLD => 4;          # Lower => disables LMR sooner in king-danger positions.
+use constant UNSAFE_CAPTURE_HANGING_BONUS => 51;       # Higher => stronger penalty for grabbing into danger.
+use constant UNSAFE_CAPTURE_DEFENDED_SCALE => 0.55;    # Higher => keep more penalty even if capture square defended.
+use constant UNSAFE_CAPTURE_KING_EXPOSURE_WEIGHT => 7; # Higher => prioritize king shelter over greedy captures.
+use constant KING_DANGER_RING_ATTACK_PENALTY => 6;     # Higher => penalize attacked king-ring squares more.
+use constant KING_DANGER_RING_UNDEFENDED_PENALTY => 3; # Higher => penalize undefended ring attacks more.
+use constant KING_DANGER_CHECK_PENALTY => 22;          # Higher => direct check against king hurts eval more.
+use constant KING_DANGER_SHIELD_MISSING_PENALTY => 3;  # Higher => missing pawn shield costs more.
+use constant KING_DANGER_OPEN_FILE_PENALTY => 3;       # Higher => open king file is punished more.
+use constant KING_DANGER_ADJ_FILE_PENALTY => 2;        # Higher => adjacent open files near king hurt more.
 
 my %history_scores;
 my @killer_moves;

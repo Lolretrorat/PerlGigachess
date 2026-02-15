@@ -14,15 +14,16 @@
       "base_weight": 1.0,
       "feature_weights": {
         "played_is_capture": 0.35,
-        "threatened_ours": 0.30,
-        "opponent_checks_after": 0.20,
+        "threatened_ours": 0.3,
+        "opponent_checks_after": 0.2,
         "king_ring_attacked": 0.15
       },
       "signal_weights": {
         "capture_risk_delta": 0.45,
         "hanging_risk_delta": 0.35,
-        "severe_rate": 0.20
-      }
+        "severe_rate": 0.2
+      },
+      "simple_meaning": "Penalizes captures that leave our pieces hanging; higher means less greedy captures."
     },
     {
       "name": "UNSAFE_CAPTURE_KING_EXPOSURE_WEIGHT",
@@ -35,38 +36,40 @@
       "direction": "increase",
       "base_weight": 0.9,
       "feature_weights": {
-        "played_is_capture": 0.30,
-        "king_ring_attacked": 0.30,
-        "king_file_open": 0.20,
-        "opponent_checks_after": 0.20
+        "played_is_capture": 0.3,
+        "king_ring_attacked": 0.3,
+        "king_file_open": 0.2,
+        "opponent_checks_after": 0.2
       },
       "signal_weights": {
-        "capture_risk_delta": 0.40,
+        "capture_risk_delta": 0.4,
         "check_risk_delta": 0.35,
         "king_file_risk": 0.25
-      }
+      },
+      "simple_meaning": "Adds extra penalty when a capture worsens king safety; higher means king safety is prioritized more."
     },
     {
       "name": "UNSAFE_CAPTURE_DEFENDED_SCALE",
       "group": "capture_safety",
       "type": "float",
-      "min": 0.20,
-      "max": 0.90,
+      "min": 0.2,
+      "max": 0.9,
       "step": 0.05,
       "max_step_change": 3,
       "direction": "increase",
       "base_weight": 0.75,
       "feature_weights": {
-        "played_is_capture": 0.30,
-        "threatened_ours": 0.30,
+        "played_is_capture": 0.3,
+        "threatened_ours": 0.3,
         "material_cp": 0.15,
         "mobility_delta": 0.25
       },
       "signal_weights": {
-        "capture_risk_delta": 0.50,
-        "hanging_risk_delta": 0.30,
-        "instability_risk": 0.20
-      }
+        "capture_risk_delta": 0.5,
+        "hanging_risk_delta": 0.3,
+        "instability_risk": 0.2
+      },
+      "simple_meaning": "Controls how much penalty remains when a risky capture square is defended; higher keeps more caution."
     },
     {
       "name": "HANGING_MOVE_GUARD_BONUS",
@@ -86,31 +89,33 @@
       },
       "signal_weights": {
         "hanging_risk_delta": 0.55,
-        "capture_risk_delta": 0.20,
+        "capture_risk_delta": 0.2,
         "avg_cp_loss_risk": 0.25
-      }
+      },
+      "simple_meaning": "Penalizes quiet moves that leave pieces loose or pinned; higher means stronger blunder prevention."
     },
     {
       "name": "HANGING_DEFENDED_SCALE",
       "group": "capture_safety",
       "type": "float",
-      "min": 0.10,
+      "min": 0.1,
       "max": 0.85,
       "step": 0.05,
       "max_step_change": 2,
       "direction": "increase",
       "base_weight": 0.6,
       "feature_weights": {
-        "threatened_ours": 0.40,
-        "threatened_theirs": 0.20,
-        "played_is_capture": 0.20,
-        "opponent_checks_after": 0.20
+        "threatened_ours": 0.4,
+        "threatened_theirs": 0.2,
+        "played_is_capture": 0.2,
+        "opponent_checks_after": 0.2
       },
       "signal_weights": {
-        "hanging_risk_delta": 0.60,
-        "severe_rate": 0.20,
-        "capture_risk_delta": 0.20
-      }
+        "hanging_risk_delta": 0.6,
+        "severe_rate": 0.2,
+        "capture_risk_delta": 0.2
+      },
+      "simple_meaning": "Reduces hanging-piece penalty if the piece is defended; higher means defended pieces are still treated as risky."
     },
     {
       "name": "KING_DANGER_CHECK_PENALTY",
@@ -123,16 +128,17 @@
       "direction": "increase",
       "base_weight": 1.0,
       "feature_weights": {
-        "opponent_checks_after": 0.40,
+        "opponent_checks_after": 0.4,
         "king_in_check": 0.25,
-        "king_ring_attacked": 0.20,
+        "king_ring_attacked": 0.2,
         "king_file_open": 0.15
       },
       "signal_weights": {
         "check_risk_delta": 0.45,
-        "king_ring_risk_delta": 0.30,
+        "king_ring_risk_delta": 0.3,
         "severe_rate": 0.25
-      }
+      },
+      "simple_meaning": "Penalty when king is in check or exposed to forcing lines; higher makes check threats matter more."
     },
     {
       "name": "KING_DANGER_RING_ATTACK_PENALTY",
@@ -146,15 +152,16 @@
       "base_weight": 0.85,
       "feature_weights": {
         "king_ring_attacked": 0.45,
-        "king_ring_undefended": 0.30,
+        "king_ring_undefended": 0.3,
         "opponent_checks_after": 0.15,
-        "king_file_open": 0.10
+        "king_file_open": 0.1
       },
       "signal_weights": {
         "king_ring_risk_delta": 0.55,
         "check_risk_delta": 0.25,
-        "king_file_risk": 0.20
-      }
+        "king_file_risk": 0.2
+      },
+      "simple_meaning": "Penalty for enemy attacks on king-ring squares; higher increases sensitivity to king pressure."
     },
     {
       "name": "KING_DANGER_RING_UNDEFENDED_PENALTY",
@@ -167,15 +174,16 @@
       "direction": "increase",
       "base_weight": 0.75,
       "feature_weights": {
-        "king_ring_undefended": 0.50,
+        "king_ring_undefended": 0.5,
         "king_ring_attacked": 0.25,
         "threatened_ours": 0.25
       },
       "signal_weights": {
         "king_ring_risk_delta": 0.55,
         "hanging_risk_delta": 0.25,
-        "check_risk_delta": 0.20
-      }
+        "check_risk_delta": 0.2
+      },
+      "simple_meaning": "Extra penalty when attacked king-ring squares are undefended; higher punishes weak king cover."
     },
     {
       "name": "KING_DANGER_SHIELD_MISSING_PENALTY",
@@ -188,16 +196,17 @@
       "direction": "increase",
       "base_weight": 0.7,
       "feature_weights": {
-        "king_file_open": 0.40,
-        "king_adj_files_open": 0.30,
-        "king_ring_attacked": 0.20,
-        "is_castled": 0.10
+        "king_file_open": 0.4,
+        "king_adj_files_open": 0.3,
+        "king_ring_attacked": 0.2,
+        "is_castled": 0.1
       },
       "signal_weights": {
         "king_file_risk": 0.45,
         "king_ring_risk_delta": 0.35,
-        "opening_risk": 0.20
-      }
+        "opening_risk": 0.2
+      },
+      "simple_meaning": "Penalty for missing pawn shield around king; higher values favor keeping a safer king shell."
     },
     {
       "name": "KING_DANGER_OPEN_FILE_PENALTY",
@@ -212,13 +221,14 @@
       "feature_weights": {
         "king_file_open": 0.55,
         "king_adj_files_open": 0.25,
-        "opponent_checks_after": 0.20
+        "opponent_checks_after": 0.2
       },
       "signal_weights": {
-        "king_file_risk": 0.60,
+        "king_file_risk": 0.6,
         "check_risk_delta": 0.25,
         "opening_risk": 0.15
-      }
+      },
+      "simple_meaning": "Penalty for open file in front of king; higher discourages open king files."
     },
     {
       "name": "KING_DANGER_ADJ_FILE_PENALTY",
@@ -231,15 +241,16 @@
       "direction": "increase",
       "base_weight": 0.55,
       "feature_weights": {
-        "king_adj_files_open": 0.60,
+        "king_adj_files_open": 0.6,
         "king_file_open": 0.25,
         "king_ring_attacked": 0.15
       },
       "signal_weights": {
         "king_file_risk": 0.65,
-        "king_ring_risk_delta": 0.20,
+        "king_ring_risk_delta": 0.2,
         "opening_risk": 0.15
-      }
+      },
+      "simple_meaning": "Penalty for open adjacent files near king; higher punishes side-channel king exposure."
     },
     {
       "name": "LMR_KING_DANGER_THRESHOLD",
@@ -253,15 +264,16 @@
       "base_weight": 0.9,
       "feature_weights": {
         "king_ring_attacked": 0.35,
-        "opponent_checks_after": 0.30,
-        "king_file_open": 0.20,
+        "opponent_checks_after": 0.3,
+        "king_file_open": 0.2,
         "best_matches_played": 0.15
       },
       "signal_weights": {
-        "king_ring_risk_delta": 0.40,
+        "king_ring_risk_delta": 0.4,
         "check_risk_delta": 0.35,
         "instability_risk": 0.25
-      }
+      },
+      "simple_meaning": "King-danger level at which late-move reductions are reduced/disabled; lower is more cautious in danger."
     },
     {
       "name": "QUIESCE_CHECK_BONUS",
@@ -274,16 +286,17 @@
       "direction": "increase",
       "base_weight": 0.95,
       "feature_weights": {
-        "opponent_checks_after": 0.40,
-        "played_gives_check": 0.20,
-        "king_in_check": 0.20,
-        "threatened_ours": 0.20
+        "opponent_checks_after": 0.4,
+        "played_gives_check": 0.2,
+        "king_in_check": 0.2,
+        "threatened_ours": 0.2
       },
       "signal_weights": {
         "severe_rate": 0.35,
         "check_risk_delta": 0.35,
-        "instability_risk": 0.30
-      }
+        "instability_risk": 0.3
+      },
+      "simple_meaning": "Boost for checking moves in quiescence ordering; higher explores checking tactics sooner."
     },
     {
       "name": "QUIESCE_CHECK_MAX_DEPTH",
@@ -296,15 +309,16 @@
       "direction": "increase",
       "base_weight": 0.65,
       "feature_weights": {
-        "opponent_checks_after": 0.50,
-        "king_in_check": 0.30,
-        "played_gives_check": 0.20
+        "opponent_checks_after": 0.5,
+        "king_in_check": 0.3,
+        "played_gives_check": 0.2
       },
       "signal_weights": {
         "severe_rate": 0.45,
         "check_risk_delta": 0.35,
-        "avg_cp_loss_risk": 0.20
-      }
+        "avg_cp_loss_risk": 0.2
+      },
+      "simple_meaning": "Max depth for check extensions in quiescence; higher searches forcing checks deeper."
     },
     {
       "name": "EXTRA_DEPTH_ON_UNSTABLE",
@@ -318,15 +332,16 @@
       "base_weight": 0.85,
       "feature_weights": {
         "best_matches_played": 0.35,
-        "legal_moves": 0.20,
-        "mobility_delta": 0.20,
+        "legal_moves": 0.2,
+        "mobility_delta": 0.2,
         "opponent_checks_after": 0.25
       },
       "signal_weights": {
-        "instability_risk": 0.50,
+        "instability_risk": 0.5,
         "avg_cp_loss_risk": 0.25,
         "severe_rate": 0.25
-      }
+      },
+      "simple_meaning": "Extra depth when search score/PV is unstable; higher spends more time on volatile positions."
     },
     {
       "name": "SCORE_STABILITY_DELTA",
@@ -340,15 +355,16 @@
       "base_weight": 0.7,
       "feature_weights": {
         "best_matches_played": 0.45,
-        "legal_moves": 0.20,
+        "legal_moves": 0.2,
         "king_ring_attacked": 0.15,
-        "threatened_ours": 0.20
+        "threatened_ours": 0.2
       },
       "signal_weights": {
-        "instability_risk": 0.60,
-        "severe_rate": 0.20,
-        "avg_cp_loss_risk": 0.20
-      }
+        "instability_risk": 0.6,
+        "severe_rate": 0.2,
+        "avg_cp_loss_risk": 0.2
+      },
+      "simple_meaning": "Tolerance before score is considered unstable; lower reacts sooner to evaluation swings."
     },
     {
       "name": "ASPIRATION_WINDOW",
@@ -361,16 +377,17 @@
       "direction": "increase",
       "base_weight": 0.55,
       "feature_weights": {
-        "best_matches_played": 0.40,
+        "best_matches_played": 0.4,
         "legal_moves": 0.25,
         "material_cp": 0.15,
-        "mobility_delta": 0.20
+        "mobility_delta": 0.2
       },
       "signal_weights": {
-        "instability_risk": 0.50,
-        "avg_cp_loss_risk": 0.30,
-        "severe_rate": 0.20
-      }
+        "instability_risk": 0.5,
+        "avg_cp_loss_risk": 0.3,
+        "severe_rate": 0.2
+      },
+      "simple_meaning": "Window size around previous score for aspiration search; higher means fewer re-searches but looser pruning."
     },
     {
       "name": "COUNTERMOVE_BONUS",
@@ -383,16 +400,17 @@
       "direction": "increase",
       "base_weight": 0.5,
       "feature_weights": {
-        "best_matches_played": 0.50,
-        "legal_moves": 0.20,
+        "best_matches_played": 0.5,
+        "legal_moves": 0.2,
         "opponent_checks_after": 0.15,
         "threatened_ours": 0.15
       },
       "signal_weights": {
         "instability_risk": 0.45,
-        "avg_cp_loss_risk": 0.30,
+        "avg_cp_loss_risk": 0.3,
         "opening_risk": 0.25
-      }
+      },
+      "simple_meaning": "Move-ordering bonus for historical counter-moves; higher trusts counter-move heuristic more."
     },
     {
       "name": "DEVELOPMENT_MINOR_PENALTY",
@@ -405,16 +423,17 @@
       "direction": "increase",
       "base_weight": 0.7,
       "feature_weights": {
-        "opening_phase": 0.40,
+        "opening_phase": 0.4,
         "opening_development_lag": 0.35,
         "center_control_delta": 0.15,
-        "is_castled": 0.10
+        "is_castled": 0.1
       },
       "signal_weights": {
         "opening_risk": 0.55,
-        "development_risk": 0.30,
+        "development_risk": 0.3,
         "avg_cp_loss_risk": 0.15
-      }
+      },
+      "simple_meaning": "Penalty for undeveloped bishops/knights in opening; higher pushes earlier development."
     },
     {
       "name": "EARLY_ROOK_MOVE_PENALTY",
@@ -428,14 +447,15 @@
       "base_weight": 0.55,
       "feature_weights": {
         "opening_phase": 0.45,
-        "opening_development_lag": 0.30,
+        "opening_development_lag": 0.3,
         "is_castled": 0.25
       },
       "signal_weights": {
-        "opening_risk": 0.60,
+        "opening_risk": 0.6,
         "development_risk": 0.25,
         "king_file_risk": 0.15
-      }
+      },
+      "simple_meaning": "Penalty for moving rooks too early; higher delays rook activity until development is ready."
     },
     {
       "name": "EARLY_QUEEN_MOVE_PENALTY",
@@ -450,14 +470,15 @@
       "feature_weights": {
         "opening_phase": 0.45,
         "opening_development_lag": 0.25,
-        "center_control_delta": 0.20,
-        "best_matches_played": 0.10
+        "center_control_delta": 0.2,
+        "best_matches_played": 0.1
       },
       "signal_weights": {
-        "opening_risk": 0.60,
+        "opening_risk": 0.6,
         "development_risk": 0.25,
         "instability_risk": 0.15
-      }
+      },
+      "simple_meaning": "Penalty for early queen sorties; higher discourages premature queen moves."
     },
     {
       "name": "UNCASTLED_KING_PENALTY",
@@ -472,14 +493,15 @@
       "feature_weights": {
         "is_castled": 0.45,
         "king_file_open": 0.25,
-        "opening_phase": 0.20,
-        "opening_development_lag": 0.10
+        "opening_phase": 0.2,
+        "opening_development_lag": 0.1
       },
       "signal_weights": {
-        "opening_risk": 0.40,
-        "king_file_risk": 0.40,
-        "check_risk_delta": 0.20
-      }
+        "opening_risk": 0.4,
+        "king_file_risk": 0.4,
+        "check_risk_delta": 0.2
+      },
+      "simple_meaning": "Penalty for staying uncastled; higher encourages castling earlier."
     }
   ]
 }

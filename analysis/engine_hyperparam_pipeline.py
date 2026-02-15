@@ -234,20 +234,44 @@ def _build_parameter_rows(
 
         group = spec.get("group", "misc")
         if group == "capture_safety":
-            group_score = 0.45 * signal_context.get("capture_risk_delta", 0.0) + 0.35 * signal_context.get("hanging_risk_delta", 0.0) + 0.20 * signal_context.get("severe_rate", 0.0)
+            group_score = (
+                0.45 * signal_context.get("capture_risk_delta", 0.0)
+                + 0.35 * signal_context.get("hanging_risk_delta", 0.0)
+                + 0.20 * signal_context.get("severe_rate", 0.0)
+            )
         elif group == "king_safety":
-            group_score = 0.40 * signal_context.get("check_risk_delta", 0.0) + 0.35 * signal_context.get("king_ring_risk_delta", 0.0) + 0.25 * signal_context.get("king_file_risk", 0.0)
+            group_score = (
+                0.40 * signal_context.get("check_risk_delta", 0.0)
+                + 0.35 * signal_context.get("king_ring_risk_delta", 0.0)
+                + 0.25 * signal_context.get("king_file_risk", 0.0)
+            )
         elif group == "tactical_horizon":
-            group_score = 0.45 * signal_context.get("severe_rate", 0.0) + 0.35 * signal_context.get("check_risk_delta", 0.0) + 0.20 * signal_context.get("instability_risk", 0.0)
+            group_score = (
+                0.45 * signal_context.get("severe_rate", 0.0)
+                + 0.35 * signal_context.get("check_risk_delta", 0.0)
+                + 0.20 * signal_context.get("instability_risk", 0.0)
+            )
         elif group == "search_stability":
-            group_score = 0.50 * signal_context.get("instability_risk", 0.0) + 0.25 * signal_context.get("avg_cp_loss_risk", 0.0) + 0.25 * signal_context.get("bestmove_miss_rate", 0.0)
+            group_score = (
+                0.50 * signal_context.get("instability_risk", 0.0)
+                + 0.25 * signal_context.get("avg_cp_loss_risk", 0.0)
+                + 0.25 * signal_context.get("bestmove_miss_rate", 0.0)
+            )
         elif group == "opening_discipline":
-            group_score = 0.55 * signal_context.get("opening_risk", 0.0) + 0.30 * signal_context.get("development_risk", 0.0) + 0.15 * signal_context.get("king_file_risk", 0.0)
+            group_score = (
+                0.55 * signal_context.get("opening_risk", 0.0)
+                + 0.30 * signal_context.get("development_risk", 0.0)
+                + 0.15 * signal_context.get("king_file_risk", 0.0)
+            )
         else:
             group_score = signal_context.get("avg_cp_loss_risk", 0.0)
 
         base_weight = float(spec.get("base_weight", 1.0))
-        composite = _clamp(base_weight * (0.45 * group_score + 0.35 * signal_score + 0.20 * feature_score), 0.0, 1.5)
+        composite = _clamp(
+            base_weight * (0.45 * group_score + 0.35 * signal_score + 0.20 * feature_score),
+            0.0,
+            1.5,
+        )
 
         rows.append(
             {
@@ -318,7 +342,9 @@ def _candidate_from_rows(
                 "delta": float(updates[row["name"]] - cur),
                 "direction": row["direction"],
                 "composite_score": score,
-                "normalized_change": float(abs(updates[row["name"]] - cur) / max(1e-9, (float(row["max"]) - float(row["min"])))),
+                "normalized_change": float(
+                    abs(updates[row["name"]] - cur) / max(1e-9, (float(row["max"]) - float(row["min"])))
+                ),
             }
         )
 
@@ -372,7 +398,6 @@ def optimize_constants_from_registry(
     param_rows = _build_parameter_rows(constants, registry, signal_context_train, importance_norm)
     group_pressure_train = _group_pressures(param_rows)
 
-    # Re-score groups using holdout signal profile.
     holdout_rows = _build_parameter_rows(constants, registry, signal_context_holdout, importance_norm)
     group_pressure_holdout = _group_pressures(holdout_rows)
 
@@ -393,15 +418,19 @@ def optimize_constants_from_registry(
         )
 
     candidate_results.sort(key=lambda x: x["proxy_score"], reverse=True)
-    selected = candidate_results[0] if candidate_results else {
-        "name": "none",
-        "scale": 0.0,
-        "proxy_score": -1e9,
-        "estimated_cp_loss_reduction": 0.0,
-        "updates": {},
-        "details": [],
-        "changed_constants": [],
-    }
+    selected = (
+        candidate_results[0]
+        if candidate_results
+        else {
+            "name": "none",
+            "scale": 0.0,
+            "proxy_score": -1e9,
+            "estimated_cp_loss_reduction": 0.0,
+            "updates": {},
+            "details": [],
+            "changed_constants": [],
+        }
+    )
 
     return {
         "registry": registry,
