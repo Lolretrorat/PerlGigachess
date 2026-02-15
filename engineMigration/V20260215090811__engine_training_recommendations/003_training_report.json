@@ -1,0 +1,108 @@
+{
+  "generated_at_utc": "2026-02-15T09:02:00.742333+00:00",
+  "pgn_path": "/home/josh/code/PerlGigachess/data/lichess_games_export.pgn",
+  "engine_cmd": [
+    "perl",
+    "play.pl",
+    "--uci",
+    "--depth",
+    "8"
+  ],
+  "input_source_mode": "existing_pgn",
+  "config": {
+    "engine_name": "Perl-GigaChess",
+    "max_games": 40,
+    "opening_ply_limit": 14,
+    "search_movetime_ms": 250,
+    "eval_movetime_ms": 250,
+    "analyze_played_eval": true,
+    "enable_book_compare": true,
+    "min_rows_for_model": 24,
+    "severe_cp_loss": 150
+  },
+  "summary_before": {
+    "generated_at_utc": "2026-02-15T09:02:00.462888+00:00",
+    "games": 3,
+    "engine_moves": 76,
+    "moves_with_eval": 76,
+    "bestmove_match_rate": 0.47368421052631576,
+    "avg_cp_loss": -143.60526315789474,
+    "critical_80cp": 0,
+    "severe_150cp": 0,
+    "capture_critical": 0,
+    "quiet_critical": 0,
+    "critical_with_opp_checks": 0,
+    "book_disagreements_opening": 14
+  },
+  "summary_after": null,
+  "model_metrics": {
+    "rows": 76,
+    "train_rows": 57,
+    "test_rows": 19,
+    "mae": 67.61684398516456,
+    "r2": -104.94434143185879
+  },
+  "feature_importance": [
+    {
+      "feature": "legal_moves",
+      "importance": 0.714909102431077
+    },
+    {
+      "feature": "played_gives_check",
+      "importance": 0.1418281630324283
+    },
+    {
+      "feature": "best_matches_played",
+      "importance": 0.09708136829008802
+    },
+    {
+      "feature": "material_cp",
+      "importance": 0.02557349523047107
+    },
+    {
+      "feature": "opponent_checks_after",
+      "importance": 0.013859019546717416
+    },
+    {
+      "feature": "king_ring_attacked",
+      "importance": 0.004780940292597757
+    },
+    {
+      "feature": "played_is_capture",
+      "importance": 0.0016235079618202837
+    },
+    {
+      "feature": "king_in_check",
+      "importance": 0.00030415767326407464
+    },
+    {
+      "feature": "opening_phase",
+      "importance": 3.4300067026233224e-05
+    },
+    {
+      "feature": "book_differs_nobook",
+      "importance": 5.945474509957059e-06
+    },
+    {
+      "feature": "king_ring_undefended",
+      "importance": 0.0
+    }
+  ],
+  "proposed_constant_updates": {
+    "UNSAFE_CAPTURE_HANGING_BONUS": 38,
+    "UNSAFE_CAPTURE_KING_EXPOSURE_WEIGHT": 4,
+    "KING_DANGER_CHECK_PENALTY": 14,
+    "KING_DANGER_RING_ATTACK_PENALTY": 3,
+    "LMR_KING_DANGER_THRESHOLD": 8,
+    "EXTRA_DEPTH_ON_UNSTABLE": 6
+  },
+  "applied_patch": false,
+  "changed_constants": [
+    "EXTRA_DEPTH_ON_UNSTABLE",
+    "KING_DANGER_CHECK_PENALTY",
+    "KING_DANGER_RING_ATTACK_PENALTY",
+    "LMR_KING_DANGER_THRESHOLD",
+    "UNSAFE_CAPTURE_HANGING_BONUS",
+    "UNSAFE_CAPTURE_KING_EXPOSURE_WEIGHT"
+  ]
+}

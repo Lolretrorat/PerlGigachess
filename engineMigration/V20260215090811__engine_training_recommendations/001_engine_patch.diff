@@ -1,0 +1,30 @@
+--- /home/josh/code/PerlGigachess/Chess/Engine.pm
++++ /home/josh/code/PerlGigachess/Chess/Engine.pm
+@@ -25,7 +25,7 @@
+ use constant TT_FLAG_LOWER => 1;                       # TT lower-bound entry type marker (fail-high).
+ use constant TT_FLAG_UPPER => 2;                       # TT upper-bound entry type marker (fail-low).
+ use constant SCORE_STABILITY_DELTA => 2;               # Higher => engine treats score shifts as "stable" more easily.
+-use constant EXTRA_DEPTH_ON_UNSTABLE => 5;             # Higher => search extends more when PV/score is volatile.
++use constant EXTRA_DEPTH_ON_UNSTABLE => 6;             # Higher => search extends more when PV/score is volatile.
+ use constant TIME_CHECK_INTERVAL_NODES => 2048;        # Lower => checks clock more often, with extra overhead.
+ use constant TIME_DEFAULT_HORIZON => 34;               # Higher => spreads clock over more future moves (safer).
+ use constant TIME_INC_WEIGHT => 0.75;                  # Higher => increment contributes more to per-move budget.
+@@ -56,13 +56,13 @@
+ use constant CENTRAL_KING_PENALTY => 3;                # Higher => penalizes central uncastled king more.
+ use constant HANGING_DEFENDED_SCALE => 0.35;           # Higher => softens hanging penalty less when defended.
+ use constant HANGING_MOVE_GUARD_BONUS => 14;           # Higher => penalizes quiet self-pins/hangs more.
+-use constant LMR_KING_DANGER_THRESHOLD => 11;          # Lower => disables LMR sooner in king-danger positions.
+-use constant UNSAFE_CAPTURE_HANGING_BONUS => 26;       # Higher => stronger penalty for grabbing into danger.
++use constant LMR_KING_DANGER_THRESHOLD => 8;          # Lower => disables LMR sooner in king-danger positions.
++use constant UNSAFE_CAPTURE_HANGING_BONUS => 38;       # Higher => stronger penalty for grabbing into danger.
+ use constant UNSAFE_CAPTURE_DEFENDED_SCALE => 0.45;    # Higher => keep more penalty even if capture square defended.
+-use constant UNSAFE_CAPTURE_KING_EXPOSURE_WEIGHT => 3; # Higher => prioritize king shelter over greedy captures.
+-use constant KING_DANGER_RING_ATTACK_PENALTY => 2;     # Higher => penalize attacked king-ring squares more.
++use constant UNSAFE_CAPTURE_KING_EXPOSURE_WEIGHT => 4; # Higher => prioritize king shelter over greedy captures.
++use constant KING_DANGER_RING_ATTACK_PENALTY => 3;     # Higher => penalize attacked king-ring squares more.
+ use constant KING_DANGER_RING_UNDEFENDED_PENALTY => 1; # Higher => penalize undefended ring attacks more.
+-use constant KING_DANGER_CHECK_PENALTY => 10;          # Higher => direct check against king hurts eval more.
++use constant KING_DANGER_CHECK_PENALTY => 14;          # Higher => direct check against king hurts eval more.
+ use constant KING_DANGER_SHIELD_MISSING_PENALTY => 2;  # Higher => missing pawn shield costs more.
+ use constant KING_DANGER_OPEN_FILE_PENALTY => 2;       # Higher => open king file is punished more.
+ use constant KING_DANGER_ADJ_FILE_PENALTY => 1;        # Higher => adjacent open files near king hurt more.
