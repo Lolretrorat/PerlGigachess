@@ -13,8 +13,8 @@ use Chess::Book;
 use List::Util qw(max min);
 use Time::HiRes qw(time);
 
-use constant LOCATION_WEIGHT => 0.15;                  # Higher => piece-square tables influence eval more.
-use constant QUIESCE_MAX_DEPTH => 4;                   # Higher => deeper quiescence (more tactics, more time).
+use constant LOCATION_WEIGHT => 0.22;                  # Higher => piece-square tables influence eval more.
+use constant QUIESCE_MAX_DEPTH => 6;                   # Higher => deeper quiescence (more tactics, more time).
 use constant QUIESCE_CHECK_MAX_DEPTH => 1;             # Higher => include checking moves deeper in quiescence.
 use constant QUIESCE_CHECK_BONUS => 128;               # Higher => checks are searched earlier inside quiescence.
 use constant INF_SCORE => 1_000_000;                   # Search sentinel bound; should stay above any real eval.
