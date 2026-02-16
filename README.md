@@ -46,6 +46,7 @@ Master pipeline wrappers:
 ./DO_PARAMATER_EXTRACTION.sh
 ./DO_ENGINE_PIPELINE.sh
 ./DO_ALL_DATA_PROCESSING.sh
+./DO_ALL_DATA_PROCESSING.sh --month 2026-01 --batch-months 3
 ```
 
 - `DO_LOCATION_MODIFIER.sh` runs ingest + location modifier training + validation.
