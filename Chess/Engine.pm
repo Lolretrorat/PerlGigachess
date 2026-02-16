@@ -43,23 +43,23 @@ use constant QUIESCE_EMERGENCY_MAX_DEPTH => 2;         # Lower => cuts tactical 
 use constant TIME_PANIC_60S_MS => 60_000;              # Remaining clock threshold for first panic profile.
 use constant TIME_PANIC_30S_MS => 30_000;              # Remaining clock threshold for second panic profile.
 use constant TIME_PANIC_10S_MS => 10_000;              # Remaining clock threshold for final panic profile.
-use constant TIME_PANIC_60S_RESERVE_PCT => 0.10;       # Reserve share below 60s to avoid flagging.
-use constant TIME_PANIC_30S_RESERVE_PCT => 0.16;       # Reserve share below 30s to avoid flagging.
-use constant TIME_PANIC_10S_RESERVE_PCT => 0.25;       # Reserve share below 10s to avoid flagging.
-use constant TIME_PANIC_60S_MIN_HORIZON => 48;         # Minimum move horizon below 60s.
-use constant TIME_PANIC_30S_MIN_HORIZON => 64;         # Minimum move horizon below 30s.
-use constant TIME_PANIC_10S_MIN_HORIZON => 96;         # Minimum move horizon below 10s.
-use constant TIME_PANIC_60S_BUDGET_SHARE => 0.10;      # Soft budget cap share of remaining clock below 60s.
-use constant TIME_PANIC_30S_BUDGET_SHARE => 0.07;      # Soft budget cap share of remaining clock below 30s.
-use constant TIME_PANIC_10S_BUDGET_SHARE => 0.045;     # Soft budget cap share of remaining clock below 10s.
-use constant TIME_PANIC_60S_INC_WEIGHT => 0.40;        # Increment contribution below 60s.
-use constant TIME_PANIC_30S_INC_WEIGHT => 0.30;        # Increment contribution below 30s.
-use constant TIME_PANIC_10S_INC_WEIGHT => 0.20;        # Increment contribution below 10s.
-use constant TIME_PANIC_60S_HARD_SCALE => 1.35;        # Hard-deadline scale below 60s.
-use constant TIME_PANIC_30S_HARD_SCALE => 1.25;        # Hard-deadline scale below 30s.
-use constant TIME_PANIC_10S_HARD_SCALE => 1.15;        # Hard-deadline scale below 10s.
-use constant TIME_PANIC_60S_QUIESCE_MAX_DEPTH => 3;    # Quiesce depth cap below 60s.
-use constant TIME_PANIC_30S_QUIESCE_MAX_DEPTH => 2;    # Quiesce depth cap below 30s.
+use constant TIME_PANIC_60S_RESERVE_PCT => 0.14;       # Reserve share below 60s to avoid flagging.
+use constant TIME_PANIC_30S_RESERVE_PCT => 0.20;       # Reserve share below 30s to avoid flagging.
+use constant TIME_PANIC_10S_RESERVE_PCT => 0.30;       # Reserve share below 10s to avoid flagging.
+use constant TIME_PANIC_60S_MIN_HORIZON => 56;         # Minimum move horizon below 60s.
+use constant TIME_PANIC_30S_MIN_HORIZON => 80;         # Minimum move horizon below 30s.
+use constant TIME_PANIC_10S_MIN_HORIZON => 112;        # Minimum move horizon below 10s.
+use constant TIME_PANIC_60S_BUDGET_SHARE => 0.08;      # Soft budget cap share of remaining clock below 60s.
+use constant TIME_PANIC_30S_BUDGET_SHARE => 0.055;     # Soft budget cap share of remaining clock below 30s.
+use constant TIME_PANIC_10S_BUDGET_SHARE => 0.03;      # Soft budget cap share of remaining clock below 10s.
+use constant TIME_PANIC_60S_INC_WEIGHT => 0.32;        # Increment contribution below 60s.
+use constant TIME_PANIC_30S_INC_WEIGHT => 0.24;        # Increment contribution below 30s.
+use constant TIME_PANIC_10S_INC_WEIGHT => 0.15;        # Increment contribution below 10s.
+use constant TIME_PANIC_60S_HARD_SCALE => 1.25;        # Hard-deadline scale below 60s.
+use constant TIME_PANIC_30S_HARD_SCALE => 1.18;        # Hard-deadline scale below 30s.
+use constant TIME_PANIC_10S_HARD_SCALE => 1.10;        # Hard-deadline scale below 10s.
+use constant TIME_PANIC_60S_QUIESCE_MAX_DEPTH => 2;    # Quiesce depth cap below 60s.
+use constant TIME_PANIC_30S_QUIESCE_MAX_DEPTH => 1;    # Quiesce depth cap below 30s.
 use constant TIME_PANIC_10S_QUIESCE_MAX_DEPTH => 1;    # Quiesce depth cap below 10s.
 use constant TT_MAX_ENTRIES => 200_000;                # Higher => larger TT memory footprint, fewer evictions.
 use constant COUNTERMOVE_BONUS => 180;                 # Higher => counter-move heuristic impacts ordering more.
@@ -70,6 +70,13 @@ use constant DEEP_ENDGAME_PIECE_THRESHOLD => 10;       # Higher => applies deep-
 use constant MID_ENDGAME_DEPTH_BOOST => 1;             # Higher => extra nominal depth in middlegame/endgame.
 use constant DEEP_ENDGAME_DEPTH_BOOST => 2;            # Higher => extra nominal depth in deep endgames.
 use constant MID_ENDGAME_EASY_MOVE_EXTRA_DEPTH => 2;   # Higher => delay easy-move exits in lighter positions.
+use constant OPENING_PIECE_COUNT_THRESHOLD => 26;      # Higher => "opening" development incentives persist longer.
+use constant OPENING_DEVELOPMENT_EXTRA_PENALTY => 1;   # Higher => extra penalty per undeveloped minor in opening.
+use constant MIDDLEGAME_MIN_PIECE_COUNT => 18;         # Lower => pawn-candidate extra think starts earlier.
+use constant MIDDLEGAME_MAX_PIECE_COUNT => 28;         # Higher => pawn-candidate extra think applies closer to opening.
+use constant PAWN_CANDIDATE_MIN_BUDGET_MS => 120;      # Lower => allow pawn-candidate extra think in tighter clocks.
+use constant PAWN_CANDIDATE_EXTRA_TIME_SHARE => 0.08;  # Higher => larger soft-deadline extension on pawn candidates.
+use constant PAWN_CANDIDATE_EXTRA_TIME_MAX_MS => 180;  # Higher => larger absolute cap for pawn-candidate extension.
 use constant DEVELOPMENT_MINOR_PENALTY => 2;           # Higher => punishes undeveloped minors more.
 use constant EARLY_ROOK_MOVE_PENALTY => 3;             # Higher => discourages early rook moves before development.
 use constant EARLY_QUEEN_MOVE_PENALTY => 4;            # Higher => discourages early queen activity.
@@ -87,6 +94,8 @@ use constant KING_DANGER_CHECK_PENALTY => 22;          # Higher => direct check 
 use constant KING_DANGER_SHIELD_MISSING_PENALTY => 3;  # Higher => missing pawn shield costs more.
 use constant KING_DANGER_OPEN_FILE_PENALTY => 3;       # Higher => open king file is punished more.
 use constant KING_DANGER_ADJ_FILE_PENALTY => 2;        # Higher => adjacent open files near king hurt more.
+use constant KING_AGGRESSION_ENEMY_PIECE_START => 10;  # Higher => king aggression starts earlier as enemy material shrinks.
+use constant KING_AGGRESSION_RANK_BONUS => 6;          # Higher => reward for king penetration in late game.
 
 my %history_scores;
 my @killer_moves;
@@ -300,6 +309,11 @@ sub _is_passed_pawn {
 sub _development_score {
   my ($board) = @_;
   my $score = 0;
+  my $piece_count = 0;
+  for my $idx (@board_indices) {
+    my $abs_piece = abs($board->[$idx] // 0);
+    $piece_count++ if $abs_piece >= PAWN && $abs_piece <= KING;
+  }
   my $king_idx = _find_piece_idx($board, KING);
   my $is_castled = defined $king_idx && ($king_idx == 23 || $king_idx == 27);
   my $uncastled = defined $king_idx && !$is_castled;
@@ -310,6 +324,9 @@ sub _development_score {
   $undeveloped_minors++ if ($board->[26] // 0) == BISHOP;
 
   $score -= $undeveloped_minors * DEVELOPMENT_MINOR_PENALTY;
+  if ($piece_count >= OPENING_PIECE_COUNT_THRESHOLD) {
+    $score -= $undeveloped_minors * OPENING_DEVELOPMENT_EXTRA_PENALTY;
+  }
 
   if ($uncastled && $undeveloped_minors > 0) {
     my $rook_count = 0;
@@ -484,6 +501,37 @@ sub _king_danger_score {
   my $our_danger = _king_danger_for_piece($board, KING);
   my $opp_danger = _king_danger_for_piece($board, OPP_KING);
   return $opp_danger - $our_danger;
+}
+
+sub _non_king_piece_count {
+  my ($board, $side_sign) = @_;
+  my $count = 0;
+  for my $idx (@board_indices) {
+    my $piece = $board->[$idx] // 0;
+    next unless $piece;
+    next unless ($side_sign > 0 && $piece > 0) || ($side_sign < 0 && $piece < 0);
+    my $abs_piece = abs($piece);
+    next if $abs_piece == KING;
+    $count++ if $abs_piece >= PAWN && $abs_piece <= QUEEN;
+  }
+  return $count;
+}
+
+sub _king_aggression_for_piece {
+  my ($board, $king_piece, $enemy_piece_count) = @_;
+  return 0 unless defined $enemy_piece_count;
+  return 0 if $enemy_piece_count >= KING_AGGRESSION_ENEMY_PIECE_START;
+  my $phase = (KING_AGGRESSION_ENEMY_PIECE_START - $enemy_piece_count) / KING_AGGRESSION_ENEMY_PIECE_START;
+  return int(KING_AGGRESSION_RANK_BONUS * $phase + 0.5);
+}
+
+sub _king_aggression_score {
+  my ($board) = @_;
+  my $enemy_piece_count = _non_king_piece_count($board, -1);
+  my $friendly_piece_count = _non_king_piece_count($board, 1);
+  my $our_bonus = _king_aggression_for_piece($board, KING, $enemy_piece_count);
+  my $opp_bonus = _king_aggression_for_piece($board, OPP_KING, $friendly_piece_count);
+  return $our_bonus - $opp_bonus;
 }
 
 sub _is_king_safety_critical_move {
@@ -729,6 +777,22 @@ sub _piece_count {
   return $count;
 }
 
+sub _is_middlegame_piece_count {
+  my ($piece_count) = @_;
+  return 0 unless defined $piece_count;
+  return $piece_count >= MIDDLEGAME_MIN_PIECE_COUNT
+    && $piece_count <= MIDDLEGAME_MAX_PIECE_COUNT;
+}
+
+sub _is_pawn_move_in_state {
+  my ($state, $move) = @_;
+  return 0 unless $state && ref($move) eq 'ARRAY';
+  my $board = $state->[Chess::State::BOARD];
+  return 0 unless ref($board) eq 'ARRAY';
+  my $from_piece = $board->[$move->[0]] // 0;
+  return abs($from_piece) == PAWN ? 1 : 0;
+}
+
 sub _configure_time_limits {
   my ($state, $opts) = @_;
   $opts ||= {};
@@ -743,9 +807,11 @@ sub _configure_time_limits {
   my $piece_count = _piece_count($state);
   my $move_overhead_ms = max(0, int($opts->{move_overhead_ms} // TIME_MOVE_OVERHEAD_MS));
   my $movetime_ms = $opts->{movetime_ms};
+  my $remaining_ms;
   my $budget_ms;
   my $hard_ms;
   my $has_clock = 0;
+  my $panic_level = 0;
 
   if (defined $movetime_ms && $movetime_ms > 0) {
     my $mt = max(1, int($movetime_ms));
@@ -753,9 +819,8 @@ sub _configure_time_limits {
     $hard_ms = max($budget_ms, $mt);
     $has_clock = 1;
   } elsif (defined $opts->{remaining_ms} && $opts->{remaining_ms} > 0) {
-    my $remaining_ms = max(1, int($opts->{remaining_ms}));
+    $remaining_ms = max(1, int($opts->{remaining_ms}));
     my $inc_ms = max(0, int($opts->{increment_ms} // 0));
-    my $panic_level = 0;
     my $panic_reserve_pct = 0.05;
     my $panic_min_horizon = 0;
     my $panic_budget_share = 0;
@@ -848,6 +913,8 @@ sub _configure_time_limits {
     $search_hard_deadline = $start + ($hard_ms / 1000.0);
     return {
       has_clock => 1,
+      panic_level => $panic_level // 0,
+      remaining_ms => $remaining_ms // undef,
       budget_ms => $budget_ms,
       hard_ms => $hard_ms,
       move_overhead_ms => $move_overhead_ms,
@@ -856,6 +923,8 @@ sub _configure_time_limits {
 
   return {
     has_clock => 0,
+    panic_level => 0,
+    remaining_ms => undef,
     budget_ms => 0,
     hard_ms => 0,
     move_overhead_ms => $move_overhead_ms,
@@ -963,6 +1032,7 @@ sub _evaluate_board {
   $score += _passed_pawn_score($board);
   $score += _hanging_piece_score($board);
   $score += _king_danger_score($board);
+  $score += _king_aggression_score($board);
 
   return $score;
 }
@@ -1157,6 +1227,7 @@ sub think {
   my $stable_best_hits = 0;
   my $prev_best_move_key;
   my $had_prev_score = 0;
+  my $pawn_candidate_extension_used = 0;
 
   DEPTH_LOOP:
   for my $depth (1 .. $max_depth) {
@@ -1234,9 +1305,26 @@ sub think {
       eval { $on_update->($depth, $iteration_score, $best_move); };
     }
 
-    if ($time_policy->{has_clock} && $volatile) {
+    if ($time_policy->{has_clock} && !$time_policy->{panic_level} && $volatile) {
       my $extra_ms = int(($time_policy->{budget_ms} || 0) * 0.25);
       _extend_soft_deadline($extra_ms);
+    }
+
+    if ($time_policy->{has_clock}
+      && !$time_policy->{panic_level}
+      && !$pawn_candidate_extension_used
+      && $depth >= 3
+      && _is_middlegame_piece_count($piece_count)
+      && ($time_policy->{budget_ms} || 0) >= PAWN_CANDIDATE_MIN_BUDGET_MS
+      && defined $iteration_move
+      && _is_pawn_move_in_state($state, $iteration_move))
+    {
+      my $extra_ms = int(($time_policy->{budget_ms} || 0) * PAWN_CANDIDATE_EXTRA_TIME_SHARE);
+      $extra_ms = min(PAWN_CANDIDATE_EXTRA_TIME_MAX_MS, $extra_ms);
+      if ($extra_ms > 0) {
+        _extend_soft_deadline($extra_ms);
+        $pawn_candidate_extension_used = 1;
+      }
     }
 
     if ($time_policy->{has_clock} && $depth >= $easy_move_depth) {

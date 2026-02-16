@@ -63,6 +63,12 @@ my $bot_id = $ENV{LICHESS_BOT_ID} // '';
 my $last_tls_error = '';
 my $game_url_log_path = $ENV{LICHESS_GAME_URL_LOG} // "$RealBin/data/lichess_game_urls.log";
 my %logged_finished_games;
+my %speed_depth_targets = (
+  blitz     => 16,
+  rapid     => 17,
+  classical => 18,
+  unlimited => 18,
+);
 
 unless (caller) {
   exit main();
@@ -438,6 +444,22 @@ sub handle_challenge {
     return;
   }
 
+  my $challenger = $challenge->{challenger}{name}
+    // $challenge->{challenger}{id}
+    // 'unknown';
+  my $challenger_id = lc($challenge->{challenger}{id} // '');
+  my $dest_user_id = lc($challenge->{destUser}{id} // '');
+  my $bot_id_lc = lc($bot_id // '');
+
+  if (length $challenger_id && length $bot_id_lc && $challenger_id eq $bot_id_lc) {
+    log_info("Ignoring outgoing challenge $id from $challenger");
+    return;
+  }
+  if (length $dest_user_id && length $bot_id_lc && $dest_user_id ne $bot_id_lc) {
+    log_info("Ignoring challenge $id not addressed to this bot (destUser=$dest_user_id)");
+    return;
+  }
+
   my $direction = lc($challenge->{direction} // '');
   if (length $direction && $direction ne 'in') {
     log_debug("Ignoring non-incoming challenge $id (direction=$direction)");
@@ -452,9 +474,6 @@ sub handle_challenge {
 
   my $variant = lc($challenge->{variant}{key} // '');
   my $speed   = lc($challenge->{speed} // '');
-  my $challenger = $challenge->{challenger}{name}
-    // $challenge->{challenger}{id}
-    // 'unknown';
 
   if ($variant ne 'standard') {
     log_info("Declining challenge $id (unsupported variant $variant)");
@@ -470,7 +489,7 @@ sub handle_challenge {
     return;
   }
 
-  log_info("Accepting challenge $id from $challenger ($speed $variant)");
+  log_info("Accepting incoming challenge $id from $challenger ($speed $variant)");
   if (accept_challenge($id)) {
     $handled_challenges{$id} = 1;
   }
@@ -509,6 +528,10 @@ sub accept_challenge {
     my $res = http_request('POST', "/challenge/$id/accept");
     return 1 if $res->{success};
     my $status = $res->{status} // 0;
+    if ($status == 404) {
+      log_info("Challenge $id could not be accepted (HTTP 404: already resolved or not incoming)");
+      return 0;
+    }
     log_warn(
       "Failed to accept challenge $id (attempt $attempt): $res->{status_line}"
     );
@@ -561,7 +584,8 @@ sub play_game {
   my $engine_pid = open2($engine_out, $engine_in, @engine_parts);
   $engine_in->autoflush(1);
 
-  unless (uci_handshake($engine_out, $engine_in)) {
+  my $engine_meta = uci_handshake($engine_out, $engine_in);
+  unless ($engine_meta) {
     log_warn("Engine handshake failed, aborting game $game_id");
     kill 'TERM', $engine_pid;
     waitpid($engine_pid, 0);
@@ -571,6 +595,7 @@ sub play_game {
   my %game = (
     id           => $game_id,
     my_color     => normalize_color($seed_info->{color}),
+    speed        => extract_speed($seed_info),
     initial_fen  => normalize_fen($seed_info->{fen}),
     moves        => [],
     pending_move => undef,
@@ -583,6 +608,11 @@ sub play_game {
     state_obj        => undef,
     state_move_count => 0,
     state_initial_fen => undef,
+    engine_supports_depth => $engine_meta->{has_depth_option} ? 1 : 0,
+    engine_depth_min      => $engine_meta->{depth_min},
+    engine_depth_max      => $engine_meta->{depth_max},
+    engine_depth_default  => $engine_meta->{depth_default},
+    engine_depth          => $engine_meta->{depth_default},
   );
   log_debug("Opening game stream for $game_id");
   my $buffer = '';
@@ -623,11 +653,14 @@ sub handle_game_event {
     $game->{btime}  = $event->{state}{btime};
     $game->{winc}   = $event->{state}{winc};
     $game->{binc}   = $event->{state}{binc};
+    my $event_speed = extract_speed($event);
+    $game->{speed}  = $event_speed if defined $event_speed;
     $game->{state_obj} = undef;
     $game->{state_move_count} = 0;
     $game->{state_initial_fen} = undef;
     update_turn_from_event($game, $event);
     print {$engine_in} "ucinewgame\n";
+    maybe_apply_speed_depth($game, $engine_out, $engine_in);
     maybe_move($game, $engine_out, $engine_in);
     maybe_log_finished_from_status($game);
   } elsif ($type eq 'gameState') {
@@ -668,6 +701,24 @@ sub normalize_fen {
   my ($fen) = @_;
   return 'startpos' unless defined $fen && length $fen;
   return $fen;
+}
+
+sub normalize_speed {
+  my ($speed) = @_;
+  return unless defined $speed;
+  $speed = lc $speed;
+  return $speed;
+}
+
+sub extract_speed {
+  my ($source) = @_;
+  return unless ref $source eq 'HASH';
+
+  my $speed = $source->{speed};
+  if (!defined $speed && ref $source->{perf} eq 'HASH') {
+    $speed = $source->{perf}{name} // $source->{perf}{key};
+  }
+  return normalize_speed($speed);
 }
 
 sub extract_turn_flag {
@@ -900,6 +951,41 @@ sub _is_retryable_illegal_reject {
   return 1;
 }
 
+sub maybe_apply_speed_depth {
+  my ($game, $engine_out, $engine_in) = @_;
+  return unless ref $game eq 'HASH';
+  return unless $game->{engine_supports_depth};
+
+  my $speed = normalize_speed($game->{speed});
+  return unless defined $speed && exists $speed_depth_targets{$speed};
+
+  my $target = $speed_depth_targets{$speed};
+  return unless defined $target;
+
+  my $min_depth = defined $game->{engine_depth_min} ? int($game->{engine_depth_min}) : 1;
+  my $max_depth = defined $game->{engine_depth_max} ? int($game->{engine_depth_max}) : 20;
+  $target = $min_depth if $target < $min_depth;
+  $target = $max_depth if $target > $max_depth;
+
+  my $current_depth = $game->{engine_depth};
+  $current_depth = $game->{engine_depth_default} if !defined $current_depth;
+  return if defined $current_depth && $current_depth >= $target;
+
+  print {$engine_in} "setoption name Depth value $target\n";
+  print {$engine_in} "isready\n";
+  while (my $line = <$engine_out>) {
+    $line =~ s/[\r\n]+$//;
+    if ($line =~ /^readyok/) {
+      $game->{engine_depth} = $target;
+      log_info("Raised engine depth to $target for $game->{id} ($speed)");
+      return 1;
+    }
+  }
+
+  log_warn("Depth update failed for $game->{id} ($speed)");
+  return;
+}
+
 sub _format_eval_suffix {
   my ($analysis) = @_;
   return '' unless ref $analysis eq 'HASH';
@@ -1004,23 +1090,44 @@ sub send_move {
 sub uci_handshake {
   my ($engine_out, $engine_in) = @_;
   print {$engine_in} "uci\n";
-  my $has_ownbook = 0;
+  my %meta = (
+    has_ownbook => 0,
+    has_depth_option => 0,
+    depth_min => undef,
+    depth_max => undef,
+    depth_default => undef,
+  );
   while (my $line = <$engine_out>) {
     $line =~ s/[\r\n]+$//;
-    if ($line =~ /^option\s+name\s+(.+?)\s+type\b/i) {
+    if ($line =~ /^option\s+name\s+(.+?)\s+type\s+(\S+)\s*(.*)$/i) {
       my $name = lc($1 // '');
+      my $type = lc($2 // '');
+      my $tail = $3 // '';
       $name =~ s/\s+$//;
-      $has_ownbook = 1 if $name eq 'ownbook';
+      $meta{has_ownbook} = 1 if $name eq 'ownbook';
+      if ($name eq 'depth' && $type eq 'spin') {
+        $meta{has_depth_option} = 1;
+        $meta{depth_default} = $1 + 0 if $tail =~ /\bdefault\s+(-?\d+)/i;
+        $meta{depth_min} = $1 + 0 if $tail =~ /\bmin\s+(-?\d+)/i;
+        $meta{depth_max} = $1 + 0 if $tail =~ /\bmax\s+(-?\d+)/i;
+      }
     }
     last if $line =~ /^uciok/;
   }
-  if ($has_ownbook) {
+  if ($meta{has_ownbook}) {
     print {$engine_in} "setoption name OwnBook value true\n";
+  }
+  if ($meta{has_depth_option}) {
+    $meta{depth_min} = 1 unless defined $meta{depth_min};
+    $meta{depth_max} = 20 unless defined $meta{depth_max};
+    if (!defined $meta{depth_default}) {
+      $meta{depth_default} = $meta{depth_min};
+    }
   }
   print {$engine_in} "isready\n";
   while (my $line = <$engine_out>) {
     $line =~ s/[\r\n]+$//;
-    return 1 if $line =~ /^readyok/;
+    return \%meta if $line =~ /^readyok/;
   }
   return;
 }
