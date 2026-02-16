@@ -49,6 +49,17 @@ my @engine_parts = shellwords($engine_cmd);
 @engine_parts or die "Unable to parse LICHESS_ENGINE_CMD '$engine_cmd'\n";
 my $think_slow_ms = $ENV{LICHESS_THINK_SLOW_MS} // 3000;
 $think_slow_ms = 3000 unless defined $think_slow_ms && $think_slow_ms =~ /^\d+$/;
+my $git_branch = _git_branch_name();
+my $branch_override_allowed = _branch_override_allowed($git_branch);
+my $depth_override = $ENV{LICHESS_DEPTH_OVERRIDE};
+if (defined $depth_override) {
+  if ($depth_override =~ /^-?\d+$/) {
+    $depth_override = int($depth_override);
+  } else {
+    $depth_override = undef;
+  }
+}
+$depth_override = undef unless defined $depth_override && $branch_override_allowed;
 
 STDOUT->autoflush(1);
 STDERR->autoflush(1);
@@ -833,7 +844,19 @@ sub maybe_move {
     return;
   }
 
+  my $my_clock_before_ms = _my_clock_ms($game);
   my $analysis = compute_bestmove($game, $engine_out, $engine_in);
+  if (ref $analysis eq 'HASH'
+    && defined $analysis->{elapsed_ms}
+    && defined $my_clock_before_ms
+    && $my_clock_before_ms > 0)
+  {
+    my $warn_threshold_ms = int($my_clock_before_ms * 0.10);
+    $warn_threshold_ms = 1 if $warn_threshold_ms < 1;
+    if ($analysis->{elapsed_ms} > $warn_threshold_ms) {
+      log_warn("You're not saying anything, Tony.");
+    }
+  }
   if (ref $analysis eq 'HASH' && defined $analysis->{elapsed_ms}
     && $analysis->{elapsed_ms} >= $think_slow_ms)
   {
@@ -870,6 +893,18 @@ sub maybe_move {
     last unless _is_retryable_illegal_reject($res);
     log_warn("Retrying with alternate legal move for $game->{id} after HTTP 400");
   }
+}
+
+sub _my_clock_ms {
+  my ($game) = @_;
+  return unless ref $game eq 'HASH';
+  return unless defined $game->{my_color};
+
+  my $clock = $game->{my_color} eq 'white'
+    ? $game->{wtime}
+    : $game->{btime};
+  return unless defined $clock && $clock =~ /^\d+$/;
+  return $clock + 0;
 }
 
 sub _sync_state_from_game {
@@ -996,16 +1031,33 @@ sub _is_retryable_illegal_reject {
   return 1;
 }
 
-sub maybe_apply_speed_depth {
-  my ($game, $engine_out, $engine_in) = @_;
+sub _branch_override_allowed {
+  my ($branch) = @_;
+  return 0 unless defined $branch && length $branch;
+  my $norm = lc $branch;
+  return 1 if $norm eq 'develop';
+  return 1 if $norm =~ /^feature\//;
+  return 0;
+}
+
+sub _git_branch_name {
+  my $repo_root = $RealBin;
+  return unless defined $repo_root && length $repo_root;
+  return unless -d "$repo_root/.git";
+
+  my $branch;
+  if (open my $git, '-|', 'git', '-C', $repo_root, 'rev-parse', '--abbrev-ref', 'HEAD') {
+    $branch = <$git>;
+    close $git;
+  }
+  chomp $branch if defined $branch;
+  return $branch if defined $branch && length $branch;
+  return;
+}
+
+sub _set_engine_depth {
+  my ($game, $engine_out, $engine_in, $target, $reason) = @_;
   return unless ref $game eq 'HASH';
-  return unless $game->{engine_supports_depth};
-
-  my $speed = normalize_speed($game->{speed});
-  return unless defined $speed && exists $speed_depth_targets{$speed};
-
-  my $target = $speed_depth_targets{$speed};
-  return unless defined $target;
 
   my $min_depth = defined $game->{engine_depth_min} ? int($game->{engine_depth_min}) : 1;
   my $max_depth = defined $game->{engine_depth_max} ? int($game->{engine_depth_max}) : 20;
@@ -1014,7 +1066,7 @@ sub maybe_apply_speed_depth {
 
   my $current_depth = $game->{engine_depth};
   $current_depth = $game->{engine_depth_default} if !defined $current_depth;
-  return if defined $current_depth && $current_depth >= $target;
+  return if defined $current_depth && $current_depth == $target;
 
   print {$engine_in} "setoption name Depth value $target\n";
   print {$engine_in} "isready\n";
@@ -1022,13 +1074,36 @@ sub maybe_apply_speed_depth {
     $line =~ s/[\r\n]+$//;
     if ($line =~ /^readyok/) {
       $game->{engine_depth} = $target;
-      log_info("Raised engine depth to $target for $game->{id} ($speed)");
+      my $suffix = defined $reason && length $reason ? " ($reason)" : '';
+      log_info("Set engine depth to $target for $game->{id}$suffix");
       return 1;
     }
   }
 
-  log_warn("Depth update failed for $game->{id} ($speed)");
+  my $suffix = defined $reason && length $reason ? " ($reason)" : '';
+  log_warn("Depth update failed for $game->{id}$suffix");
   return;
+}
+
+sub maybe_apply_speed_depth {
+  my ($game, $engine_out, $engine_in) = @_;
+  return unless ref $game eq 'HASH';
+  return unless $game->{engine_supports_depth};
+
+  if (defined $depth_override) {
+    return _set_engine_depth($game, $engine_out, $engine_in, $depth_override, 'local override');
+  }
+
+  my $speed = normalize_speed($game->{speed});
+  return unless defined $speed && exists $speed_depth_targets{$speed};
+
+  my $target = $speed_depth_targets{$speed};
+  return unless defined $target;
+  my $current_depth = $game->{engine_depth};
+  $current_depth = $game->{engine_depth_default} if !defined $current_depth;
+  return if defined $current_depth && $current_depth >= $target;
+
+  return _set_engine_depth($game, $engine_out, $engine_in, $target, $speed);
 }
 
 sub _format_eval_suffix {
