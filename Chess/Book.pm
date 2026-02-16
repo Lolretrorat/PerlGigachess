@@ -7,7 +7,7 @@ use Chess::State ();
 use File::Basename qw(dirname);
 use File::Spec;
 use JSON::PP;
-use List::Util qw(max sum);
+use List::Util qw(sum);
 use Chess::TableUtil qw(
   canonical_fen_key
   relaxed_fen_key
@@ -31,6 +31,11 @@ our %book = (
 
 my %fen_book;
 my %relaxed_fen_book;
+my %legal_move_map_cache;
+my %ranked_legal_entries_cache;
+my $LEGAL_MOVE_MAP_CACHE_MAX = 20_000;
+my $RANKED_LEGAL_CACHE_MAX = 20_000;
+my $book_path_cache;
 my $BOOK_MIN_PLAYED   = _env_int('CHESS_BOOK_MIN_PLAYED', 3, 1);
 my $BOOK_MIN_RELATIVE = _env_num('CHESS_BOOK_MIN_RELATIVE', 0.12, 0.0, 1.0);
 my $BOOK_VARIETY      = _env_num('CHESS_BOOK_VARIETY', 0.0, 0.0, 1.0);
@@ -38,14 +43,17 @@ my $BOOK_BAYES_GAMES  = _env_num('CHESS_BOOK_BAYES_GAMES', 8.0, 0.0, 1000.0);
 my $BOOK_QUALITY_WEIGHT = _env_num('CHESS_BOOK_QUALITY_WEIGHT', 0.82, 0.0, 1.0);
 
 sub _book_path {
+  return $book_path_cache if defined $book_path_cache;
   my $module_dir = dirname(__FILE__);
   my $root = File::Spec->catdir($module_dir, '..');
-  return File::Spec->catfile($root, 'data', 'opening_book.json');
+  $book_path_cache = File::Spec->catfile($root, 'data', 'opening_book.json');
+  return $book_path_cache;
 }
 
 sub _load_json_book {
   %fen_book = ();
   %relaxed_fen_book = ();
+  %ranked_legal_entries_cache = ();
 
   my $path = _book_path();
   return unless defined $path && -e $path;
@@ -61,6 +69,8 @@ sub _load_json_book {
   my $data = eval { JSON::PP->new->relaxed->decode($json_text) };
   return if $@ || ref $data ne 'ARRAY';
 
+  my %pending_fen;
+  my %pending_relaxed;
   foreach my $entry (@$data) {
     next unless ref $entry eq 'HASH';
     my $key = $entry->{key} || next;
@@ -69,8 +79,15 @@ sub _load_json_book {
     my @parsed = _parse_book_moves($moves);
     next unless @parsed;
 
-    _merge_book_entries(\%fen_book, $key, \@parsed);
-    _merge_book_entries(\%relaxed_fen_book, $relaxed, \@parsed) if defined $relaxed;
+    push @{ $pending_fen{$key} }, @parsed;
+    push @{ $pending_relaxed{$relaxed} }, @parsed if defined $relaxed;
+  }
+
+  foreach my $merge_key (keys %pending_fen) {
+    _merge_book_entries(\%fen_book, $merge_key, $pending_fen{$merge_key});
+  }
+  foreach my $merge_key (keys %pending_relaxed) {
+    _merge_book_entries(\%relaxed_fen_book, $merge_key, $pending_relaxed{$merge_key});
   }
 }
 
@@ -83,29 +100,70 @@ sub _lookup_fen_move {
   my ($state) = @_;
   my $key = canonical_fen_key($state);
   my $entries = $fen_book{$key};
+  my $source = 'fen';
+  my $source_key = $key;
   if (! $entries) {
     my $relaxed = relaxed_fen_key($key);
-    $entries = $relaxed_fen_book{$relaxed} if defined $relaxed;
+    if (defined $relaxed) {
+      $entries = $relaxed_fen_book{$relaxed};
+      $source = 'relaxed';
+      $source_key = $relaxed;
+    }
   }
   return unless $entries && @$entries;
 
-  my $legal = _legal_move_map($state);
+  my $legal = _legal_move_map($state, $key);
   return unless keys %$legal;
 
-  my @legal_entries = grep { exists $legal->{$_->{uci}} } @$entries;
-  return unless @legal_entries;
-
   my $side = _side_to_move($key);
-  my @ranked = _rank_legal_entries(\@legal_entries, $side);
-  return unless @ranked;
+  my $ranked = _ranked_legal_entries_for_state(
+    $key,
+    $source_key,
+    $source,
+    $entries,
+    $legal,
+    $side,
+  );
+  return unless $ranked && @$ranked;
 
-  my $choice = _select_ranked_entry(\@ranked);
+  my $choice = _select_ranked_entry($ranked);
   return unless $choice;
   return $legal->{$choice->{uci}};
 }
 
+sub _ranked_legal_entries_for_state {
+  my ($state_key, $source_key, $source, $entries, $legal, $side) = @_;
+  return unless ref $entries eq 'ARRAY' && @$entries;
+  return unless ref $legal eq 'HASH';
+
+  my $cache_key = join("\x1e",
+    (defined $source ? $source : ''),
+    (defined $state_key ? $state_key : ''),
+    (defined $source_key ? $source_key : ''),
+  );
+
+  if (exists $ranked_legal_entries_cache{$cache_key}) {
+    return $ranked_legal_entries_cache{$cache_key};
+  }
+
+  my @ranked = _rank_legal_entries($entries, $side, $legal);
+  return unless @ranked;
+
+  my $ranked_ref = \@ranked;
+  if (scalar(keys %ranked_legal_entries_cache) >= $RANKED_LEGAL_CACHE_MAX) {
+    %ranked_legal_entries_cache = ();
+  }
+  $ranked_legal_entries_cache{$cache_key} = $ranked_ref;
+  return $ranked_ref;
+}
+
 sub _legal_move_map {
-  my ($state) = @_;
+  my ($state, $state_key) = @_;
+  $state_key = canonical_fen_key($state) unless defined $state_key;
+  if (defined $state_key && exists $legal_move_map_cache{$state_key}) {
+    return $legal_move_map_cache{$state_key};
+  }
+
   my %legal;
   foreach my $move (@{$state->generate_pseudo_moves}) {
     my $new_state = $state->make_move($move);
@@ -115,7 +173,14 @@ sub _legal_move_map {
     next unless defined $uci;
     $legal{$uci} = $move;
   }
-  return \%legal;
+  my $result = \%legal;
+  if (defined $state_key) {
+    if (scalar(keys %legal_move_map_cache) >= $LEGAL_MOVE_MAP_CACHE_MAX) {
+      %legal_move_map_cache = ();
+    }
+    $legal_move_map_cache{$state_key} = $result;
+  }
+  return $result;
 }
 
 sub _legacy_lookup {
@@ -171,75 +236,157 @@ sub _parse_book_moves {
 sub _merge_book_entries {
   my ($target, $key, $entries) = @_;
   return unless defined $key && ref $entries eq 'ARRAY' && @$entries;
-
-  my %merged = map {
-    $_->{uci} => {
-      uci    => $_->{uci},
-      weight => _positive_num($_->{weight}, 1),
-      played => _positive_num($_->{played}, _positive_num($_->{weight}, 1)),
-      white  => _nonneg_num($_->{white}, 0),
-      draw   => _nonneg_num($_->{draw}, 0),
-      black  => _nonneg_num($_->{black}, 0),
+  my $current = $target->{$key};
+  my $has_current = (ref($current) eq 'ARRAY') ? 1 : 0;
+  my %index_by_uci;
+  if ($has_current) {
+    for (my $i = 0; $i < @$current; $i++) {
+      my $uci = $current->[$i]{uci};
+      next unless defined $uci;
+      $index_by_uci{$uci} = $i;
     }
-  } @{ $target->{$key} || [] };
+  }
+  my %touched;
 
   foreach my $entry (@$entries) {
     next unless ref $entry eq 'HASH';
     my $uci = $entry->{uci} // next;
-    if (!exists $merged{$uci}) {
-      $merged{$uci} = {
-        uci    => $uci,
-        weight => 0,
-        played => 0,
-        white  => 0,
-        draw   => 0,
-        black  => 0,
-      };
+    my $weight = _positive_num($entry->{weight}, 1);
+    my $played = _positive_num($entry->{played}, $weight);
+    my $white  = _nonneg_num($entry->{white}, 0);
+    my $draw   = _nonneg_num($entry->{draw}, 0);
+    my $black  = _nonneg_num($entry->{black}, 0);
+
+    if (exists $index_by_uci{$uci}) {
+      my $slot = $current->[$index_by_uci{$uci}];
+      $slot->{weight} = 0 unless defined $slot->{weight};
+      $slot->{played} = 0 unless defined $slot->{played};
+      $slot->{white} = 0 unless defined $slot->{white};
+      $slot->{draw} = 0 unless defined $slot->{draw};
+      $slot->{black} = 0 unless defined $slot->{black};
+      $slot->{weight} += $weight;
+      $slot->{played} += $played;
+      $slot->{white}  += $white;
+      $slot->{draw}   += $draw;
+      $slot->{black}  += $black;
+      $touched{$uci} = 1;
+      next;
     }
-    $merged{$uci}{weight} += _positive_num($entry->{weight}, 1);
-    $merged{$uci}{played} += _positive_num($entry->{played}, _positive_num($entry->{weight}, 1));
-    $merged{$uci}{white}  += _nonneg_num($entry->{white}, 0);
-    $merged{$uci}{draw}   += _nonneg_num($entry->{draw}, 0);
-    $merged{$uci}{black}  += _nonneg_num($entry->{black}, 0);
+
+    if (! $has_current) {
+      $current = [];
+      $target->{$key} = $current;
+      $has_current = 1;
+    }
+    my $new_slot = {
+      uci    => $uci,
+      weight => 0,
+      played => 0,
+      white  => 0,
+      draw   => 0,
+      black  => 0,
+    };
+    $new_slot->{weight} += $weight;
+    $new_slot->{played} += $played;
+    $new_slot->{white}  += $white;
+    $new_slot->{draw}   += $draw;
+    $new_slot->{black}  += $black;
+    push @$current, $new_slot;
+    $index_by_uci{$uci} = $#$current;
+    $touched{$uci} = 1;
   }
 
-  my @sorted = sort { _entry_rank($b) <=> _entry_rank($a) } values %merged;
-  $target->{$key} = \@sorted if @sorted;
+  _reorder_book_touched($current, \%index_by_uci, \%touched) if %touched;
+}
+
+sub _reorder_book_touched {
+  my ($entries, $index_by_uci, $touched) = @_;
+  return unless ref $entries eq 'ARRAY' && @$entries;
+
+  my @reorder = sort {
+    ($index_by_uci->{$a} // 0) <=> ($index_by_uci->{$b} // 0)
+  } grep { exists $index_by_uci->{$_} } keys %$touched;
+
+  foreach my $uci (@reorder) {
+    my $idx = $index_by_uci->{$uci};
+    next unless defined $idx;
+    while ($idx > 0 && _cmp_entry_rank($entries->[$idx], $entries->[$idx - 1]) < 0) {
+      @$entries[$idx, $idx - 1] = @$entries[$idx - 1, $idx];
+      $index_by_uci->{$entries->[$idx]{uci}} = $idx if defined $entries->[$idx]{uci};
+      $index_by_uci->{$entries->[$idx - 1]{uci}} = $idx - 1 if defined $entries->[$idx - 1]{uci};
+      $idx--;
+    }
+  }
+}
+
+sub _cmp_entry_rank {
+  my ($left, $right) = @_;
+  return _entry_rank($right) <=> _entry_rank($left);
 }
 
 sub _rank_legal_entries {
-  my ($entries, $side) = @_;
+  my ($entries, $side, $legal_map) = @_;
   return unless ref $entries eq 'ARRAY' && @$entries;
   $side //= 'white';
 
-  my $top_played = max(map { _entry_played($_) } @$entries) || 1;
+  my @candidates;
+  my $top_played = 0;
+  foreach my $entry (@$entries) {
+    next unless ref $entry eq 'HASH';
+    my $uci = $entry->{uci} // next;
+    next if ref($legal_map) eq 'HASH' && !exists $legal_map->{$uci};
+
+    my $played = _entry_played($entry);
+    my $weight = _positive_num($entry->{weight}, 1);
+    push @candidates, {
+      entry  => $entry,
+      played => $played,
+      weight => $weight,
+    };
+    $top_played = $played if $played > $top_played;
+  }
+  return unless @candidates;
+  $top_played ||= 1;
+
   my ($quality_weight, $popularity_weight) = _book_rank_weights($top_played);
   my @scored = ();
-  foreach my $entry (@$entries) {
-    my $played = _entry_played($entry);
+  foreach my $candidate (@candidates) {
+    my $played = $candidate->{played};
     next if _is_sparse_move($played, $top_played);
 
+    my $entry = $candidate->{entry};
     my $quality = _entry_quality_for_side($entry, $side);
     my $popularity = sqrt($played / $top_played);
     my $score = $quality_weight * $quality + $popularity_weight * $popularity;
-    push @scored, { %$entry, _book_score => $score };
+    push @scored, {
+      %$entry,
+      _book_score  => $score,
+      _book_played => $played,
+      _book_weight => $candidate->{weight},
+    };
   }
 
   # If filtering removed everything, fall back to all legal entries.
   if (!@scored) {
-    foreach my $entry (@$entries) {
+    foreach my $candidate (@candidates) {
+      my $entry = $candidate->{entry};
+      my $played = $candidate->{played};
       my $quality = _entry_quality_for_side($entry, $side);
-      my $played = _entry_played($entry);
       my $popularity = sqrt($played / $top_played);
       my $score = $quality_weight * $quality + $popularity_weight * $popularity;
-      push @scored, { %$entry, _book_score => $score };
+      push @scored, {
+        %$entry,
+        _book_score  => $score,
+        _book_played => $played,
+        _book_weight => $candidate->{weight},
+      };
     }
   }
 
   return sort {
     $b->{_book_score} <=> $a->{_book_score}
-      || _entry_played($b) <=> _entry_played($a)
-      || _positive_num($b->{weight}, 1) <=> _positive_num($a->{weight}, 1)
+      || $b->{_book_played} <=> $a->{_book_played}
+      || $b->{_book_weight} <=> $a->{_book_weight}
       || ($a->{uci} // '') cmp ($b->{uci} // '')
   } @scored;
 }
@@ -257,7 +404,7 @@ sub _select_ranked_entry {
   return _pick_weighted(\@pool, sub {
     my ($entry) = @_;
     my $score = ($entry->{_book_score} // 0);
-    my $played = _entry_played($entry);
+    my $played = ($entry->{_book_played} // 1);
     return (1 + 20 * $score) * (1 + $played * $BOOK_VARIETY);
   });
 }

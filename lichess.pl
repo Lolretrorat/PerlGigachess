@@ -63,6 +63,12 @@ my $bot_id = $ENV{LICHESS_BOT_ID} // '';
 my $last_tls_error = '';
 my $game_url_log_path = $ENV{LICHESS_GAME_URL_LOG} // "$RealBin/data/lichess_game_urls.log";
 my %logged_finished_games;
+my %logged_game_urls;
+my $game_url_log_cache_ready = 0;
+my $game_url_log_cache_bytes = 0;
+my %socket_read_buffers;
+my $http_request_sock;
+my $http_request_sock_pid = $$;
 my %speed_depth_targets = (
   blitz     => 16,
   rapid     => 17,
@@ -299,6 +305,12 @@ sub log_finished_game_url {
     return;
   }
 
+  if ($logged_game_urls{$url}) {
+    $logged_finished_games{$game_id} = 1 if length $game_id;
+    log_debug("Game URL already logged: $url");
+    return;
+  }
+
   return unless ensure_parent_dir($game_url_log_path);
 
   my $max_attempts = 3;
@@ -324,18 +336,8 @@ sub log_finished_game_url {
       return;
     }
 
-    my $already_logged = 0;
-    if (seek($fh, 0, 0)) {
-      while (my $line = <$fh>) {
-        $line =~ s/[\r\n]+$//;
-        if ($line eq $url) {
-          $already_logged = 1;
-          last;
-        }
-      }
-    } else {
-      log_warn("Unable to scan existing game URL log entries: $!");
-    }
+    _refresh_logged_game_urls_locked($fh);
+    my $already_logged = $logged_game_urls{$url} ? 1 : 0;
 
     my $write_ok = 1;
     if (!$already_logged) {
@@ -345,6 +347,13 @@ sub log_finished_game_url {
       } elsif (!print {$fh} "$url\n") {
         log_warn("Unable to append game URL to $game_url_log_path: $!");
         $write_ok = 0;
+      } else {
+        $logged_game_urls{$url} = 1;
+        my $pos = tell($fh);
+        if (defined $pos && $pos >= 0) {
+          $game_url_log_cache_bytes = $pos;
+          $game_url_log_cache_ready = 1;
+        }
       }
     }
 
@@ -370,6 +379,42 @@ sub log_finished_game_url {
   }
 
   log_warn("Failed to persist finished game URL after $max_attempts attempts: $url");
+}
+
+sub _refresh_logged_game_urls_locked {
+  my ($fh) = @_;
+  return 0 unless $fh;
+
+  my $start = 0;
+  if ($game_url_log_cache_ready) {
+    my $size = -s $fh;
+    if (defined $size && $size >= $game_url_log_cache_bytes) {
+      $start = $game_url_log_cache_bytes;
+    } else {
+      %logged_game_urls = ();
+      $game_url_log_cache_bytes = 0;
+    }
+  } else {
+    %logged_game_urls = ();
+  }
+
+  unless (seek($fh, $start, 0)) {
+    log_warn("Unable to refresh game URL log cache: $!");
+    return 0;
+  }
+
+  while (my $line = <$fh>) {
+    $line =~ s/[\r\n]+$//;
+    next unless length $line;
+    $logged_game_urls{$line} = 1;
+  }
+
+  my $pos = tell($fh);
+  if (defined $pos && $pos >= 0) {
+    $game_url_log_cache_bytes = $pos;
+    $game_url_log_cache_ready = 1;
+  }
+  return 1;
 }
 
 sub maybe_log_finished_from_status {
@@ -1163,9 +1208,11 @@ sub _emit_log {
 
 sub _drain_ndjson {
   my ($path, $buffer_ref, $callback) = @_;
-  while ($$buffer_ref =~ s/^(.*?\n)//) {
-    my $line = $1;
-    $line =~ s/[\r\n]+$//;
+  while (1) {
+    my $newline_idx = index($$buffer_ref, "\n");
+    last if $newline_idx < 0;
+    my $line = substr($$buffer_ref, 0, $newline_idx + 1, '');
+    $line =~ s/\r?\n$//;
     next unless length $line;
     if ($line =~ /^[0-9a-f]+$/i) {
       log_debug("Skipping chunk marker on $path: $line") if $debug;
@@ -1194,9 +1241,12 @@ sub _read_http_headers {
   while (defined(my $line = _read_line($fh))) {
     last if $line =~ /^\r?\n$/;
     $line =~ s/\r?\n$//;
-    my ($key, $value) = split /:\s*/, $line, 2;
-    next unless defined $key && defined $value;
-    $headers{lc $key} = $value;
+    my $colon = index($line, ':');
+    next unless $colon > 0;
+    my $key = lc substr($line, 0, $colon);
+    my $value = substr($line, $colon + 1);
+    $value =~ s/^\s+//;
+    $headers{$key} = $value;
   }
   return \%headers;
 }
@@ -1219,25 +1269,61 @@ sub _consume_chunked {
   return 1;
 }
 
+sub _socket_buffer_ref {
+  my ($fh) = @_;
+  my $id = fileno($fh);
+  return unless defined $id;
+  $socket_read_buffers{$id} //= '';
+  return \$socket_read_buffers{$id};
+}
+
+sub _clear_socket_buffer {
+  my ($fh) = @_;
+  my $id = fileno($fh);
+  return unless defined $id;
+  delete $socket_read_buffers{$id};
+}
+
 sub _read_line {
   my ($fh) = @_;
-  my $line = '';
+  my $buf_ref = _socket_buffer_ref($fh);
+  return unless defined $buf_ref;
+
   while (1) {
-    my $char = '';
-    my $rv = sysread($fh, $char, 1);
-    return if !defined $rv || $rv == 0;
-    $line .= $char;
-    last if $char eq "\n";
+    my $newline_idx = index($$buf_ref, "\n");
+    if ($newline_idx >= 0) {
+      return substr($$buf_ref, 0, $newline_idx + 1, '');
+    }
+
+    my $chunk = '';
+    my $rv = sysread($fh, $chunk, 4096);
+    return if !defined $rv;
+    if ($rv == 0) {
+      return unless length $$buf_ref;
+      return substr($$buf_ref, 0, length($$buf_ref), '');
+    }
+    $$buf_ref .= $chunk;
   }
-  return $line;
 }
 
 sub _read_exact {
   my ($fh, $len) = @_;
+  return '' if !defined $len || $len <= 0;
+
+  my $buf_ref = _socket_buffer_ref($fh);
+  return unless defined $buf_ref;
+
   my $data = '';
+  if (length($$buf_ref)) {
+    my $take = length($$buf_ref) >= $len ? $len : length($$buf_ref);
+    $data = substr($$buf_ref, 0, $take, '');
+    return $data if length($data) >= $len;
+  }
+
   while (length($data) < $len) {
+    my $remaining = $len - length($data);
     my $chunk = '';
-    my $rv = sysread($fh, $chunk, $len - length($data));
+    my $rv = sysread($fh, $chunk, ($remaining > 8192 ? 8192 : $remaining));
     return unless defined $rv && $rv > 0;
     $data .= $chunk;
   }
@@ -1246,7 +1332,8 @@ sub _read_exact {
 
 sub _read_all {
   my ($fh) = @_;
-  my $data = '';
+  my $buf_ref = _socket_buffer_ref($fh);
+  my $data = defined $buf_ref ? substr($$buf_ref, 0, length($$buf_ref), '') : '';
   while (1) {
     my $chunk = '';
     my $rv = sysread($fh, $chunk, 4096);
@@ -1355,7 +1442,58 @@ sub _write_http_request {
   }
   $request .= "\r\n";
   $request .= $body if defined $body && length $body;
-  print {$sock} $request;
+  my $ok = print {$sock} $request;
+  return $ok ? 1 : 0;
+}
+
+sub _http_error_response {
+  my ($err) = @_;
+  $err //= 'unknown';
+  return {
+    success     => 0,
+    status      => 0,
+    reason      => $err,
+    status_line => "IO::Socket::SSL error: $err",
+    content     => '',
+  };
+}
+
+sub _drop_http_request_socket {
+  my ($sock) = @_;
+  $sock //= $http_request_sock;
+  if ($sock) {
+    _clear_socket_buffer($sock);
+    close $sock;
+  }
+  $http_request_sock = undef;
+  $http_request_sock_pid = $$;
+}
+
+sub _acquire_http_request_socket {
+  if ($http_request_sock && $http_request_sock_pid != $$) {
+    _drop_http_request_socket($http_request_sock);
+  }
+  if ($http_request_sock && !defined fileno($http_request_sock)) {
+    _drop_http_request_socket($http_request_sock);
+  }
+  if ($http_request_sock) {
+    return ($http_request_sock, 1);
+  }
+  my $sock = _open_lichess_socket();
+  return unless $sock;
+  $http_request_sock = $sock;
+  $http_request_sock_pid = $$;
+  return ($http_request_sock, 0);
+}
+
+sub _http_response_has_body {
+  my ($method, $status) = @_;
+  $method = uc($method // 'GET');
+  $status = defined $status ? $status + 0 : 0;
+  return 0 if $method eq 'HEAD';
+  return 0 if $status >= 100 && $status < 200;
+  return 0 if $status == 204 || $status == 304;
+  return 1;
 }
 
 sub http_request {
@@ -1379,62 +1517,107 @@ sub http_request {
     $content = $opts->{content};
   }
 
-  my $sock = _open_lichess_socket();
-  unless ($sock) {
-    my $err = $last_tls_error || IO::Socket::SSL::errstr() || 'unknown';
+  my $allow_cached_retry = 1;
+  while (1) {
+    my ($sock, $from_cache) = _acquire_http_request_socket();
+    unless ($sock) {
+      my $err = $last_tls_error || IO::Socket::SSL::errstr() || 'unknown';
+      return _http_error_response($err);
+    }
+
+    my %headers = (
+      'Host'          => 'lichess.org',
+      'Authorization' => $auth_header,
+      'User-Agent'    => $user_agent,
+      'Accept'        => $opts->{accept} // 'application/json',
+      'Connection'    => 'keep-alive',
+    );
+    if (my $extra = $opts->{headers}) {
+      foreach my $key (keys %$extra) {
+        $headers{$key} = $extra->{$key};
+      }
+    }
+    if (length $content) {
+      $headers{'Content-Length'} = length($content);
+    } elsif ($method =~ /^(?:POST|PUT|PATCH)$/) {
+      $headers{'Content-Length'} = 0;
+    }
+
+    my $write_ok = _write_http_request($sock, $method, $relative, \%headers, $content);
+    unless ($write_ok) {
+      my $err = $! ? "$!" : 'unable to write request';
+      _drop_http_request_socket($sock);
+      if ($from_cache && $allow_cached_retry) {
+        $allow_cached_retry = 0;
+        log_debug("Retrying $method $relative after keep-alive write failure: $err");
+        next;
+      }
+      return _http_error_response($err);
+    }
+
+    my $resp_headers = _read_http_headers($sock);
+    unless ($resp_headers->{status_line}) {
+      my $err = $! ? "$!" : 'empty HTTP response';
+      _drop_http_request_socket($sock);
+      if ($from_cache && $allow_cached_retry) {
+        $allow_cached_retry = 0;
+        log_debug("Retrying $method $relative after keep-alive read failure: $err");
+        next;
+      }
+      return _http_error_response($err);
+    }
+
+    my $status_line = $resp_headers->{status_line} // 'HTTP/1.1 000';
+    my ($status, $reason) = $status_line =~ m{^HTTP/\S+\s+(\d+)\s*(.*)$};
+    $reason //= '';
+
+    my $body = '';
+    my $body_complete = 1;
+    my $read_mode = 'none';
+    my $te = $resp_headers->{'transfer-encoding'} // '';
+    if (_http_response_has_body($method, $status)) {
+      if ($te =~ /chunked/i) {
+        $read_mode = 'chunked';
+        my $ok = _consume_chunked($sock, sub { $body .= shift });
+        if (!$ok) {
+          $body = '';
+          $body_complete = 0;
+        }
+      } elsif (defined(my $len = $resp_headers->{'content-length'})) {
+        $read_mode = 'length';
+        my $data = _read_exact($sock, $len);
+        if (defined $data) {
+          $body = $data;
+        } else {
+          $body = '';
+          $body_complete = 0;
+        }
+      } else {
+        $read_mode = 'until-close';
+        $body = _read_all($sock);
+      }
+    }
+
+    my $request_conn = lc($headers{'Connection'} // '');
+    my $response_conn = lc($resp_headers->{'connection'} // '');
+    my $can_reuse =
+      $body_complete
+      && $request_conn ne 'close'
+      && $response_conn !~ /\bclose\b/
+      && ($read_mode eq 'none' || $read_mode eq 'chunked' || $read_mode eq 'length');
+
+    if (!$can_reuse) {
+      _drop_http_request_socket($sock);
+    }
+
     return {
-      success     => 0,
-      status      => 0,
-      reason      => $err,
-      status_line => "IO::Socket::SSL error: $err",
-      content     => '',
+      success     => ($status && $status >= 200 && $status < 300) ? 1 : 0,
+      status      => $status // 0,
+      reason      => $reason,
+      status_line => $status_line,
+      content     => $body // '',
     };
   }
-  my %headers = (
-    'Host'          => 'lichess.org',
-    'Authorization' => $auth_header,
-    'User-Agent'    => $user_agent,
-    'Accept'        => $opts->{accept} // 'application/json',
-    'Connection'    => 'close',
-  );
-  if (my $extra = $opts->{headers}) {
-    foreach my $key (keys %$extra) {
-      $headers{$key} = $extra->{$key};
-    }
-  }
-  if (length $content) {
-    $headers{'Content-Length'} = length($content);
-  } elsif ($method =~ /^(?:POST|PUT|PATCH)$/) {
-    $headers{'Content-Length'} = 0;
-  }
-
-  _write_http_request($sock, $method, $relative, \%headers, $content);
-
-  my $resp_headers = _read_http_headers($sock);
-  my $status_line = $resp_headers->{status_line} // 'HTTP/1.1 000';
-  my ($status, $reason) = $status_line =~ m{^HTTP/\S+\s+(\d+)\s*(.*)$};
-  $reason //= '';
-
-  my $body = '';
-  my $te = $resp_headers->{'transfer-encoding'} // '';
-  if ($te =~ /chunked/i) {
-    my $ok = _consume_chunked($sock, sub { $body .= shift });
-    $body = '' unless $ok;
-  } elsif (defined(my $len = $resp_headers->{'content-length'})) {
-    my $data = _read_exact($sock, $len);
-    $body = defined $data ? $data : '';
-  } else {
-    $body = _read_all($sock);
-  }
-  close $sock;
-
-  return {
-    success     => ($status && $status >= 200 && $status < 300) ? 1 : 0,
-    status      => $status // 0,
-    reason      => $reason,
-    status_line => $status_line,
-    content     => $body // '',
-  };
 }
 
 sub _encode_form {
@@ -1472,9 +1655,21 @@ sub _query_escape {
   return $text;
 }
 
+sub _next_backoff_delay {
+  my ($delay, $max) = @_;
+  $delay = 1 unless defined $delay && $delay > 0;
+  $max = 30 unless defined $max && $max > 0;
+  my $next = $delay * 2;
+  return ($next > $max) ? $max : $next;
+}
+
 sub stream_ndjson {
   my ($path, $callback) = @_;
   my $attempt = 0;
+  my $is_game_stream = ($path =~ m{/bot/game/stream/}) ? 1 : 0;
+  my $retry_limit = $is_game_stream ? 5 : 0;
+  my $retry_delay = 1;
+  my $max_retry_delay = $is_game_stream ? 4 : 30;
 
   while (1) {
     $attempt ++;
@@ -1482,8 +1677,14 @@ sub stream_ndjson {
     my $sock = _open_lichess_socket();
     if (!$sock) {
       my $err = $last_tls_error || IO::Socket::SSL::errstr() || 'unknown';
+      if ($retry_limit && $attempt >= $retry_limit) {
+        log_warn("Unable to open TLS socket for $path after $attempt attempts: $err");
+        return 0;
+      }
       log_warn("Unable to open TLS socket: $err");
-      sleep 2;
+      log_info("Retrying stream $path in ${retry_delay}s");
+      sleep $retry_delay;
+      $retry_delay = _next_backoff_delay($retry_delay, $max_retry_delay);
       next;
     }
 
@@ -1501,8 +1702,15 @@ sub stream_ndjson {
       my $status_line = $headers->{status_line} // 'unknown';
       my $body = _read_all($sock);
       log_warn("Stream $path failed: $status_line body=$body");
+      _clear_socket_buffer($sock);
       close $sock;
-      sleep 1;
+      if ($retry_limit && $attempt >= $retry_limit) {
+        log_warn("Giving up stream $path after $attempt attempts");
+        return 0;
+      }
+      log_info("Retrying stream $path in ${retry_delay}s");
+      sleep $retry_delay;
+      $retry_delay = _next_backoff_delay($retry_delay, $max_retry_delay);
       next;
     }
 
@@ -1538,6 +1746,7 @@ sub stream_ndjson {
       }
     }
 
+    _clear_socket_buffer($sock);
     close $sock;
 
     if ($ok) {
@@ -1547,9 +1756,13 @@ sub stream_ndjson {
 
     log_warn("Stream $path closed unexpectedly");
 
-    if ($path =~ m{/bot/game/stream/} && $attempt < 5) {
-      log_info("Retrying game stream $path in 1s");
-      sleep 1;
+    if ($is_game_stream) {
+      if ($attempt >= $retry_limit) {
+        return 0;
+      }
+      log_info("Retrying game stream $path in ${retry_delay}s");
+      sleep $retry_delay;
+      $retry_delay = _next_backoff_delay($retry_delay, $max_retry_delay);
       next;
     }
 

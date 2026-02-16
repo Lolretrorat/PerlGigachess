@@ -1,6 +1,7 @@
 package Chess::TableUtil;
 use strict;
 use warnings;
+use Chess::State ();
 
 require Exporter;
 our @ISA = qw(Exporter);
@@ -17,17 +18,30 @@ my @BOARD_INDICES = _build_board_indices();
 
 sub canonical_fen_key {
   my ($state) = @_;
+  if (ref($state) eq 'Chess::State') {
+    my $cached = $state->[Chess::State::STATE_KEY];
+    return $cached if defined $cached;
+  }
   my $fen = $state->get_fen;
-  my ($placement, $turn, $castle, $ep) = split / /, $fen;
-  return join(' ', $placement, $turn, $castle, $ep);
+  my $pos = -1;
+  for (1 .. 4) {
+    $pos = index($fen, ' ', $pos + 1);
+    last if $pos < 0;
+  }
+  my $key = $pos > 0 ? substr($fen, 0, $pos) : $fen;
+  if (ref($state) eq 'Chess::State') {
+    $state->[Chess::State::STATE_KEY] = $key;
+  }
+  return $key;
 }
 
 sub relaxed_fen_key {
   my ($key) = @_;
   return unless defined $key;
-  my ($placement, $turn) = split / /, $key;
-  return unless defined $placement && defined $turn;
-  return join(' ', $placement, $turn);
+  my $pos = index($key, ' ');
+  return unless $pos > 0;
+  my $next = index($key, ' ', $pos + 1);
+  return substr($key, 0, $next > 0 ? $next : length($key));
 }
 
 sub normalize_uci_move {
@@ -47,51 +61,89 @@ sub merge_weighted_moves {
   return unless defined $key && ref $entries eq 'ARRAY' && @$entries;
   $opts ||= {};
   my $with_rank = $opts->{with_rank} ? 1 : 0;
+  my $current = $target->{$key};
+  my $has_current = (ref($current) eq 'ARRAY') ? 1 : 0;
+  my %index_by_uci;
+  if ($has_current) {
+    for (my $i = 0; $i < @$current; $i++) {
+      my $uci = $current->[$i]{uci};
+      next unless defined $uci;
+      $index_by_uci{$uci} = $i;
+    }
+  }
+  my %touched;
 
   if ($with_rank) {
-    my %merged = map {
-      $_->{uci} => {
-        uci    => $_->{uci},
-        weight => ($_->{weight} // 0),
-        rank   => ($_->{rank} // 0),
-      }
-    } @{ $target->{$key} || [] };
-
     foreach my $entry (@$entries) {
       next unless ref $entry eq 'HASH';
       my $uci = $entry->{uci} // next;
-      if (exists $merged{$uci}) {
-        $merged{$uci}{weight} += ($entry->{weight} // 0);
+      my $delta_weight = ($entry->{weight} // 0);
+      if (exists $index_by_uci{$uci}) {
+        my $slot = $current->[$index_by_uci{$uci}];
+        $slot->{weight} = 0 unless defined $slot->{weight};
+        $slot->{rank} = 0 unless defined $slot->{rank};
+        my $changed = 0;
+        if ($delta_weight != 0) {
+          $slot->{weight} += $delta_weight;
+          $changed = 1;
+        }
         my $rank = $entry->{rank} // 0;
-        $merged{$uci}{rank} = $rank if $rank > $merged{$uci}{rank};
+        if ($rank > ($slot->{rank} // 0)) {
+          $slot->{rank} = $rank;
+          $changed = 1;
+        }
+        $touched{$uci} = 1 if $changed;
       } else {
-        $merged{$uci} = {
+        if (! $has_current) {
+          $current = [];
+          $target->{$key} = $current;
+          $has_current = 1;
+        }
+        my $new_slot = {
           uci    => $uci,
           weight => ($entry->{weight} // 1),
           rank   => ($entry->{rank} // ($entry->{weight} // 1)),
         };
+        push @$current, $new_slot;
+        $index_by_uci{$uci} = $#$current;
+        $touched{$uci} = 1;
       }
     }
-
-    my @sorted = sort {
-      $b->{rank} <=> $a->{rank} || $b->{weight} <=> $a->{weight}
-    } values %merged;
-    $target->{$key} = \@sorted if @sorted;
+    _reorder_touched($current, \%index_by_uci, \%touched, \&_cmp_rank_weight)
+      if %touched;
     return;
   }
 
-  my %weights = map { $_->{uci} => ($_->{weight} || 0) } @{ $target->{$key} || [] };
   foreach my $entry (@$entries) {
     next unless ref $entry eq 'HASH';
     my $uci = $entry->{uci} // next;
-    my $weight = $entry->{weight} // 0;
-    $weights{$uci} += $weight;
+    my $delta_weight = ($entry->{weight} // 0);
+    if (exists $index_by_uci{$uci}) {
+      $current->[$index_by_uci{$uci}]{weight} = 0
+        unless defined $current->[$index_by_uci{$uci}]{weight};
+      if ($delta_weight != 0) {
+        $current->[$index_by_uci{$uci}]{weight} += $delta_weight;
+        $touched{$uci} = 1;
+      }
+      next;
+    }
+    if (! $has_current) {
+      $current = [];
+      $target->{$key} = $current;
+      $has_current = 1;
+    }
+    my $new_slot = {
+      uci    => $uci,
+      weight => 0,
+    };
+    $new_slot->{weight} += $delta_weight;
+    push @$current, $new_slot;
+    $index_by_uci{$uci} = $#$current;
+    $touched{$uci} = 1;
   }
 
-  my @merged = map {
-    { uci => $_, weight => $weights{$_} }
-  } sort { $weights{$b} <=> $weights{$a} } keys %weights;
-  $target->{$key} = \@merged if @merged;
+  _reorder_touched($current, \%index_by_uci, \%touched, \&_cmp_weight_only)
+    if %touched;
 }
 
 sub idx_to_square {
@@ -114,6 +166,38 @@ sub _build_board_indices {
     push @indices, map { $base + $_ } (1 .. 8);
   }
   return @indices;
+}
+
+sub _reorder_touched {
+  my ($entries, $index_by_uci, $touched, $cmp_cb) = @_;
+  return unless ref $entries eq 'ARRAY' && @$entries;
+  return unless ref $cmp_cb eq 'CODE';
+
+  my @reorder = sort {
+    ($index_by_uci->{$a} // 0) <=> ($index_by_uci->{$b} // 0)
+  } grep { exists $index_by_uci->{$_} } keys %$touched;
+
+  foreach my $uci (@reorder) {
+    my $idx = $index_by_uci->{$uci};
+    next unless defined $idx;
+    while ($idx > 0 && $cmp_cb->($entries->[$idx], $entries->[$idx - 1]) < 0) {
+      @$entries[$idx, $idx - 1] = @$entries[$idx - 1, $idx];
+      $index_by_uci->{$entries->[$idx]{uci}} = $idx if defined $entries->[$idx]{uci};
+      $index_by_uci->{$entries->[$idx - 1]{uci}} = $idx - 1 if defined $entries->[$idx - 1]{uci};
+      $idx--;
+    }
+  }
+}
+
+sub _cmp_rank_weight {
+  my ($left, $right) = @_;
+  return ($right->{rank} // 0) <=> ($left->{rank} // 0)
+    || ($right->{weight} // 0) <=> ($left->{weight} // 0);
+}
+
+sub _cmp_weight_only {
+  my ($left, $right) = @_;
+  return ($right->{weight} // 0) <=> ($left->{weight} // 0);
 }
 
 1;

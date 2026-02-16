@@ -7,6 +7,12 @@ use Getopt::Long qw(GetOptions);
 use IPC::Open2;
 use JSON::PP qw(encode_json decode_json);
 
+my $PATH_LIST_SEP = ($^O eq 'MSWin32') ? ';' : ':';
+my $resolved_probetool_path;
+my $resolved_probetool_checked = 0;
+my %stdio_probe_cache;
+my $STDIO_PROBE_CACHE_MAX = 5_000;
+
 sub _result {
   my ($payload) = @_;
   print encode_json($payload), "\n";
@@ -16,10 +22,9 @@ sub _normalize_paths {
   my (@values) = @_;
   my @unique;
   my %seen;
-  my $sep = ($^O eq 'MSWin32') ? ';' : ':';
   foreach my $raw (@values) {
     next unless defined $raw && length $raw;
-    foreach my $path (split /\Q$sep\E/, $raw) {
+    foreach my $path (split /\Q$PATH_LIST_SEP\E/, $raw) {
       $path =~ s/^\s+//;
       $path =~ s/\s+$//;
       next unless length $path;
@@ -41,6 +46,9 @@ sub _category_from_wdl {
 }
 
 sub _resolve_probetool_path {
+  return $resolved_probetool_path if $resolved_probetool_checked;
+  $resolved_probetool_checked = 1;
+
   my @candidates;
 
   if (defined $ENV{CHESS_SYZYGY_PROBETOOL} && length $ENV{CHESS_SYZYGY_PROBETOOL}) {
@@ -52,8 +60,12 @@ sub _resolve_probetool_path {
 
   for my $path (@candidates) {
     next unless defined $path && length $path;
-    return $path if -x $path;
+    if (-x $path) {
+      $resolved_probetool_path = $path;
+      return $resolved_probetool_path;
+    }
   }
+  $resolved_probetool_path = undef;
   return;
 }
 
@@ -82,8 +94,7 @@ sub _wdl_from_meaning {
 
 sub _probe_with_probetool {
   my ($fen, $tb_paths, $probetool) = @_;
-  my $sep = ($^O eq 'MSWin32') ? ';' : ':';
-  my $path_arg = join($sep, @$tb_paths);
+  my $path_arg = join($PATH_LIST_SEP, @$tb_paths);
 
   my @cmd = ($probetool, '-u', '-r', '-p', $path_arg, $fen);
   my $raw = '';
@@ -167,6 +178,11 @@ sub _probe_with_python {
   my ($fen, $tb_paths) = @_;
 
   my $python = $ENV{CHESS_SYZYGY_PYTHON} // 'python3';
+  my $dtz_max_candidates = $ENV{CHESS_SYZYGY_DTZ_MAX_CANDIDATES};
+  $dtz_max_candidates = 8
+    unless defined $dtz_max_candidates && $dtz_max_candidates =~ /^\d+$/;
+  $dtz_max_candidates = 1 if $dtz_max_candidates < 1;
+  $dtz_max_candidates = 128 if $dtz_max_candidates > 128;
   my $py_code = <<'PYCODE';
 import json
 import sys
@@ -196,6 +212,13 @@ def main():
 
     fen = payload.get("fen", "")
     tb_paths = payload.get("tb_paths", [])
+    dtz_max_candidates = payload.get("dtz_max_candidates", 8)
+    try:
+        dtz_max_candidates = int(dtz_max_candidates)
+    except Exception:
+        dtz_max_candidates = 8
+    if dtz_max_candidates < 1:
+        dtz_max_candidates = 1
 
     try:
         import chess
@@ -217,6 +240,7 @@ def main():
                 tb.add_directory(path)
 
             legal = list(board.legal_moves)
+            scanned = []
             for index, move in enumerate(legal):
                 board.push(move)
                 try:
@@ -224,14 +248,37 @@ def main():
                 except Exception:
                     board.pop()
                     continue
-
-                try:
-                    child_dtz = int(tb.probe_dtz(board))
-                except Exception:
-                    child_dtz = None
                 board.pop()
+                scanned.append(
+                    {
+                        "index": index,
+                        "move": move,
+                        "wdl": -child_wdl,
+                    }
+                )
 
-                wdl = -child_wdl
+            if not scanned:
+                _emit({"source": "syzygy", "moves": [], "error": "probe_failed:no_root_moves"})
+                return 0
+
+            best_wdl = max(item["wdl"] for item in scanned)
+            dtz_candidates = [item for item in scanned if item["wdl"] == best_wdl]
+            dtz_candidates.sort(key=lambda item: item["index"])
+            dtz_indexes = {item["index"] for item in dtz_candidates[:dtz_max_candidates]}
+
+            for item in scanned:
+                index = item["index"]
+                move = item["move"]
+                wdl = item["wdl"]
+                child_dtz = None
+                if index in dtz_indexes:
+                    board.push(move)
+                    try:
+                        child_dtz = int(tb.probe_dtz(board))
+                    except Exception:
+                        child_dtz = None
+                    board.pop()
+
                 rank = {2: 500000, 1: 400000, 0: 300000, -1: 200000, -2: 100000}.get(wdl, 0)
 
                 if child_dtz is not None:
@@ -275,7 +322,11 @@ PYCODE
     return { source => 'syzygy', moves => [], error => "missing_dependency:$err" };
   }
 
-  print {$probe_in} encode_json({ fen => $fen, tb_paths => $tb_paths });
+  print {$probe_in} encode_json({
+    fen                => $fen,
+    tb_paths           => $tb_paths,
+    dtz_max_candidates => $dtz_max_candidates,
+  });
   close $probe_in;
 
   local $/;
@@ -295,15 +346,65 @@ PYCODE
   return $decoded;
 }
 
+sub _probe_payload {
+  my ($fen, $tb_paths) = @_;
+  my $payload;
+  if (my $probetool = _resolve_probetool_path()) {
+    $payload = _probe_with_probetool($fen, $tb_paths, $probetool);
+  }
+
+  if (!defined $payload || ref $payload ne 'HASH' || ref $payload->{moves} ne 'ARRAY') {
+    $payload = _probe_with_python($fen, $tb_paths);
+  }
+
+  return $payload;
+}
+
+sub _run_stdio {
+  my ($tb_paths) = @_;
+  local $| = 1;
+
+  while (my $line = <STDIN>) {
+    $line =~ s/\s+$//;
+    next unless length $line;
+
+    my $request = eval { decode_json($line) };
+    if ($@ || ref $request ne 'HASH') {
+      _result({ source => 'syzygy', moves => [], error => 'invalid_request' });
+      next;
+    }
+
+    my $fen = $request->{fen};
+    if (!defined $fen || !length $fen) {
+      _result({ source => 'syzygy', moves => [], error => 'missing_fen' });
+      next;
+    }
+
+    if (exists $stdio_probe_cache{$fen}) {
+      _result($stdio_probe_cache{$fen});
+      next;
+    }
+
+    my $payload = _probe_payload($fen, $tb_paths);
+    if (!defined $payload || ref $payload ne 'HASH' || ref $payload->{moves} ne 'ARRAY') {
+      $payload = { source => 'syzygy', moves => [], error => 'probe_failed:invalid_output' };
+    }
+    if (scalar(keys %stdio_probe_cache) >= $STDIO_PROBE_CACHE_MAX) {
+      %stdio_probe_cache = ();
+    }
+    $stdio_probe_cache{$fen} = $payload;
+    _result($payload);
+  }
+}
+
 my $fen;
 my @tb_path;
+my $stdio = 0;
 GetOptions(
   'fen=s'     => \$fen,
+  'stdio!'    => \$stdio,
   'tb-path=s' => \@tb_path,
-) or die "Usage: $0 --fen FEN --tb-path DIR [--tb-path DIR...]\n";
-
-die "Usage: $0 --fen FEN --tb-path DIR [--tb-path DIR...]\n"
-  unless defined $fen && length $fen;
+) or die "Usage: $0 [--stdio] --fen FEN --tb-path DIR [--tb-path DIR...]\n";
 
 my @tb_paths = _normalize_paths(@tb_path);
 if (!@tb_paths) {
@@ -318,15 +419,15 @@ foreach my $path (@tb_paths) {
   }
 }
 
-my $payload;
-if (my $probetool = _resolve_probetool_path()) {
-  $payload = _probe_with_probetool($fen, \@tb_paths, $probetool);
+if ($stdio) {
+  _run_stdio(\@tb_paths);
+  exit 0;
 }
 
-if (!defined $payload || ref $payload ne 'HASH' || ref $payload->{moves} ne 'ARRAY') {
-  $payload = _probe_with_python($fen, \@tb_paths);
-}
+die "Usage: $0 [--stdio] --fen FEN --tb-path DIR [--tb-path DIR...]\n"
+  unless defined $fen && length $fen;
 
+my $payload = _probe_payload($fen, \@tb_paths);
 _result($payload);
 my $exit_code = $? >> 8;
 exit($exit_code);

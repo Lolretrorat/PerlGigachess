@@ -6,6 +6,7 @@ use Chess::Constant;
 use Chess::State ();
 use File::Basename qw(dirname);
 use File::Spec;
+use IPC::Open2;
 use JSON::PP;
 use Chess::TableUtil qw(
   canonical_fen_key
@@ -19,6 +20,19 @@ my %table;
 my %relaxed_table;
 my %syzygy_cache;
 my %syzygy_failure_backoff_until;
+my %legal_move_details_cache;
+my $table_path_cache;
+my $default_probe_script_path_cache;
+my $probe_script_path_cache;
+my $probe_script_override_key;
+my $syzygy_paths_raw_cache;
+my @syzygy_path_tokens_cache;
+my %env_bool_cache;
+my %env_int_cache;
+my $syzygy_probe_worker;
+my $syzygy_probe_worker_backoff_until = 0;
+my $SYZYGY_CACHE_MAX = 20_000;
+my $SYZYGY_BACKOFF_CACHE_MAX = 20_000;
 
 my %syzygy_wdl_rank = (
   2  => 5_000_000,  # win
@@ -29,9 +43,11 @@ my %syzygy_wdl_rank = (
 );
 
 sub _table_path {
+  return $table_path_cache if defined $table_path_cache;
   my $module_dir = dirname(__FILE__);
   my $root = File::Spec->catdir($module_dir, '..');
-  return File::Spec->catfile($root, 'data', 'endgame_table.json');
+  $table_path_cache = File::Spec->catfile($root, 'data', 'endgame_table.json');
+  return $table_path_cache;
 }
 
 sub _load_tables {
@@ -100,9 +116,11 @@ sub _load_tables {
 
 sub choose_move {
   my ($state) = @_;
+  my $legal;
   my $syzygy_entries = tablebase_entries($state);
   if ($syzygy_entries && @$syzygy_entries) {
-    my $syzygy_move = _choose_ranked_table_move($state, $syzygy_entries);
+    $legal ||= _legal_move_details($state);
+    my $syzygy_move = _choose_ranked_table_move($state, $syzygy_entries, $legal);
     return $syzygy_move if $syzygy_move;
   }
 
@@ -114,11 +132,12 @@ sub choose_move {
   }
 
   if ($entries && @$entries) {
-    my $move = _choose_ranked_table_move($state, $entries);
+    $legal ||= _legal_move_details($state);
+    my $move = _choose_ranked_table_move($state, $entries, $legal);
     return $move if $move;
   }
 
-  my $fallback = _choose_simple_mating_move($state);
+  my $fallback = _choose_simple_mating_move($state, $legal);
   return $fallback if $fallback;
   return;
 }
@@ -130,13 +149,15 @@ sub tablebase_entries {
 
   my @tb_paths = _syzygy_paths();
   return unless @tb_paths;
+  my $probe_sig = _syzygy_probe_signature(\@tb_paths);
 
   my $key = canonical_fen_key($state);
-  return if _in_syzygy_failure_backoff($key);
+  my $cache_key = _syzygy_cache_key($key, $probe_sig);
+  return if _in_syzygy_failure_backoff($cache_key);
 
   my $ttl = _env_int('CHESS_SYZYGY_CACHE_TTL', 30 * 24 * 3600, 0);
   if ($ttl > 0) {
-    my $entry = $syzygy_cache{$key};
+    my $entry = $syzygy_cache{$cache_key};
     if (ref $entry eq 'HASH') {
       my $age = time() - ($entry->{ts} // 0);
       if ($age <= $ttl && ref $entry->{data} eq 'ARRAY') {
@@ -148,7 +169,7 @@ sub tablebase_entries {
   my $fen = $state->get_fen;
   my $payload = _probe_syzygy($fen, \@tb_paths);
   if (! $payload || ref $payload ne 'HASH' || ref $payload->{moves} ne 'ARRAY') {
-    _mark_syzygy_failure($key);
+    _mark_syzygy_failure($cache_key);
     return;
   }
 
@@ -192,7 +213,10 @@ sub tablebase_entries {
     $b->{rank} <=> $a->{rank} || $b->{weight} <=> $a->{weight}
   } @entries;
 
-  $syzygy_cache{$key} = {
+  if (scalar(keys %syzygy_cache) >= $SYZYGY_CACHE_MAX) {
+    %syzygy_cache = ();
+  }
+  $syzygy_cache{$cache_key} = {
     ts   => time(),
     data => \@entries,
   };
@@ -200,8 +224,8 @@ sub tablebase_entries {
 }
 
 sub _choose_ranked_table_move {
-  my ($state, $entries) = @_;
-  my $legal = _legal_move_details($state);
+  my ($state, $entries, $legal) = @_;
+  $legal ||= _legal_move_details($state);
   return unless keys %{$legal};
 
   my $best_move;
@@ -231,10 +255,10 @@ sub _choose_ranked_table_move {
 }
 
 sub _choose_simple_mating_move {
-  my ($state) = @_;
+  my ($state, $legal) = @_;
   return unless _is_basic_mating_material($state);
 
-  my $legal = _legal_move_details($state);
+  $legal ||= _legal_move_details($state);
   return unless keys %{$legal};
 
   my $best_move;
@@ -290,6 +314,11 @@ sub _is_basic_mating_material {
 
 sub _legal_move_details {
   my ($state) = @_;
+  my $state_key = canonical_fen_key($state);
+  if (defined $state_key && exists $legal_move_details_cache{$state_key}) {
+    return $legal_move_details_cache{$state_key};
+  }
+
   my %details;
   foreach my $move (@{$state->generate_pseudo_moves}) {
     my $new_state = $state->make_move($move);
@@ -298,24 +327,33 @@ sub _legal_move_details {
     my $uci = normalize_uci_move($state->decode_move($move));
     next unless defined $uci;
 
-    my @opp_legal = grep {
-      defined $new_state->make_move($_)
-    } @{$new_state->generate_pseudo_moves};
-
-    my $opp_captures = scalar grep {
-      my $target = $new_state->[Chess::State::BOARD][$_->[1]] // 0;
-      $target < 0;
-    } @opp_legal;
+    my $opp_moves = 0;
+    my $opp_captures = 0;
+    foreach my $opp_move (@{$new_state->generate_pseudo_moves}) {
+      my $reply = $new_state->make_move($opp_move);
+      next unless defined $reply;
+      $opp_moves++;
+      my $target = $new_state->[Chess::State::BOARD][$opp_move->[1]] // 0;
+      $opp_captures++ if $target < 0;
+    }
+    my $gives_check = $new_state->is_checked ? 1 : 0;
 
     $details{$uci} = {
       move => $move,
-      opp_moves => scalar @opp_legal,
+      opp_moves => $opp_moves,
       opp_captures => $opp_captures,
-      gives_check => ($new_state->is_checked ? 1 : 0),
-      mate => ((@opp_legal == 0 && $new_state->is_checked) ? 1 : 0),
+      gives_check => $gives_check,
+      mate => (($opp_moves == 0 && $gives_check) ? 1 : 0),
     };
   }
-  return \%details;
+  my $result = \%details;
+  if (defined $state_key) {
+    if (scalar(keys %legal_move_details_cache) >= 20_000) {
+      %legal_move_details_cache = ();
+    }
+    $legal_move_details_cache{$state_key} = $result;
+  }
+  return $result;
 }
 
 sub _probe_syzygy {
@@ -323,6 +361,16 @@ sub _probe_syzygy {
   my $script = _probe_script_path();
   return unless -e $script;
 
+  if (_env_bool('CHESS_SYZYGY_PERSISTENT', 1)) {
+    my $persistent = _probe_syzygy_persistent($fen, $tb_paths, $script);
+    return $persistent if $persistent;
+  }
+
+  return _probe_syzygy_once($fen, $tb_paths, $script);
+}
+
+sub _probe_syzygy_once {
+  my ($fen, $tb_paths, $script) = @_;
   my @cmd = ($script, '--fen', $fen);
   foreach my $path (@$tb_paths) {
     push @cmd, ('--tb-path', $path);
@@ -344,31 +392,160 @@ sub _probe_syzygy {
   return $data;
 }
 
-sub _probe_script_path {
-  if (defined $ENV{CHESS_SYZYGY_PROBE_SCRIPT} && length $ENV{CHESS_SYZYGY_PROBE_SCRIPT}) {
-    return $ENV{CHESS_SYZYGY_PROBE_SCRIPT};
+sub _probe_syzygy_persistent {
+  my ($fen, $tb_paths, $script) = @_;
+  return if time() < $syzygy_probe_worker_backoff_until;
+
+  my $sig = _syzygy_worker_signature($script, $tb_paths);
+  my $worker = _ensure_syzygy_probe_worker($sig, $script, $tb_paths);
+  return unless ref $worker eq 'HASH';
+
+  my $request = JSON::PP->new->encode({ fen => $fen });
+  my $write_ok = eval {
+    my $in = $worker->{in};
+    print {$in} $request, "\n" or die "write failed";
+    1;
+  };
+  if (! $write_ok) {
+    _stop_syzygy_probe_worker();
+    _mark_syzygy_probe_worker_failure();
+    return;
   }
+
+  my $line;
+  my $timeout = _env_int('CHESS_SYZYGY_PERSISTENT_TIMEOUT_SECS', 3, 1, 30);
+  my $read_ok = eval {
+    local $SIG{ALRM} = sub { die "timeout\n" };
+    alarm($timeout);
+    $line = readline($worker->{out});
+    alarm(0);
+    1;
+  };
+  alarm(0);
+
+  if (! $read_ok || ! defined $line || $line !~ /\S/) {
+    _stop_syzygy_probe_worker();
+    _mark_syzygy_probe_worker_failure();
+    return;
+  }
+
+  my $data = eval { JSON::PP->new->decode($line) };
+  if ($@ || ref $data ne 'HASH') {
+    _stop_syzygy_probe_worker();
+    _mark_syzygy_probe_worker_failure();
+    return;
+  }
+
+  return $data;
+}
+
+sub _ensure_syzygy_probe_worker {
+  my ($sig, $script, $tb_paths) = @_;
+  if (ref $syzygy_probe_worker eq 'HASH') {
+    return $syzygy_probe_worker if ($syzygy_probe_worker->{sig} // '') eq $sig;
+    _stop_syzygy_probe_worker();
+  }
+
+  my @cmd = ($script, '--stdio');
+  foreach my $path (@$tb_paths) {
+    push @cmd, ('--tb-path', $path);
+  }
+
+  my ($out, $in);
+  my $pid = eval { open2($out, $in, @cmd) };
+  if (! $pid || $@) {
+    _mark_syzygy_probe_worker_failure();
+    return;
+  }
+
+  my $old_handle = select($in);
+  $| = 1;
+  select($old_handle);
+
+  $syzygy_probe_worker = {
+    sig => $sig,
+    pid => $pid,
+    in  => $in,
+    out => $out,
+  };
+  return $syzygy_probe_worker;
+}
+
+sub _stop_syzygy_probe_worker {
+  return unless ref $syzygy_probe_worker eq 'HASH';
+  my $pid = $syzygy_probe_worker->{pid};
+  my $in = $syzygy_probe_worker->{in};
+  my $out = $syzygy_probe_worker->{out};
+
+  eval { close $in if $in; };
+  eval { close $out if $out; };
+  waitpid($pid, 0) if defined $pid && $pid > 0;
+  $syzygy_probe_worker = undef;
+}
+
+sub _mark_syzygy_probe_worker_failure {
+  my $seconds = _env_int('CHESS_SYZYGY_PERSISTENT_RETRY_SECS', 10, 1, 300);
+  $syzygy_probe_worker_backoff_until = time() + $seconds;
+}
+
+sub _syzygy_worker_signature {
+  my ($script, $tb_paths) = @_;
+  my @paths = ref $tb_paths eq 'ARRAY' ? @$tb_paths : ();
+  my $probetool = $ENV{CHESS_SYZYGY_PROBETOOL} // '';
+  my $python = $ENV{CHESS_SYZYGY_PYTHON} // '';
+  return join("\x1D", $script, $probetool, $python, @paths);
+}
+
+sub _probe_script_path {
+  my $override = $ENV{CHESS_SYZYGY_PROBE_SCRIPT};
+  my $override_key = defined $override ? "1:$override" : '0:';
+  if (defined $probe_script_override_key
+      && $probe_script_override_key eq $override_key
+      && defined $probe_script_path_cache) {
+    return $probe_script_path_cache;
+  }
+
+  if (defined $override && length $override) {
+    $probe_script_path_cache = $override;
+    $probe_script_override_key = $override_key;
+    return $probe_script_path_cache;
+  }
+
+  $probe_script_path_cache = _default_probe_script_path();
+  $probe_script_override_key = $override_key;
+  return $probe_script_path_cache;
+}
+
+sub _default_probe_script_path {
+  return $default_probe_script_path_cache if defined $default_probe_script_path_cache;
   my $module_dir = dirname(__FILE__);
   my $root = File::Spec->catdir($module_dir, '..');
-  return File::Spec->catfile($root, 'scripts', 'probe_syzygy.pl');
+  $default_probe_script_path_cache = File::Spec->catfile($root, 'scripts', 'probe_syzygy.pl');
+  return $default_probe_script_path_cache;
 }
 
 sub _syzygy_paths {
   my $raw = $ENV{CHESS_SYZYGY_PATH} // '';
-  return unless length $raw;
+  if (!defined $syzygy_paths_raw_cache || $raw ne $syzygy_paths_raw_cache) {
+    $syzygy_paths_raw_cache = $raw;
+    @syzygy_path_tokens_cache = ();
+    return unless length $raw;
 
-  my $sep = ($^O eq 'MSWin32') ? ';' : ':';
-  my %seen;
-  my @paths = grep {
-    !$seen{$_}++
-  } grep {
-    defined $_ && length $_ && -d $_
-  } map {
-    my $path = $_;
-    $path =~ s/^\s+//;
-    $path =~ s/\s+$//;
-    $path;
-  } split /\Q$sep\E/, $raw;
+    my $sep = ($^O eq 'MSWin32') ? ';' : ':';
+    my %seen;
+    @syzygy_path_tokens_cache = grep {
+      !$seen{$_}++
+    } grep {
+      defined $_ && length $_
+    } map {
+      my $path = $_;
+      $path =~ s/^\s+//;
+      $path =~ s/\s+$//;
+      $path;
+    } split /\Q$sep\E/, $raw;
+  }
+
+  my @paths = grep { -d $_ } @syzygy_path_tokens_cache;
 
   return @paths;
 }
@@ -392,20 +569,57 @@ sub _piece_count {
 
 sub _env_bool {
   my ($name, $default) = @_;
-  return $default unless exists $ENV{$name};
-  my $value = lc($ENV{$name} // '');
-  return 1 if $value =~ /^(?:1|true|on|yes)$/;
-  return 0 if $value =~ /^(?:0|false|off|no)$/;
-  return $default ? 1 : 0;
+  my $default_bool = $default ? 1 : 0;
+  my $raw_exists = exists $ENV{$name} ? 1 : 0;
+  my $raw = $raw_exists ? ($ENV{$name} // '') : '';
+  my $raw_key = ($raw_exists ? '1:' : '0:') . $raw;
+  my $cache_key = $name . '|default=' . $default_bool;
+  my $cached = $env_bool_cache{$cache_key};
+  if (ref $cached eq 'HASH' && ($cached->{raw_key} // '') eq $raw_key) {
+    return $cached->{value};
+  }
+
+  my $value;
+  if (!$raw_exists) {
+    $value = $default_bool;
+  } else {
+    my $normalized = lc($raw);
+    if ($normalized =~ /^(?:1|true|on|yes)$/) {
+      $value = 1;
+    } elsif ($normalized =~ /^(?:0|false|off|no)$/) {
+      $value = 0;
+    } else {
+      $value = $default_bool;
+    }
+  }
+
+  $env_bool_cache{$cache_key} = {
+    raw_key => $raw_key,
+    value   => $value,
+  };
+  return $value;
 }
 
 sub _env_int {
   my ($name, $default, $min, $max) = @_;
-  my $value = exists $ENV{$name} ? $ENV{$name} : $default;
+  my $raw_exists = exists $ENV{$name} ? 1 : 0;
+  my $raw = $raw_exists ? ($ENV{$name} // '') : '';
+  my $raw_key = ($raw_exists ? '1:' : '0:') . $raw;
+  my $cache_key = join('|', map { defined $_ ? $_ : '' } $name, $default, $min, $max);
+  my $cached = $env_int_cache{$cache_key};
+  if (ref $cached eq 'HASH' && ($cached->{raw_key} // '') eq $raw_key) {
+    return $cached->{value};
+  }
+
+  my $value = $raw_exists ? $ENV{$name} : $default;
   $value = $default unless defined $value && $value =~ /^-?\d+$/;
   $value = int($value);
   $value = $min if defined $min && $value < $min;
   $value = $max if defined $max && $value > $max;
+  $env_int_cache{$cache_key} = {
+    raw_key => $raw_key,
+    value   => $value,
+  };
   return $value;
 }
 
@@ -422,16 +636,42 @@ sub _maybe_numeric {
   return $num;
 }
 
+sub _syzygy_cache_key {
+  my ($state_key, $probe_sig) = @_;
+  $state_key //= '';
+  $probe_sig //= '';
+  return $state_key . "\x1F" . $probe_sig;
+}
+
+sub _syzygy_probe_signature {
+  my ($tb_paths) = @_;
+  my $script = _probe_script_path();
+  my @paths = ref $tb_paths eq 'ARRAY' ? @$tb_paths : ();
+  return join("\x1E", $script, @paths);
+}
+
 sub _in_syzygy_failure_backoff {
-  my ($key) = @_;
-  my $until = $syzygy_failure_backoff_until{$key} // 0;
+  my ($cache_key) = @_;
+  my $until = $syzygy_failure_backoff_until{$cache_key} // 0;
+  if ($until <= time()) {
+    delete $syzygy_failure_backoff_until{$cache_key}
+      if exists $syzygy_failure_backoff_until{$cache_key};
+    return 0;
+  }
   return $until > time();
 }
 
 sub _mark_syzygy_failure {
-  my ($key) = @_;
+  my ($cache_key) = @_;
   my $seconds = _env_int('CHESS_SYZYGY_FAILURE_BACKOFF_SECS', 120, 1, 3600);
-  $syzygy_failure_backoff_until{$key} = time() + $seconds;
+  if (scalar(keys %syzygy_failure_backoff_until) >= $SYZYGY_BACKOFF_CACHE_MAX) {
+    %syzygy_failure_backoff_until = ();
+  }
+  $syzygy_failure_backoff_until{$cache_key} = time() + $seconds;
+}
+
+END {
+  _stop_syzygy_probe_worker();
 }
 
 _load_tables();

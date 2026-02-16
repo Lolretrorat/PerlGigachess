@@ -20,7 +20,6 @@ use constant QUIESCE_CHECK_BONUS => 128;               # Higher => checks are se
 use constant INF_SCORE => 1_000_000;                   # Search sentinel bound; should stay above any real eval.
 use constant MATE_SCORE => 900_000;                    # Higher => mate threats dominate eval more strongly.
 use constant ASPIRATION_WINDOW => 24;                  # Higher => fewer re-searches, but less pruning focus.
-
 use constant TT_FLAG_EXACT => 0;                       # TT exact-score entry type marker.
 use constant TT_FLAG_LOWER => 1;                       # TT lower-bound entry type marker (fail-high).
 use constant TT_FLAG_UPPER => 2;                       # TT upper-bound entry type marker (fail-low).
@@ -62,6 +61,16 @@ use constant TIME_PANIC_60S_QUIESCE_MAX_DEPTH => 2;    # Quiesce depth cap below
 use constant TIME_PANIC_30S_QUIESCE_MAX_DEPTH => 1;    # Quiesce depth cap below 30s.
 use constant TIME_PANIC_10S_QUIESCE_MAX_DEPTH => 1;    # Quiesce depth cap below 10s.
 use constant TT_MAX_ENTRIES => 200_000;                # Higher => larger TT memory footprint, fewer evictions.
+use constant TT_TRIM_TARGET_FILL => 0.85;              # Lower => trim deeper when TT is over capacity.
+use constant TT_TRIM_SCAN_BASE => 1024;                # Higher => samples more TT entries per trim call.
+use constant TT_TRIM_SCAN_PER_EVICTION => 8;           # Higher => samples more TT entries per needed eviction.
+use constant TT_TRIM_SCAN_MAX => 8192;                 # Higher => upper bound for sampled TT entries per trim.
+use constant TT_TRIM_INSERT_SLACK => 8192;             # Higher => allows larger temporary TT overflow before trimming.
+use constant TT_TRIM_HARD_EVICT_MAX => 2048;           # Higher => allows more forced evictions per trim call.
+use constant TT_STALE_GEN_AGE => 3;                    # Lower => evicts older TT generations more aggressively.
+use constant TT_SHALLOW_DEPTH => 2;                    # Higher => treats more shallow TT entries as weak.
+use constant HISTORY_DECAY_FACTOR => 0.85;             # Lower => quiet-history bonuses fade faster across thinks.
+use constant HISTORY_RENORM_MIN_SCALE => 0.02;         # Higher => normalizes/prunes history table more frequently.
 use constant COUNTERMOVE_BONUS => 180;                 # Higher => counter-move heuristic impacts ordering more.
 use constant EASY_MOVE_MIN_DEPTH => 4;                 # Higher => require deeper confirmation before early stop.
 use constant EASY_MOVE_DEPTH_CAP => 5;                 # Higher => allow easier early-stop logic at deeper levels.
@@ -98,8 +107,10 @@ use constant KING_AGGRESSION_ENEMY_PIECE_START => 10;  # Higher => king aggressi
 use constant KING_AGGRESSION_RANK_BONUS => 6;          # Higher => reward for king penetration in late game.
 
 my %history_scores;
+my $history_scale = 1.0;
 my @killer_moves;
 my %transposition_table;
+my $tt_size = 0;
 my %counter_moves;
 my $tt_generation = 0;
 
@@ -157,6 +168,16 @@ $piece_alias{OPP_KNIGHT()} = 'OPP_KNIGHT';
 $piece_alias{OPP_PAWN()}   = 'OPP_PAWN';
 
 my @board_indices = board_indices();
+my @square_by_idx;
+my @rank_by_idx;
+my @file_by_idx;
+for my $idx (@board_indices) {
+  my $file = ($idx % 10) - 1;
+  my $rank = int($idx / 10) - 1;
+  $square_by_idx[$idx] = chr(ord('a') + $file) . $rank;
+  $rank_by_idx[$idx] = $rank;
+  $file_by_idx[$idx] = $file + 1;
+}
 my %normalized_location_tables = _normalize_location_modifiers();
 my @passed_pawn_bonus_by_rank = (0, 0, 0, 2, 4, 7, 11, 16, 0);
 my @enemy_passed_pawn_penalty_by_rank = (0, 0, 17, 12, 8, 5, 3, 2, 0);
@@ -214,17 +235,32 @@ sub _flip_idx {
 
 sub _rank_of_idx {
   my ($idx) = @_;
+  my $cached = $rank_by_idx[$idx];
+  return $cached if defined $cached;
   return int($idx / 10) - 1;
 }
 
 sub _file_of_idx {
   my ($idx) = @_;
+  my $cached = $file_by_idx[$idx];
+  return $cached if defined $cached;
   return $idx % 10;
 }
 
+sub _square_of_idx {
+  my ($idx) = @_;
+  return $square_by_idx[$idx] // idx_to_square($idx, 0);
+}
+
 sub _is_square_attacked_by_side {
-  my ($board, $idx, $attacker_sign) = @_;
+  my ($board, $idx, $attacker_sign, $cache) = @_;
   return 0 unless $attacker_sign == 1 || $attacker_sign == -1;
+
+  my $cache_key;
+  if (ref($cache) eq 'HASH') {
+    $cache_key = ($idx << 1) | ($attacker_sign > 0 ? 1 : 0);
+    return $cache->{$cache_key} if exists $cache->{$cache_key};
+  }
 
   my $pawn = $attacker_sign * PAWN;
   my $knight = $attacker_sign * KNIGHT;
@@ -234,17 +270,29 @@ sub _is_square_attacked_by_side {
   my $king = $attacker_sign * KING;
 
   if ($attacker_sign > 0) {
-    return 1 if ($board->[$idx - 11] // OOB) == $pawn || ($board->[$idx - 9] // OOB) == $pawn;
+    if (($board->[$idx - 11] // OOB) == $pawn || ($board->[$idx - 9] // OOB) == $pawn) {
+      $cache->{$cache_key} = 1 if defined $cache_key;
+      return 1;
+    }
   } else {
-    return 1 if ($board->[$idx + 11] // OOB) == $pawn || ($board->[$idx + 9] // OOB) == $pawn;
+    if (($board->[$idx + 11] // OOB) == $pawn || ($board->[$idx + 9] // OOB) == $pawn) {
+      $cache->{$cache_key} = 1 if defined $cache_key;
+      return 1;
+    }
   }
 
   for my $inc (-21, -19, -12, -8, 8, 12, 19, 21) {
-    return 1 if ($board->[$idx + $inc] // OOB) == $knight;
+    if (($board->[$idx + $inc] // OOB) == $knight) {
+      $cache->{$cache_key} = 1 if defined $cache_key;
+      return 1;
+    }
   }
 
   for my $inc (-11, -10, -9, -1, 1, 9, 10, 11) {
-    return 1 if ($board->[$idx + $inc] // OOB) == $king;
+    if (($board->[$idx + $inc] // OOB) == $king) {
+      $cache->{$cache_key} = 1 if defined $cache_key;
+      return 1;
+    }
   }
 
   for my $inc (-10, -1, 1, 10) {
@@ -253,7 +301,10 @@ sub _is_square_attacked_by_side {
       $dest += $inc;
       my $piece = $board->[$dest] // OOB;
       next unless $piece;
-      return 1 if $piece == $rook || $piece == $queen;
+      if ($piece == $rook || $piece == $queen) {
+        $cache->{$cache_key} = 1 if defined $cache_key;
+        return 1;
+      }
       last;
     }
   }
@@ -264,11 +315,15 @@ sub _is_square_attacked_by_side {
       $dest += $inc;
       my $piece = $board->[$dest] // OOB;
       next unless $piece;
-      return 1 if $piece == $bishop || $piece == $queen;
+      if ($piece == $bishop || $piece == $queen) {
+        $cache->{$cache_key} = 1 if defined $cache_key;
+        return 1;
+      }
       last;
     }
   }
 
+  $cache->{$cache_key} = 0 if defined $cache_key;
   return 0;
 }
 
@@ -307,14 +362,20 @@ sub _is_passed_pawn {
 }
 
 sub _development_score {
-  my ($board) = @_;
+  my ($board, $opts) = @_;
+  $opts ||= {};
   my $score = 0;
-  my $piece_count = 0;
-  for my $idx (@board_indices) {
-    my $abs_piece = abs($board->[$idx] // 0);
-    $piece_count++ if $abs_piece >= PAWN && $abs_piece <= KING;
+
+  my $piece_count = $opts->{piece_count};
+  if (!defined $piece_count) {
+    $piece_count = 0;
+    for my $idx (@board_indices) {
+      my $abs_piece = abs($board->[$idx] // 0);
+      $piece_count++ if $abs_piece >= PAWN && $abs_piece <= KING;
+    }
   }
-  my $king_idx = _find_piece_idx($board, KING);
+
+  my $king_idx = exists $opts->{king_idx} ? $opts->{king_idx} : _find_piece_idx($board, KING);
   my $is_castled = defined $king_idx && ($king_idx == 23 || $king_idx == 27);
   my $uncastled = defined $king_idx && !$is_castled;
   my $undeveloped_minors = 0;
@@ -329,23 +390,29 @@ sub _development_score {
   }
 
   if ($uncastled && $undeveloped_minors > 0) {
-    my $rook_count = 0;
-    my $rook_home_count = 0;
-    for my $idx (@board_indices) {
-      next unless ($board->[$idx] // 0) == ROOK;
-      $rook_count++;
-      $rook_home_count++ if $idx == 21 || $idx == 28;
+    my $rook_count = $opts->{rook_count};
+    my $rook_home_count = $opts->{rook_home_count};
+    if (!defined $rook_count || !defined $rook_home_count) {
+      $rook_count = 0;
+      $rook_home_count = 0;
+      for my $idx (@board_indices) {
+        next unless ($board->[$idx] // 0) == ROOK;
+        $rook_count++;
+        $rook_home_count++ if $idx == 21 || $idx == 28;
+      }
     }
     my $moved_rooks = max(0, $rook_count - $rook_home_count);
     $score -= EARLY_ROOK_MOVE_PENALTY * $moved_rooks if $moved_rooks;
 
-    my $queen_idx = _find_piece_idx($board, QUEEN);
+    my $queen_idx = exists $opts->{queen_idx} ? $opts->{queen_idx} : _find_piece_idx($board, QUEEN);
     if (defined $queen_idx && $queen_idx != 24 && $undeveloped_minors >= 2) {
       $score -= EARLY_QUEEN_MOVE_PENALTY;
     }
   }
 
-  my $opponent_has_queen = defined _find_piece_idx($board, OPP_QUEEN) ? 1 : 0;
+  my $opponent_has_queen = exists $opts->{opponent_has_queen}
+    ? ($opts->{opponent_has_queen} ? 1 : 0)
+    : (defined _find_piece_idx($board, OPP_QUEEN) ? 1 : 0);
   if ($uncastled && $opponent_has_queen) {
     $score -= UNCASTLED_KING_PENALTY;
     my $file = _file_of_idx($king_idx);
@@ -380,7 +447,7 @@ sub _passed_pawn_score {
 }
 
 sub _hanging_piece_score {
-  my ($board) = @_;
+  my ($board, $attack_cache) = @_;
   my $score = 0;
 
   for my $idx (@board_indices) {
@@ -391,13 +458,13 @@ sub _hanging_piece_score {
     next unless $penalty;
 
     if ($piece > 0) {
-      next unless _is_square_attacked_by_side($board, $idx, -1);
-      my $defended = _is_square_attacked_by_side($board, $idx, 1) ? 1 : 0;
+      next unless _is_square_attacked_by_side($board, $idx, -1, $attack_cache);
+      my $defended = _is_square_attacked_by_side($board, $idx, 1, $attack_cache) ? 1 : 0;
       my $delta = $defended ? int($penalty * HANGING_DEFENDED_SCALE) : $penalty;
       $score -= $delta;
     } else {
-      next unless _is_square_attacked_by_side($board, $idx, 1);
-      my $defended = _is_square_attacked_by_side($board, $idx, -1) ? 1 : 0;
+      next unless _is_square_attacked_by_side($board, $idx, 1, $attack_cache);
+      my $defended = _is_square_attacked_by_side($board, $idx, -1, $attack_cache) ? 1 : 0;
       my $delta = $defended ? int($penalty * HANGING_DEFENDED_SCALE) : $penalty;
       $score += $delta;
     }
@@ -448,8 +515,8 @@ sub _king_ring_indices {
 }
 
 sub _king_danger_for_piece {
-  my ($board, $king_piece) = @_;
-  my $king_idx = _find_piece_idx($board, $king_piece);
+  my ($board, $king_piece, $attack_cache, $king_idx_hint) = @_;
+  my $king_idx = defined $king_idx_hint ? $king_idx_hint : _find_piece_idx($board, $king_piece);
   return 0 unless defined $king_idx;
 
   my $friendly_sign = $king_piece > 0 ? 1 : -1;
@@ -461,14 +528,14 @@ sub _king_danger_for_piece {
   my $ring_attacked = 0;
   my $ring_undefended = 0;
   for my $idx (@ring) {
-    next unless _is_square_attacked_by_side($board, $idx, $enemy_sign);
+    next unless _is_square_attacked_by_side($board, $idx, $enemy_sign, $attack_cache);
     $ring_attacked++;
-    $ring_undefended++ unless _is_square_attacked_by_side($board, $idx, $friendly_sign);
+    $ring_undefended++ unless _is_square_attacked_by_side($board, $idx, $friendly_sign, $attack_cache);
   }
 
   $danger += $ring_attacked * KING_DANGER_RING_ATTACK_PENALTY;
   $danger += $ring_undefended * KING_DANGER_RING_UNDEFENDED_PENALTY;
-  $danger += KING_DANGER_CHECK_PENALTY if _is_square_attacked_by_side($board, $king_idx, $enemy_sign);
+  $danger += KING_DANGER_CHECK_PENALTY if _is_square_attacked_by_side($board, $king_idx, $enemy_sign, $attack_cache);
 
   my @shield_offsets = $friendly_sign > 0 ? (9, 10, 11) : (-9, -10, -11);
   for my $inc (@shield_offsets) {
@@ -497,9 +564,9 @@ sub _king_danger_for_piece {
 }
 
 sub _king_danger_score {
-  my ($board) = @_;
-  my $our_danger = _king_danger_for_piece($board, KING);
-  my $opp_danger = _king_danger_for_piece($board, OPP_KING);
+  my ($board, $attack_cache, $our_king_idx, $opp_king_idx) = @_;
+  my $our_danger = _king_danger_for_piece($board, KING, $attack_cache, $our_king_idx);
+  my $opp_danger = _king_danger_for_piece($board, OPP_KING, $attack_cache, $opp_king_idx);
   return $opp_danger - $our_danger;
 }
 
@@ -526,9 +593,9 @@ sub _king_aggression_for_piece {
 }
 
 sub _king_aggression_score {
-  my ($board) = @_;
-  my $enemy_piece_count = _non_king_piece_count($board, -1);
-  my $friendly_piece_count = _non_king_piece_count($board, 1);
+  my ($board, $friendly_piece_count, $enemy_piece_count) = @_;
+  $enemy_piece_count = _non_king_piece_count($board, -1) unless defined $enemy_piece_count;
+  $friendly_piece_count = _non_king_piece_count($board, 1) unless defined $friendly_piece_count;
   my $our_bonus = _king_aggression_for_piece($board, KING, $enemy_piece_count);
   my $opp_bonus = _king_aggression_for_piece($board, OPP_KING, $friendly_piece_count);
   return $our_bonus - $opp_bonus;
@@ -541,7 +608,8 @@ sub _is_king_safety_critical_move {
   return 1 if $from_piece == KING;
   return 1 if $new_state->is_checked;
 
-  my $king_idx = _find_piece_idx($board, KING);
+  my $king_idx = $state->[Chess::State::KING_IDX];
+  $king_idx = _find_piece_idx($board, KING) unless defined $king_idx;
   return 1 if defined $own_king_danger && $own_king_danger >= LMR_KING_DANGER_THRESHOLD;
   return 0 unless defined $king_idx;
 
@@ -569,7 +637,8 @@ sub _is_tactical_queen_move {
 
   # Preserve quiet queen moves that pressure enemy king/ring from LMR.
   my $new_board = $new_state->[Chess::State::BOARD];
-  my $enemy_king_idx = _find_piece_idx($new_board, KING);
+  my $enemy_king_idx = $new_state->[Chess::State::KING_IDX];
+  $enemy_king_idx = _find_piece_idx($new_board, KING) unless defined $enemy_king_idx;
   return 0 unless defined $enemy_king_idx;
 
   my @ring = _king_ring_indices($new_board, $enemy_king_idx);
@@ -619,22 +688,44 @@ sub _unsafe_capture_penalty {
 
 sub _ordered_moves {
   my ($state, $ply, $tt_move_key, $prev_move_key) = @_;
-  my @scored = map {
-    [ _move_order_score($state, $_, $ply, $tt_move_key, $prev_move_key), $_ ]
-  } @{$state->generate_pseudo_moves};
-  @scored = sort { $b->[0] <=> $a->[0] } @scored;
-  return map { $_->[1] } @scored;
+  my @scored;
+  foreach my $move (@{$state->generate_pseudo_moves}) {
+    my $move_key = _move_key($move);
+    my $is_capture = _is_capture_state($state, $move);
+    push @scored, [
+      _move_order_score($state, $move, $move_key, $is_capture, $ply, $tt_move_key, $prev_move_key),
+      $move,
+      $move_key,
+      $is_capture,
+    ];
+  }
+  @scored = _sort_scored_desc(@scored);
+  return @scored;
+}
+
+sub _sort_scored_desc {
+  my (@scored) = @_;
+  my $count = scalar @scored;
+  return @scored if $count <= 1;
+
+  if ($count == 2) {
+    if ($scored[0][0] < $scored[1][0]) {
+      @scored = ($scored[1], $scored[0]);
+    }
+    return @scored;
+  }
+
+  return sort { $b->[0] <=> $a->[0] } @scored;
 }
 
 sub _move_order_score {
-  my ($state, $move, $ply, $tt_move_key, $prev_move_key) = @_;
+  my ($state, $move, $move_key, $is_capture, $ply, $tt_move_key, $prev_move_key) = @_;
   my $board = $state->[Chess::State::BOARD];
   my $from_piece = $board->[$move->[0]] || 0;
   my $to_piece = $board->[$move->[1]] || 0;
   my $score = 0;
-  my $move_key = _move_key($move);
 
-  if (defined $tt_move_key && $move_key eq $tt_move_key) {
+  if (defined $tt_move_key && $move_key == $tt_move_key) {
     $score += 5000;
   }
 
@@ -655,18 +746,18 @@ sub _move_order_score {
     $score += 50;
   }
 
-  my $from_square = idx_to_square($move->[0], 0);
-  my $to_square = idx_to_square($move->[1], 0);
+  my $from_square = _square_of_idx($move->[0]);
+  my $to_square = _square_of_idx($move->[1]);
   if (defined $to_square) {
     my $from_bonus = defined $from_square ? _location_modifier_percent($from_piece, $from_square) : 0;
     my $to_bonus = _location_modifier_percent($from_piece, $to_square);
     $score += 30 * ($to_bonus - $from_bonus);
   }
 
-  if (! _is_capture_state($state, $move)) {
-    $score += _history_bonus($move);
-    $score += _killer_bonus($move, $ply);
-    $score += _countermove_bonus($move, $prev_move_key);
+  if (! $is_capture) {
+    $score += _history_bonus($move_key);
+    $score += _killer_bonus($move_key, $ply);
+    $score += _countermove_bonus($move_key, $prev_move_key);
   }
 
   return $score;
@@ -690,83 +781,131 @@ sub _is_capture_state {
 
 sub _move_key {
   my ($move) = @_;
-  return join(':', $move->[0], $move->[1], (defined $move->[2] ? $move->[2] : 0));
+  my $from = $move->[0] // 0;
+  my $to = $move->[1] // 0;
+  my $promo = defined $move->[2] ? (($move->[2] + 8) & 0x0f) : 0;
+  return (($from & 0x7f) << 11) | (($to & 0x7f) << 4) | $promo;
 }
 
 sub _history_bonus {
-  my ($move) = @_;
-  return ($history_scores{_move_key($move)} // 0);
+  my ($move_key) = @_;
+  my $raw = $history_scores{$move_key};
+  return 0 unless defined $raw;
+  my $scaled = int($raw * $history_scale);
+  if ($scaled <= 0) {
+    delete $history_scores{$move_key};
+    return 0;
+  }
+  return $scaled;
 }
 
 sub _killer_bonus {
-  my ($move, $ply) = @_;
+  my ($move_key, $ply) = @_;
   my $slot = $killer_moves[$ply] || [];
-  my $key = _move_key($move);
-  return 200 if defined $slot->[0] && $slot->[0] eq $key;
-  return 150 if defined $slot->[1] && $slot->[1] eq $key;
+  return 200 if defined $slot->[0] && $slot->[0] == $move_key;
+  return 150 if defined $slot->[1] && $slot->[1] == $move_key;
   return 0;
 }
 
 sub _countermove_bonus {
-  my ($move, $prev_move_key) = @_;
+  my ($move_key, $prev_move_key) = @_;
   return 0 unless defined $prev_move_key;
   my $counter = $counter_moves{$prev_move_key};
   return 0 unless defined $counter;
-  return _move_key($move) eq $counter ? COUNTERMOVE_BONUS : 0;
+  return $move_key == $counter ? COUNTERMOVE_BONUS : 0;
 }
 
 sub _store_killer {
-  my ($ply, $move) = @_;
+  my ($ply, $move_key) = @_;
   $killer_moves[$ply] ||= [];
-  my $key = _move_key($move);
-  return if defined $killer_moves[$ply][0] && $killer_moves[$ply][0] eq $key;
+  return if defined $killer_moves[$ply][0] && $killer_moves[$ply][0] == $move_key;
   $killer_moves[$ply][1] = $killer_moves[$ply][0] if defined $killer_moves[$ply][0];
-  $killer_moves[$ply][0] = $key;
+  $killer_moves[$ply][0] = $move_key;
 }
 
 sub _store_countermove {
-  my ($prev_move_key, $move) = @_;
+  my ($prev_move_key, $move_key) = @_;
   return unless defined $prev_move_key;
-  $counter_moves{$prev_move_key} = _move_key($move);
+  $counter_moves{$prev_move_key} = $move_key;
 }
 
 sub _update_history {
-  my ($move, $depth) = @_;
-  my $key = _move_key($move);
-  $history_scores{$key} += $depth * $depth;
+  my ($move_key, $depth) = @_;
+  my $bonus = $depth * $depth;
+  my $scale = $history_scale > 0 ? $history_scale : 1;
+  my $unscaled_bonus = int($bonus / $scale);
+  $unscaled_bonus = 1 if $unscaled_bonus < 1;
+  $history_scores{$move_key} = ($history_scores{$move_key} // 0) + $unscaled_bonus;
 }
 
 sub _decay_history {
+  $history_scale *= HISTORY_DECAY_FACTOR;
+  return if $history_scale >= HISTORY_RENORM_MIN_SCALE;
+
   for my $key (keys %history_scores) {
-    $history_scores{$key} = int($history_scores{$key} * 0.85);
-    delete $history_scores{$key} if $history_scores{$key} <= 0;
+    my $scaled = int(($history_scores{$key} // 0) * $history_scale);
+    if ($scaled > 0) {
+      $history_scores{$key} = $scaled;
+    } else {
+      delete $history_scores{$key};
+    }
   }
+  $history_scale = 1.0;
 }
 
 sub _trim_transposition_table {
-  my $size = scalar keys %transposition_table;
-  return if $size <= TT_MAX_ENTRIES;
+  return if $tt_size <= TT_MAX_ENTRIES;
 
-  my $target = int(TT_MAX_ENTRIES * 0.8);
-  for my $key (keys %transposition_table) {
-    last if $size <= $target;
-    my $entry = $transposition_table{$key};
-    next unless ($entry->{gen} // 0) < $tt_generation - 2 || ($entry->{depth} // 0) <= 2;
-    delete $transposition_table{$key};
-    $size--;
+  my $target = int(TT_MAX_ENTRIES * TT_TRIM_TARGET_FILL);
+  my $needed = $tt_size - $target;
+  my $scan_budget = TT_TRIM_SCAN_BASE + ($needed > 0 ? $needed * TT_TRIM_SCAN_PER_EVICTION : 0);
+  $scan_budget = TT_TRIM_SCAN_MAX if $scan_budget > TT_TRIM_SCAN_MAX;
+
+  my @preferred;
+  my @fallback;
+  while ($scan_budget-- > 0 && $tt_size > $target) {
+    my ($key, $entry) = each %transposition_table;
+    if (!defined $key) {
+      keys %transposition_table; # reset hash iterator without materializing all keys
+      last;
+    }
+
+    push @fallback, $key;
+    next unless ref($entry) eq 'HASH';
+
+    my $entry_gen = $entry->{gen} // 0;
+    my $entry_depth = $entry->{depth} // 0;
+    if (($tt_generation - $entry_gen) >= TT_STALE_GEN_AGE || $entry_depth <= TT_SHALLOW_DEPTH) {
+      push @preferred, $key;
+    }
   }
 
-  if ($size > $target) {
-    for my $key (keys %transposition_table) {
-      last if $size <= $target;
+  for my $key (@preferred, @fallback) {
+    last if $tt_size <= $target;
+    next unless exists $transposition_table{$key};
+    delete $transposition_table{$key};
+    $tt_size--;
+  }
+
+  if ($tt_size > TT_MAX_ENTRIES) {
+    my $hard_budget = min(TT_TRIM_HARD_EVICT_MAX, $tt_size - TT_MAX_ENTRIES);
+    while ($hard_budget-- > 0 && $tt_size > TT_MAX_ENTRIES) {
+      my ($key, undef) = each %transposition_table;
+      if (!defined $key) {
+        keys %transposition_table;
+        next;
+      }
+      next unless exists $transposition_table{$key};
       delete $transposition_table{$key};
-      $size--;
+      $tt_size--;
     }
   }
 }
 
 sub _piece_count {
   my ($state) = @_;
+  my $cached = $state->[Chess::State::PIECE_COUNT];
+  return $cached if defined $cached;
   my $board = $state->[Chess::State::BOARD];
   my $count = 0;
   for my $idx (@board_indices) {
@@ -954,6 +1093,8 @@ sub _check_time_or_abort {
 
 sub _state_key {
   my ($state) = @_;
+  my $cached = $state->[Chess::State::STATE_KEY];
+  return $cached if defined $cached;
   return canonical_fen_key($state);
 }
 
@@ -962,7 +1103,7 @@ sub _find_move_by_key {
   return unless defined $target_key;
 
   for my $move (@{$state->generate_pseudo_moves}) {
-    next unless _move_key($move) eq $target_key;
+    next unless _move_key($move) == $target_key;
     my $new_state = $state->make_move($move);
     return $move if defined $new_state;
   }
@@ -987,20 +1128,16 @@ sub _quiesce {
     next unless defined $new_state;
     my $is_check = $new_state->is_checked ? 1 : 0;
     next unless $is_capture || $is_check;
-    push @forcing, [ $move, $new_state, $is_check ];
+    my $move_key = _move_key($move);
+    my $score = _move_order_score($state, $move, $move_key, 1, 0) + ($is_check ? QUIESCE_CHECK_BONUS : 0);
+    push @forcing, [ $score, $move, $new_state ];
   }
   return $alpha unless @forcing;
 
-  my @ordered = map { $_->[1] }
-    sort { $b->[0] <=> $a->[0] }
-    map {
-      my ($move, $new_state, $is_check) = @$_;
-      my $score = _move_order_score($state, $move, 0) + ($is_check ? QUIESCE_CHECK_BONUS : 0);
-      [ $score, [ $move, $new_state ] ];
-    } @forcing;
+  my @ordered = _sort_scored_desc(@forcing);
 
   foreach my $entry (@ordered) {
-    my ($move, $new_state) = @$entry;
+    my ($move, $new_state) = @{$entry}[1, 2];
     my $score = -_quiesce($new_state, -$beta, -$alpha, $depth + 1);
     if ($score > $alpha) {
       $alpha = $score;
@@ -1015,24 +1152,66 @@ sub _evaluate_board {
   my ($state) = @_;
   my $board = $state->[Chess::State::BOARD];
   my $score = 0;
+  my $piece_count = 0;
+  my $friendly_non_king = 0;
+  my $enemy_non_king = 0;
+  my $rook_count = 0;
+  my $rook_home_count = 0;
+  my $our_king_idx;
+  my $opp_king_idx;
+  my $queen_idx;
+  my $opponent_has_queen = 0;
 
   for my $idx (@board_indices) {
-    my $piece = $board->[$idx];
+    my $piece = $board->[$idx] // 0;
     next unless $piece;
+
+    my $abs_piece = abs($piece);
+    if ($abs_piece >= PAWN && $abs_piece <= KING) {
+      $piece_count++;
+    }
+    if ($abs_piece >= PAWN && $abs_piece <= QUEEN) {
+      if ($piece > 0) {
+        $friendly_non_king++;
+      } else {
+        $enemy_non_king++;
+      }
+    }
+
+    if ($piece == KING) {
+      $our_king_idx = $idx;
+    } elsif ($piece == OPP_KING) {
+      $opp_king_idx = $idx;
+    } elsif ($piece == QUEEN) {
+      $queen_idx = $idx;
+    } elsif ($piece == OPP_QUEEN) {
+      $opponent_has_queen = 1;
+    } elsif ($piece == ROOK) {
+      $rook_count++;
+      $rook_home_count++ if $idx == 21 || $idx == 28;
+    }
 
     my $base_value = $piece_values{$piece} // 0;
     next unless $base_value;
 
-    my $square = idx_to_square($idx, 0) or next;
+    my $square = _square_of_idx($idx) or next;
     my $bonus = _location_bonus($piece, $square, $base_value);
     $score += $base_value + $bonus;
   }
 
-  $score += _development_score($board);
+  my %attack_cache;
+  $score += _development_score($board, {
+    piece_count => $piece_count,
+    king_idx => $our_king_idx,
+    rook_count => $rook_count,
+    rook_home_count => $rook_home_count,
+    queen_idx => $queen_idx,
+    opponent_has_queen => $opponent_has_queen,
+  });
   $score += _passed_pawn_score($board);
-  $score += _hanging_piece_score($board);
-  $score += _king_danger_score($board);
-  $score += _king_aggression_score($board);
+  $score += _hanging_piece_score($board, \%attack_cache);
+  $score += _king_danger_score($board, \%attack_cache, $our_king_idx, $opp_king_idx);
+  $score += _king_aggression_score($board, $friendly_non_king, $enemy_non_king);
 
   return $score;
 }
@@ -1069,13 +1248,14 @@ sub _search {
   my $tt_move_key = $tt_entry ? $tt_entry->{best_move_key} : undef;
   my $best_value = -INF_SCORE;
   my $best_move;
+  my $best_move_key;
   my $legal_moves = 0;
   my $move_index = 0;
   my $in_check = $state->is_checked ? 1 : 0;
   my $own_king_danger = _king_danger_for_piece($state->[Chess::State::BOARD], KING);
 
-  foreach my $move (_ordered_moves($state, $ply, $tt_move_key, $prev_move_key)) {
-    my $is_capture = _is_capture_state($state, $move);
+  foreach my $entry (_ordered_moves($state, $ply, $tt_move_key, $prev_move_key)) {
+    my ($move, $child_prev_move_key, $is_capture) = @{$entry}[1, 2, 3];
     my $new_state = $state->make_move($move);
     next unless defined $new_state;
     my $gives_check = $new_state->is_checked ? 1 : 0;
@@ -1084,7 +1264,6 @@ sub _search {
     my $tactical_queen_move = _is_tactical_queen_move($state, $move, $new_state, $is_capture);
 
     $legal_moves++;
-    my $child_prev_move_key = _move_key($move);
 
     my $value;
     if ($move_index == 0) {
@@ -1139,15 +1318,16 @@ sub _search {
     if ($value > $best_value) {
       $best_value = $value;
       $best_move = $move;
+      $best_move_key = $child_prev_move_key;
     }
 
     if ($value > $alpha) {
       $alpha = $value;
       if ($alpha >= $beta) {
         unless ($is_capture) {
-          _store_killer($ply, $move);
-          _update_history($move, $depth);
-          _store_countermove($prev_move_key, $move);
+          _store_killer($ply, $child_prev_move_key);
+          _update_history($child_prev_move_key, $depth);
+          _store_countermove($prev_move_key, $child_prev_move_key);
         }
         last;
       }
@@ -1168,13 +1348,17 @@ sub _search {
 
   my $existing = $transposition_table{$key};
   if (!defined $existing || $depth >= ($existing->{depth} // -1) || ($existing->{gen} // 0) != $tt_generation) {
+    $tt_size++ unless defined $existing;
     $transposition_table{$key} = {
       depth => $depth,
       score => $best_value,
       flag => $flag,
       gen => $tt_generation,
-      best_move_key => (defined $best_move ? _move_key($best_move) : undef),
+      best_move_key => $best_move_key,
     };
+    if ($tt_size > TT_MAX_ENTRIES + TT_TRIM_INSERT_SLACK) {
+      _trim_transposition_table();
+    }
   }
 
   return ($best_value, $best_move);
@@ -1214,6 +1398,9 @@ sub think {
   $target_depth += DEEP_ENDGAME_DEPTH_BOOST if $piece_count <= DEEP_ENDGAME_PIECE_THRESHOLD;
   $target_depth = min(20, $target_depth);
   my $max_depth = min(20, $target_depth + EXTRA_DEPTH_ON_UNSTABLE);
+  if ($think_opts{strict_depth}) {
+    $max_depth = $target_depth;
+  }
   my $easy_move_depth = max(EASY_MOVE_MIN_DEPTH, min($target_depth, EASY_MOVE_DEPTH_CAP));
   if ($piece_count <= MID_ENDGAME_PIECE_THRESHOLD) {
     $easy_move_depth = min($target_depth, $easy_move_depth + MID_ENDGAME_EASY_MOVE_EXTRA_DEPTH);
@@ -1283,8 +1470,8 @@ sub think {
     $last_completed_depth = $depth;
     $last_completed_score = $iteration_score;
     my $iteration_move_key = defined $iteration_move ? _move_key($iteration_move) : undef;
-    my $pv_changed = defined $iteration_move_key && defined $prev_best_move_key && $iteration_move_key ne $prev_best_move_key;
-    if (defined $iteration_move_key && defined $prev_best_move_key && $iteration_move_key eq $prev_best_move_key) {
+    my $pv_changed = defined $iteration_move_key && defined $prev_best_move_key && $iteration_move_key != $prev_best_move_key;
+    if (defined $iteration_move_key && defined $prev_best_move_key && $iteration_move_key == $prev_best_move_key) {
       $stable_best_hits++;
     } else {
       $stable_best_hits = 0;

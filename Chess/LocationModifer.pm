@@ -13,6 +13,7 @@ use parent qw(Exporter);
 
 use Chess::Constant;
 use Chess::State;
+use Chess::TableUtil qw(canonical_fen_key);
 
 sub _empty_square_table {
     my %table;
@@ -76,6 +77,12 @@ my %PROMOTION_FROM_CHAR = (
     B => BISHOP,
     N => KNIGHT,
 );
+my %san_move_cache;
+my $san_move_cache_size = 0;
+my $SAN_MOVE_CACHE_MAX = 200_000;
+my %state_move_candidates_cache;
+my $state_move_candidates_cache_size = 0;
+my $STATE_MOVE_CANDIDATES_CACHE_MAX = 100_000;
 
 sub default_store_path {
     return $ENV{PERLGIGACHESS_LOCATION_MODIFIER_FILE}
@@ -200,8 +207,7 @@ sub _process_game_lines {
     }
 
     my $body = join ' ', grep { $_ !~ /^\[/ } @{$lines};
-    $body = _clean_pgn_body($body);
-    my @tokens = split /\s+/, $body;
+    my @tokens = _tokenize_movetext($body);
 
     TOKEN: for my $raw (@tokens) {
         next unless length $raw;
@@ -213,6 +219,7 @@ sub _process_game_lines {
         }
 
         next if $raw =~ /^\d+\.{1,3}$/;
+        next if $raw =~ /^\$\d+$/;
         last if $raw =~ /^(1-0|0-1|1\/2-1\/2|\*)$/;
 
         my $move = _san_to_move($state, $raw);
@@ -247,24 +254,106 @@ sub _process_game_lines {
 
 sub _clean_pgn_body {
     my ($body) = @_;
-    $body =~ s/\{[^}]*\}//g while $body =~ /\{/ && $body =~ /\}/;
-    $body =~ s/\([^()]*\)//g while $body =~ /\(/ && $body =~ /\)/;
-    $body =~ s/;[^\n]*//g;
-    $body =~ s/\$[0-9]+//g;
-    $body =~ s/\r//g;
-    $body =~ tr/\x{00A0}/ /;
-    return $body;
+    my @tokens = grep { $_ !~ /^\$\d+$/ } _tokenize_movetext($body);
+    return join ' ', @tokens;
+}
+
+sub _tokenize_movetext {
+    my ($body) = @_;
+    my @tokens;
+    my $buf = '';
+    my $paren_depth = 0;
+    my $brace_depth = 0;
+    my $in_line_comment = 0;
+
+    my $text = $body // '';
+    my $length = length $text;
+    for (my $i = 0; $i < $length; $i++) {
+        my $ch = substr($text, $i, 1);
+        $ch = ' ' if ord($ch) == 0xA0;
+
+        if ($in_line_comment) {
+            if ($ch eq "\n" || $ch eq "\r") {
+                $in_line_comment = 0;
+            }
+            next;
+        }
+        if ($brace_depth > 0) {
+            if ($ch eq '{') {
+                $brace_depth++;
+            } elsif ($ch eq '}') {
+                $brace_depth--;
+            }
+            next;
+        }
+        if ($paren_depth > 0) {
+            if ($ch eq '(') {
+                $paren_depth++;
+            } elsif ($ch eq ')') {
+                $paren_depth--;
+            }
+            next;
+        }
+
+        if ($ch eq ';') {
+            $in_line_comment = 1;
+            next;
+        }
+        if ($ch eq '{') {
+            $brace_depth = 1;
+            next;
+        }
+        if ($ch eq '(') {
+            $paren_depth = 1;
+            next;
+        }
+
+        if ($ch =~ /\s/) {
+            if (length $buf) {
+                push @tokens, $buf;
+                $buf = '';
+            }
+            next;
+        }
+
+        $buf .= $ch;
+    }
+
+    push @tokens, $buf if length $buf;
+    return @tokens;
 }
 
 sub _san_to_move {
     my ($state, $token) = @_;
     my $san = $token;
+    $san =~ s/^\s+|\s+$//g;
+    return unless length $san;
+    $san =~ tr/0/O/;
     $san =~ s/[!?]+$//;
     $san =~ s/[+#]+$//;
     $san =~ s/e\.p\.//i;
+    my $cache_token = uc($san);
 
-    return _find_castle_move($state, CASTLE_KING)  if $san =~ /^O-O$/i;
-    return _find_castle_move($state, CASTLE_QUEEN) if $san =~ /^O-O-O$/i;
+    my $state_key = canonical_fen_key($state);
+    my $cache_key = defined $state_key ? "$state_key|$cache_token" : undef;
+    if (defined $cache_key && exists $san_move_cache{$cache_key}) {
+        my $cached_uci = $san_move_cache{$cache_key};
+        return unless defined $cached_uci && length $cached_uci;
+        return $state->encode_move($cached_uci);
+    }
+
+    if ($san =~ /^O-O$/i) {
+        my $move = _find_castle_move($state, CASTLE_KING, $state_key);
+        _store_san_move_cache($cache_key, defined $move ? $state->decode_move($move) : '')
+          if defined $cache_key;
+        return $move;
+    }
+    if ($san =~ /^O-O-O$/i) {
+        my $move = _find_castle_move($state, CASTLE_QUEEN, $state_key);
+        _store_san_move_cache($cache_key, defined $move ? $state->decode_move($move) : '')
+          if defined $cache_key;
+        return $move;
+    }
 
     my $promotion;
     $promotion = $1 if $san =~ s/=([QRBN])$//;
@@ -293,51 +382,108 @@ sub _san_to_move {
     }
 
     my $piece_type = $PIECE_FROM_CHAR{$piece_letter} // PAWN;
-    my $board = $state->[Chess::State::BOARD];
+    my $promo_piece = defined $promotion ? $PROMOTION_FROM_CHAR{$promotion} : undef;
+    return if defined $promotion && !defined $promo_piece;
+    my $candidates = _move_candidates_for_state($state, $state_key);
 
-    MOVE: for my $move (@{$state->generate_pseudo_moves}) {
-        my $uci = $state->decode_move($move);
-        my $from = substr($uci, 0, 2);
-        my $to = substr($uci, 2, 2);
-        next if $to ne $target;
+    MOVE: for my $candidate (@{$candidates}) {
+        next if $candidate->{to} ne $target;
 
-        my $board_piece = $board->[$move->[0]];
-        next if $board_piece != $piece_type;
+        next if $candidate->{piece} != $piece_type;
 
-        if (defined $dis_file && substr($from, 0, 1) ne $dis_file) {
+        if (defined $dis_file && $candidate->{from_file} ne $dis_file) {
             next MOVE;
         }
-        if (defined $dis_rank && substr($from, 1, 1) ne $dis_rank) {
+        if (defined $dis_rank && $candidate->{from_rank} ne $dis_rank) {
             next MOVE;
         }
 
-        my $dest_piece = $board->[$move->[1]];
         if ($is_capture) {
-            next MOVE unless $dest_piece < 0;
+            next MOVE unless $candidate->{capture};
         } else {
-            next MOVE if $dest_piece < 0;
+            next MOVE if $candidate->{capture};
         }
 
         if ($promotion) {
-            my $promo_piece = $PROMOTION_FROM_CHAR{$promotion} or next MOVE;
-            next MOVE unless defined $move->[2] && $move->[2] == $promo_piece;
+            next MOVE unless defined $candidate->{promo_piece}
+              && $candidate->{promo_piece} == $promo_piece;
         } else {
-            next MOVE if defined $move->[2];
+            next MOVE if defined $candidate->{promo_piece};
         }
 
-        return $move;
+        _store_san_move_cache($cache_key, $candidate->{uci}) if defined $cache_key;
+        return $candidate->{move};
     }
 
+    _store_san_move_cache($cache_key, '') if defined $cache_key;
     return;
 }
 
 sub _find_castle_move {
-    my ($state, $castle_flag) = @_;
-    for my $move (@{$state->generate_pseudo_moves}) {
-        next unless defined $move->[3];
-        return $move if $move->[3] == $castle_flag;
+    my ($state, $castle_flag, $state_key) = @_;
+    my $candidates = _move_candidates_for_state($state, $state_key);
+    for my $candidate (@{$candidates}) {
+        next unless defined $candidate->{castle_flag};
+        return $candidate->{move} if $candidate->{castle_flag} == $castle_flag;
     }
     return;
+}
+
+sub _move_candidates_for_state {
+    my ($state, $state_key) = @_;
+    if (defined $state_key && exists $state_move_candidates_cache{$state_key}) {
+        return $state_move_candidates_cache{$state_key};
+    }
+
+    my $board = $state->[Chess::State::BOARD];
+    my @candidates;
+    for my $move (@{$state->generate_pseudo_moves}) {
+        my $uci = $state->decode_move($move);
+        next unless defined $uci && length($uci) >= 4;
+
+        my $from = substr($uci, 0, 2);
+        my $to = substr($uci, 2, 2);
+        next unless $from =~ /^[a-h][1-8]$/ && $to =~ /^[a-h][1-8]$/;
+
+        my $dest_piece = $board->[$move->[1]];
+        push @candidates, {
+            move        => $move,
+            uci         => $uci,
+            to          => $to,
+            from_file   => substr($from, 0, 1),
+            from_rank   => substr($from, 1, 1),
+            piece       => $board->[$move->[0]],
+            capture     => ($dest_piece < 0 ? 1 : 0),
+            promo_piece => (defined $move->[2] ? $move->[2] : undef),
+            castle_flag => $move->[3],
+        };
+    }
+
+    my $candidate_ref = \@candidates;
+    if (defined $state_key) {
+        if (!exists $state_move_candidates_cache{$state_key}) {
+            $state_move_candidates_cache_size++;
+        }
+        $state_move_candidates_cache{$state_key} = $candidate_ref;
+        if ($state_move_candidates_cache_size > $STATE_MOVE_CANDIDATES_CACHE_MAX) {
+            %state_move_candidates_cache = ();
+            $state_move_candidates_cache_size = 0;
+        }
+    }
+    return $candidate_ref;
+}
+
+sub _store_san_move_cache {
+    my ($cache_key, $value) = @_;
+    return unless defined $cache_key;
+    if (!exists $san_move_cache{$cache_key}) {
+        $san_move_cache_size++;
+    }
+    $san_move_cache{$cache_key} = $value;
+    if ($san_move_cache_size > $SAN_MOVE_CACHE_MAX) {
+        %san_move_cache = ();
+        $san_move_cache_size = 0;
+    }
 }
 
 sub _apply_counts {
