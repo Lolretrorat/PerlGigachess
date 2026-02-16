@@ -59,6 +59,9 @@ if (defined $depth_override) {
     $depth_override = undef;
   }
 }
+my $default_override_depth = 4;
+$depth_override = $default_override_depth
+  if $branch_override_allowed && !defined $depth_override;
 $depth_override = undef unless defined $depth_override && $branch_override_allowed;
 
 STDOUT->autoflush(1);
@@ -108,7 +111,9 @@ sub main {
   my $account = lichess_json_get('/account');
   $bot_id  = $account->{id}
     or die "Unable to discover bot id from /api/account response\n";
-  log_info("Logged in as $account->{username} ($bot_id)");
+  my $branch_desc = defined $git_branch && length $git_branch ? $git_branch : '(unknown branch)';
+  my $depth_desc = defined $depth_override ? $depth_override : 'none';
+  log_info("Logged in as $account->{username} ($bot_id) on branch $branch_desc, depth override is $depth_desc");
 
   stream_events();
   return 0;
@@ -1033,11 +1038,10 @@ sub _is_retryable_illegal_reject {
 
 sub _branch_override_allowed {
   my ($branch) = @_;
-  return 0 unless defined $branch && length $branch;
+  return 1 unless defined $branch && length $branch;
   my $norm = lc $branch;
-  return 1 if $norm eq 'develop';
-  return 1 if $norm =~ /^feature\//;
-  return 0;
+  return 0 if $norm eq 'main';
+  return 1;
 }
 
 sub _git_branch_name {
