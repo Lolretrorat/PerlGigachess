@@ -11,26 +11,22 @@ Turn raw classical game data into empirically grounded piece-square tables used 
 Example one-shot rebuild (opening book + location modifiers, auto-cleanup):
 
 ```bash
-scripts/rebuild_from_lichess.sh \
-  --url https://database.lichess.org/standard/lichess_db_standard_rated_2025-01.pgn.zst
+scripts/data_ingress.sh LICHESS-DB-PGNS 2025-01
 ```
 
-Incremental month append with source confirmation + duplicate-source protection:
+Incremental month append with duplicate-source protection:
 
 ```bash
-scripts/rebuild_from_lichess.sh \
-  --append \
-  --confirm-source lichess_db_standard_rated_2025-02.pgn.zst \
-  --url https://database.lichess.org/standard/lichess_db_standard_rated_2025-02.pgn.zst
+scripts/data_ingress.sh LICHESS-DB-PGNS 2025-02
 ```
 
 Append mode records ingested sources in `data/lichess_ingest_manifest.json`.
 
 ## Feature Pipeline
-1. Parse PGNs with `python-chess` via `analysis/game_feature_extract.py`:
+1. Parse PGNs with `python-chess` via `analysis/game_feature_extract.ipynb` (or let `analysis/location_modifer_training.ipynb` call it automatically when `BUILD_SHARDS_FROM_PGN=True`):
    ```bash
    python -m pip install python-chess pandas numpy scikit-learn zstandard
-   python analysis/game_feature_extract.py lichess.pgn.zst --output-dir jsons/processed
+   jupyter lab analysis/game_feature_extract.ipynb
    ```
 2. For every ply where no capture or promotion occurred (clean positional steps), extract the board as FEN.
 3. Encode each position into a 64×12 binary matrix (piece × square). Mirror black-to-move positions so features are always “from white’s perspective”.
@@ -57,5 +53,5 @@ Append mode records ingested sources in `data/lichess_ingest_manifest.json`.
 ## Integration Plan
 1. Export the coefficient table to JSON matching `%location_modifiers` (piece => square => score).
 2. Run `perl scripts/update_location_modifiers.pl data/location_modifiers.json` to validate the structure and install it under `data/location_modifiers.json` (or `--output` for custom paths) so `Chess::LocationModifer` picks it up on load.
-3. Gate updates through CI: run `perl perft.pl 4` plus a 100-game self-play suite comparing the old and new tables.
+3. Gate updates through CI: run `perl tests/perft.pl 4` plus a 100-game self-play suite comparing the old and new tables.
 4. Document the workflow in `AGENTS.md` and keep the training notebook under `analysis/` for reproducibility.

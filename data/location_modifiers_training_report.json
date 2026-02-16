@@ -1,0 +1,11 @@
+{
+  "games_processed": 20000,
+  "games_requested": 20000,
+  "games_skipped": 0,
+  "generated_at_utc": "2026-02-15T10:41:07.190680+00:00",
+  "moves_ignored": 370132,
+  "source_month": "2025-10",
+  "training_reference_games": 20000,
+  "training_volume_exponent": 0.5,
+  "training_volume_weight": 1.0
+}

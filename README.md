@@ -4,53 +4,59 @@ This repository contains a minimalist Perl chess engine along with several entry
 points:
 
 - `play.pl` — interactive CLI (default) or `--uci` for a headless engine loop.
-- `perft.pl` — perft validation driver.
+- `tests/perft.pl` — perft validation driver (`perft.pl` remains as a compatibility shim).
 - `lichess.pl` — Bot API bridge that lets the engine play on lichess.org.
 
 ## Development Environment
 
 Dependencies are isolated with a Python virtual environment and a local Perl
-lib. Run (sourcing applies the exports to your current shell):
+lib.
 
 ```bash
-source scripts/setup_env.sh
+scripts/initialize.sh --skip-tools --skip-ingress --skip-endgame-table
 ```
 
-The helper installs Python packages from `requirements.txt` into `.venv` and
-Perl modules declared in `cpanfile` under `.perl5`. If you execute the script
-normally (`./scripts/setup_env.sh`), it still installs everything and prints the
-commands needed to activate the environments later.
+This installs Python packages from `requirements.txt` into `.venv` and Perl
+modules declared in `cpanfile` under `.perl5`, then prints activation commands
+for new shells.
 
 If `cpanm` is missing, install `App::cpanminus` (e.g., `cpan App::cpanminus`)
 before running the helper.
 
-## Iteration Wrapper
+## Unified Scripts
 
-Use one command to bootstrap a new bot iteration:
+Primary top-level scripts:
 
-```bash
-scripts/initialize_iteration.sh
-```
+- `scripts/initialize.sh` — full bootstrap: environment setup, Syzygy tooling setup, data ingress, and endgame table seeding/validation.
+- `scripts/data_ingress.sh` — data-only pipeline for opening book + location modifier updates.
 
-By default this runs:
-- `scripts/setup_env.sh`
-- `scripts/lichess_dry_run.pl`
-
-Optional heavier steps can be enabled:
+Typical usage:
 
 ```bash
-scripts/initialize_iteration.sh \
-  --with-syzygy-tools \
-  --lichess-url https://database.lichess.org/standard/lichess_db_standard_rated_2025-01.pgn.zst \
-  --confirm-lichess-source lichess_db_standard_rated_2025-01.pgn.zst
+scripts/initialize.sh
+scripts/initialize.sh LICHESS-DB-PGNS 2025-01 OWN-URLS
+scripts/data_ingress.sh LICHESS-DB-PGNS 2025-01
+scripts/data_ingress.sh OWN-URLS
 ```
 
-Wrapper utilities:
-- `scripts/initialize_iteration.sh list` to list scripts in `scripts/`
-- `scripts/initialize_iteration.sh run <script_name> [args...]` to run any script via one entrypoint
+Master pipeline wrappers:
 
-When `--lichess-url` is used, the wrapper requires `--confirm-lichess-source`
-and runs rebuild in append mode with source-manifest dedupe.
+```bash
+./DO_LOCATION_MODIFIER.sh
+./DO_PARAMATER_EXTRACTION.sh
+./DO_ENGINE_PIPELINE.sh
+```
+
+- `DO_LOCATION_MODIFIER.sh` runs ingest + location modifier training + validation.
+- `DO_PARAMATER_EXTRACTION.sh` runs ingest + engine training notebook and emits a migration bundle.
+- `DO_ENGINE_PIPELINE.sh` runs parameter extraction, applies the newest patch when present, and validates via `perl -c` + `perft`.
+
+Regression tests live under `tests/`:
+
+```bash
+tests/run_regressions.sh
+perl tests/regression_hyhMjQD2_kg8.pl --depth 3 --movetime 10000
+```
 
 ## Running the Lichess bridge
 
@@ -97,8 +103,7 @@ game, and posts moves back to Lichess.
 
 The bridge talks to Lichess directly over TLS sockets, so as long as Perl can
 load `IO::Socket::SSL`, `Net::SSLeay`, and `Mozilla::CA` (installed under
-`.perl5` via `scripts/setup_env.sh`) no external binaries such as `curl` are
-required.
+`.perl5` via `scripts/initialize.sh`) no external binaries such as `curl` are required.
 
 ## Local Openings
 
@@ -113,26 +118,25 @@ perl scripts/build_opening_book.pl --max-plies 18 --max-games 200000 \
 
 The builder also supports multiple input files (`.pgn` and `.pgn.zst`).
 
-For Lichess monthly dumps, you can process in `/tmp` and auto-delete the
-archive after rebuilding:
+For Lichess monthly dumps, use the consolidated ingest script:
 
 ```bash
-scripts/rebuild_from_lichess.sh \
-  --url https://database.lichess.org/standard/lichess_db_standard_rated_2025-01.pgn.zst
+scripts/data_ingress.sh LICHESS-DB-PGNS 2025-01
 ```
 
-To append a month and exclude duplicate source ingests:
+To ingest your own game URLs from `data/lichess_game_urls.log`:
 
 ```bash
-scripts/rebuild_from_lichess.sh \
-  --append \
-  --confirm-source lichess_db_standard_rated_2025-01.pgn.zst \
-  --url https://database.lichess.org/standard/lichess_db_standard_rated_2025-01.pgn.zst
+scripts/data_ingress.sh OWN-URLS
 ```
 
-In append mode, sources are tracked in `data/lichess_ingest_manifest.json`.
-If a source is already present, ingest is skipped unless
-`--allow-duplicate-source` is set.
+To run both sources in one pass:
+
+```bash
+scripts/data_ingress.sh LICHESS-DB-PGNS 2025-01 OWN-URLS
+```
+
+Monthly source ingest records are tracked in `data/lichess_ingest_manifest.json`.
 
 Book entries now include per-move outcome stats (`white`, `draw`, `black`)
 alongside `played`/`weight`, and the Perl selector ranks legal book moves by
@@ -173,16 +177,16 @@ startup. To validate and install JSON exported from other tooling, run
 feature format are described in `docs/location-modifier-ml.md`.
 
 To train from a fresh Lichess dump without keeping large files in the repo,
-reuse `scripts/rebuild_from_lichess.sh` and tune `--location-games`.
+use `scripts/data_ingress.sh` and tune `--location-games`.
 
 ## Syzygy Tooling
 
-To use upstream C Syzygy probing, bootstrap tools into `/tmp`:
+To bootstrap upstream C Syzygy probing tools into `/tmp`:
 
 ```bash
-scripts/setup_syzygy_tools.sh
+scripts/initialize.sh --skip-env --skip-ingress --skip-endgame-table
 export CHESS_SYZYGY_PROBETOOL=/tmp/perlgigachess-syzygy/probetool/regular/probetool
 ```
 
-The helper clones both `syzygy1/tb` and `syzygy1/probetool`, builds
+The initializer clones both `syzygy1/tb` and `syzygy1/probetool`, builds
 `probetool`, and leaves everything outside the repo tree.

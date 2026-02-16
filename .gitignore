@@ -3,5 +3,12 @@
 .perl5/
 __pycache__/
 *.pyc
-AGENTS.* 
-data/*
+AGENTS.*
+
+# runtime/prod state
+data/lichess_game_urls.log
+data/lichess_games_export.pgn
+*.log
+*.pid
+run/
+tmp/
