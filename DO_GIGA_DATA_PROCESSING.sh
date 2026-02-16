@@ -40,7 +40,7 @@ previous_month() {
 usage() {
   cat <<'USAGE'
 Usage:
-  ./DO_ALL_DATA_PROCESSING.sh [options-for-engine-pipeline]
+  ./DO_GIGA_DATA_PROCESSING.sh [options-for-engine-pipeline]
 
 Purpose:
   End-to-end combined data processing:
@@ -87,7 +87,7 @@ while [[ $# -gt 0 ]]; do
       shift
       ;;
     --skip-ingress)
-      echo "--skip-ingress is not allowed for DO_ALL_DATA_PROCESSING.sh." >&2
+      echo "--skip-ingress is not allowed for DO_GIGA_DATA_PROCESSING.sh." >&2
       echo "Use DO_ENGINE_PIPELINE.sh directly if you need to skip ingress." >&2
       exit 1
       ;;
