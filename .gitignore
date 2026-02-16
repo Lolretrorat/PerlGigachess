@@ -4,6 +4,7 @@
 __pycache__/
 *.pyc
 AGENTS.*
+run-lichess.sh
 
 # runtime/prod state
 data/lichess_game_urls.log
