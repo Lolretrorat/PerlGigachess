@@ -22,6 +22,10 @@ use Chess::TableUtil qw(canonical_fen_key);
 my $uci_mode = 0;
 my $depth = 15;
 my $fen;
+my %GO_NUMERIC_TOKEN = map { $_ => 1 } qw(
+  wtime btime winc binc movestogo movetime depth
+);
+my %GO_FLAG_TOKEN = map { $_ => 1 } qw(ponder infinite);
 
 GetOptions(
   'uci'    => \$uci_mode,
@@ -280,11 +284,6 @@ sub _normalize_depth {
   $value = 20 if $value > 20;
   return $value;
 }
-
-my %GO_NUMERIC_TOKEN = map { $_ => 1 } qw(
-  wtime btime winc binc movestogo movetime depth
-);
-my %GO_FLAG_TOKEN = map { $_ => 1 } qw(ponder infinite);
 
 sub _parse_go_command {
   my ($input) = @_;
