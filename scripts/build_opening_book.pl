@@ -59,6 +59,16 @@ my %position_totals;
 my $parsed_games = 0;
 my $processed_games = 0;
 my $stop_parsing = 0;
+my %san_candidate_cache;
+my $san_candidate_cache_size = 0;
+my $SAN_CANDIDATE_CACHE_MAX = 200_000;
+my %state_move_pool_cache;
+my $state_move_pool_cache_size = 0;
+my $STATE_MOVE_POOL_CACHE_MAX = 100_000;
+my %cmd_exists_cache;
+my $path_dirs_cache_key;
+my @path_dirs_cache;
+my $path_list_sep = ($^O eq 'MSWin32') ? ';' : ':';
 
 if (@inputs) {
   for my $path (@inputs) {
@@ -125,10 +135,12 @@ for my $key (keys %counts) {
   next if $total_games < $min_position_games;
 
   my @moves;
+  my $entry_total_played = 0;
   for my $uci (keys %{ $counts{$key} }) {
     my $stats = $counts{$key}{$uci};
     my $played = $stats->{played} // 0;
     next if $played < $min_move_games;
+    $entry_total_played += $played;
     push @moves, {
       uci => $uci,
       weight => $played,
@@ -145,13 +157,18 @@ for my $key (keys %counts) {
       || ($a->{uci} cmp $b->{uci})
   } @moves;
 
-  push @entries, { key => $key, moves => \@moves };
+  push @entries, {
+    key => $key,
+    moves => \@moves,
+    _total_played => $entry_total_played,
+  };
 }
 
 @entries = sort {
-  (_entry_total_played($b) <=> _entry_total_played($a))
+  (($b->{_total_played} // 0) <=> ($a->{_total_played} // 0))
     || ($a->{key} cmp $b->{key})
 } @entries;
+delete $_->{_total_played} for @entries;
 
 my ($vol, $dir, undef) = File::Spec->splitpath($output);
 my $out_dir = File::Spec->catpath($vol, $dir, '');
@@ -237,15 +254,6 @@ sub _nonneg_num {
   return $num;
 }
 
-sub _entry_total_played {
-  my ($entry) = @_;
-  my $sum = 0;
-  for my $move (@{ $entry->{moves} || [] }) {
-    $sum += $move->{played} // 0;
-  }
-  return $sum;
-}
-
 sub _report_progress {
   my ($parsed_games, $processed_games, $progress_every) = @_;
   return unless $progress_every && $parsed_games > 0;
@@ -275,13 +283,27 @@ sub _open_pgn_handle {
 
 sub _cmd_exists {
   my ($cmd) = @_;
-  my $path = $ENV{PATH} // '';
-  for my $dir (split /:/, $path) {
-    next unless length $dir;
+  return 0 unless defined $cmd && length $cmd;
+  return $cmd_exists_cache{$cmd} if exists $cmd_exists_cache{$cmd};
+  for my $dir (_path_dirs()) {
     my $full = "$dir/$cmd";
-    return 1 if -x $full;
+    if (-x $full) {
+      $cmd_exists_cache{$cmd} = 1;
+      return 1;
+    }
   }
+  $cmd_exists_cache{$cmd} = 0;
   return 0;
+}
+
+sub _path_dirs {
+  my $path = $ENV{PATH} // '';
+  if (!defined $path_dirs_cache_key || $path_dirs_cache_key ne $path) {
+    $path_dirs_cache_key = $path;
+    @path_dirs_cache = grep { length $_ } split /\Q$path_list_sep\E/, $path;
+    %cmd_exists_cache = ();
+  }
+  return @path_dirs_cache;
 }
 
 sub _consume_games {
@@ -367,7 +389,8 @@ sub _process_game {
       last TOKEN;
     }
 
-    my $candidate = _san_to_candidate($state, $token);
+    my $state_key = canonical_fen_key($state);
+    my $candidate = _san_to_candidate($state, $token, $state_key);
     if (!$candidate) {
       warn "Skipping game: could not parse SAN '$token'\n";
       return 0;
@@ -375,9 +398,8 @@ sub _process_game {
 
     $ply++;
     if ($ply <= $max_plies) {
-      my $key = canonical_fen_key($state);
       my $uci = $candidate->{uci};
-      my $stats = ($counts->{$key}{$uci} ||= {
+      my $stats = ($counts->{$state_key}{$uci} ||= {
         played => 0,
         white  => 0,
         draw   => 0,
@@ -392,7 +414,7 @@ sub _process_game {
       } else {
         $stats->{draw}++;
       }
-      $position_totals->{$key}++;
+      $position_totals->{$state_key}++;
     }
 
     my $next = $state->make_move($candidate->{move});
@@ -423,8 +445,10 @@ sub _tokenize_movetext {
   my $brace_depth = 0;
   my $in_line_comment = 0;
 
-  my @chars = split //, ($text // '');
-  for my $ch (@chars) {
+  my $source = $text // '';
+  my $length = length $source;
+  for (my $i = 0; $i < $length; $i++) {
+    my $ch = substr($source, $i, 1);
     if ($in_line_comment) {
       if ($ch eq "\n" || $ch eq "\r") {
         $in_line_comment = 0;
@@ -477,7 +501,7 @@ sub _tokenize_movetext {
 }
 
 sub _san_to_candidate {
-  my ($state, $token) = @_;
+  my ($state, $token, $state_key) = @_;
   my $san = $token // '';
   $san =~ s/^\s+|\s+$//g;
   return unless length $san;
@@ -487,6 +511,15 @@ sub _san_to_candidate {
   $san =~ s/[+#]+$//g;
   $san =~ s/\s*e\.p\.?$//i;
   $san =~ tr/0/O/;
+  $state_key //= canonical_fen_key($state);
+  my $cache_key = defined $state_key ? ($state_key . '|' . uc($san)) : undef;
+  if (defined $cache_key && exists $san_candidate_cache{$cache_key}) {
+    my $cached_uci = $san_candidate_cache{$cache_key};
+    return unless defined $cached_uci && length $cached_uci;
+    my $move = $state->encode_move($cached_uci);
+    return unless defined $move;
+    return { move => $move, uci => $cached_uci };
+  }
 
   my $is_castle_king = ($san eq 'O-O') ? 1 : 0;
   my $is_castle_queen = ($san eq 'O-O-O') ? 1 : 0;
@@ -504,60 +537,118 @@ sub _san_to_candidate {
     };
   }
 
-  my $board = $state->[Chess::State::BOARD];
   my @candidates;
+  my $move_pool = _state_move_pool_for_key($state, $state_key);
+
+  for my $candidate (@{$move_pool}) {
+    if ($is_castle_king || $is_castle_queen) {
+      my $target_file = $candidate->{castle_target};
+      next unless defined $target_file;
+      next if $is_castle_king && $target_file ne 'g';
+      next if $is_castle_queen && $target_file ne 'c';
+      push @candidates, { move => $candidate->{move}, uci => $candidate->{uci} };
+      next;
+    }
+
+    next if $parsed->{piece} ne $candidate->{piece_char};
+    next if $parsed->{to} ne $candidate->{to};
+
+    if (defined $parsed->{from_file}) {
+      next if $candidate->{from_file} ne $parsed->{from_file};
+    }
+    if (defined $parsed->{from_rank}) {
+      next if $candidate->{from_rank} ne $parsed->{from_rank};
+    }
+
+    next if $parsed->{capture} != $candidate->{capture};
+
+    if (defined $parsed->{promo}) {
+      next unless defined $candidate->{promo_char} && $candidate->{promo_char} eq $parsed->{promo};
+    } else {
+      next if defined $candidate->{promo_char};
+    }
+
+    push @candidates, { move => $candidate->{move}, uci => $candidate->{uci} };
+  }
+
+  unless (@candidates) {
+    _store_san_candidate_cache($cache_key, '') if defined $cache_key;
+    return;
+  }
+  @candidates = sort { $a->{uci} cmp $b->{uci} } @candidates;
+  my $best = $candidates[0];
+  _store_san_candidate_cache($cache_key, $best->{uci}) if defined $cache_key;
+  return $best;
+}
+
+sub _store_san_candidate_cache {
+  my ($cache_key, $value) = @_;
+  return unless defined $cache_key;
+  if (!exists $san_candidate_cache{$cache_key}) {
+    $san_candidate_cache_size++;
+  }
+  $san_candidate_cache{$cache_key} = $value;
+  if ($san_candidate_cache_size > $SAN_CANDIDATE_CACHE_MAX) {
+    %san_candidate_cache = ();
+    $san_candidate_cache_size = 0;
+  }
+}
+
+sub _state_move_pool_for_key {
+  my ($state, $state_key) = @_;
+  if (defined $state_key && exists $state_move_pool_cache{$state_key}) {
+    return $state_move_pool_cache{$state_key};
+  }
+
+  my $board = $state->[Chess::State::BOARD];
+  my @pool;
 
   for my $move (@{ $state->generate_pseudo_moves }) {
     my $next = $state->make_move($move);
     next unless defined $next;
 
     my $uci = $state->decode_move($move);
+    next unless defined $uci && length($uci) >= 4;
     my $from = substr($uci, 0, 2);
     my $to = substr($uci, 2, 2);
     next unless $from =~ /^[a-h][1-8]$/ && $to =~ /^[a-h][1-8]$/;
 
     my $piece = $board->[ $move->[0] ] // 0;
-    my $piece_char = _piece_to_san($piece);
     my $to_piece = $board->[ $move->[1] ] // 0;
     my $capture = ($to_piece < 0) ? 1 : 0;
     if (!$capture && $piece == PAWN && ($move->[0] % 10) != ($move->[1] % 10)) {
-      $capture = 1; # en-passant capture to empty square
+      $capture = 1;
     }
+
     my $promo_char = defined $move->[2] ? _piece_to_san($move->[2]) : undef;
+    my $castle_target = defined $move->[3] ? substr($to, 0, 1) : undef;
 
-    if ($is_castle_king || $is_castle_queen) {
-      next unless defined $move->[3];
-      my $target_file = substr($to, 0, 1);
-      next if $is_castle_king && $target_file ne 'g';
-      next if $is_castle_queen && $target_file ne 'c';
-      push @candidates, { move => $move, uci => $uci };
-      next;
-    }
-
-    next if $parsed->{piece} ne $piece_char;
-    next if $parsed->{to} ne $to;
-
-    if (defined $parsed->{from_file}) {
-      next if substr($from, 0, 1) ne $parsed->{from_file};
-    }
-    if (defined $parsed->{from_rank}) {
-      next if substr($from, 1, 1) ne $parsed->{from_rank};
-    }
-
-    next if $parsed->{capture} != $capture;
-
-    if (defined $parsed->{promo}) {
-      next unless defined $promo_char && $promo_char eq $parsed->{promo};
-    } else {
-      next if defined $promo_char;
-    }
-
-    push @candidates, { move => $move, uci => $uci };
+    push @pool, {
+      move         => $move,
+      uci          => $uci,
+      to           => $to,
+      from_file    => substr($from, 0, 1),
+      from_rank    => substr($from, 1, 1),
+      piece_char   => _piece_to_san($piece),
+      capture      => $capture,
+      promo_char   => $promo_char,
+      castle_target => $castle_target,
+    };
   }
 
-  return unless @candidates;
-  @candidates = sort { $a->{uci} cmp $b->{uci} } @candidates;
-  return $candidates[0];
+  my $pool_ref = \@pool;
+  if (defined $state_key) {
+    if (!exists $state_move_pool_cache{$state_key}) {
+      $state_move_pool_cache_size++;
+    }
+    $state_move_pool_cache{$state_key} = $pool_ref;
+    if ($state_move_pool_cache_size > $STATE_MOVE_POOL_CACHE_MAX) {
+      %state_move_pool_cache = ();
+      $state_move_pool_cache_size = 0;
+    }
+  }
+
+  return $pool_ref;
 }
 
 sub _piece_to_san {

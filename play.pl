@@ -46,13 +46,21 @@ sub run_interactive {
 
   my $engine = Chess::Engine->new(\$state, $depth);
   my %history;
+  my $cached_moves_key;
+  my @cached_moves;
   _record_position($state, \%history);
 
   while ($state->is_playable) {
     print_board($state);
 
+    my $state_key = canonical_fen_key($state);
+    if (!defined $cached_moves_key || $cached_moves_key ne $state_key) {
+      @cached_moves = $state->get_moves;
+      $cached_moves_key = $state_key;
+    }
+
     print "\nAvailable moves:\n";
-    foreach my $possible_move ($state->get_moves) {
+    foreach my $possible_move (@cached_moves) {
       print " $possible_move\n";
     }
 
@@ -168,6 +176,8 @@ sub run_uci {
       }
     } elsif ($input =~ m/^go/) {
       my %go = _parse_go_command($input);
+      my ($depth_from_cmd) = $input =~ /\bdepth\s+(-?\d+)/;
+      $go{depth} = int($depth_from_cmd) if defined $depth_from_cmd;
       my $status = _current_draw_status($state, \%history);
       if ($status->{force}) {
         print "info string Forced draw: $status->{force}\n";
@@ -187,6 +197,9 @@ sub run_uci {
         $time_args{remaining_ms} = $remaining_ms if defined $remaining_ms;
         $time_args{increment_ms} = $increment_ms if defined $increment_ms;
         $time_args{movestogo} = $go{movestogo} if defined $go{movestogo};
+      }
+      if (defined $go{depth}) {
+        $time_args{strict_depth} = 1;
       }
       $time_args{use_book} = $own_book;
       my ($move, $score, $searched_depth) = $engine->think(sub {
@@ -236,12 +249,12 @@ sub _record_position {
   my ($state, $history) = @_;
   my $key = canonical_fen_key($state);
   my $count = ++$history->{$key};
-  return _current_draw_status($state, $history, $count);
+  return _current_draw_status($state, $history, $count, $key);
 }
 
 sub _current_draw_status {
-  my ($state, $history, $count_override) = @_;
-  my $key = canonical_fen_key($state);
+  my ($state, $history, $count_override, $key_override) = @_;
+  my $key = defined $key_override ? $key_override : canonical_fen_key($state);
   my $count = defined $count_override ? $count_override : ($history->{$key} // 0);
   my $halfmove = $state->[Chess::State::HALFMOVE] // 0;
 
@@ -268,6 +281,11 @@ sub _normalize_depth {
   return $value;
 }
 
+my %GO_NUMERIC_TOKEN = map { $_ => 1 } qw(
+  wtime btime winc binc movestogo movetime depth
+);
+my %GO_FLAG_TOKEN = map { $_ => 1 } qw(ponder infinite);
+
 sub _parse_go_command {
   my ($input) = @_;
   my %go;
@@ -276,16 +294,13 @@ sub _parse_go_command {
 
   while (@tokens) {
     my $token = shift @tokens;
-    if ($token eq 'wtime' || $token eq 'btime' || $token eq 'winc' || $token eq 'binc'
-        || $token eq 'movestogo' || $token eq 'movetime' || $token eq 'depth') {
+    if ($GO_NUMERIC_TOKEN{$token}) {
       last unless @tokens;
       my $value = shift @tokens;
       next unless defined $value && $value =~ /^-?\d+$/;
       $go{$token} = int($value);
-    } elsif ($token eq 'ponder') {
-      $go{ponder} = 1;
-    } elsif ($token eq 'infinite') {
-      $go{infinite} = 1;
+    } elsif ($GO_FLAG_TOKEN{$token}) {
+      $go{$token} = 1;
     } elsif ($token eq 'searchmoves') {
       last;
     }
