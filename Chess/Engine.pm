@@ -25,7 +25,7 @@ use constant TT_FLAG_LOWER => 1;                       # TT lower-bound entry ty
 use constant TT_FLAG_UPPER => 2;                       # TT upper-bound entry type marker (fail-low).
 use constant SCORE_STABILITY_DELTA => 2;               # Higher => engine treats score shifts as "stable" more easily.
 use constant EXTRA_DEPTH_ON_UNSTABLE => 6;             # Higher => search extends more when PV/score is volatile.
-use constant TIME_CHECK_INTERVAL_NODES => 2048;        # Lower => checks clock more often, with extra overhead.
+use constant TIME_CHECK_INTERVAL_NODES => 1;           # Lower => checks clock more often, with extra overhead.
 use constant TIME_DEFAULT_HORIZON => 34;               # Higher => spreads clock over more future moves (safer).
 use constant TIME_INC_WEIGHT => 0.75;                  # Higher => increment contributes more to per-move budget.
 use constant TIME_RESERVE_MS => 800;                   # Higher => keeps more clock in reserve for later moves.
