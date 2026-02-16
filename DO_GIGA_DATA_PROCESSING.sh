@@ -8,6 +8,7 @@ LOCATION_PIPELINE_SCRIPT="$ROOT_DIR/DO_LOCATION_MODIFIER.sh"
 RUN_LOCATION_VALIDATION=1
 BATCH_MONTHS=1
 EXPLICIT_MONTH=""
+USE_OWN_URLS=0
 
 require_value() {
   local flag="$1"
@@ -40,7 +41,7 @@ previous_month() {
 usage() {
   cat <<'USAGE'
 Usage:
-  ./DO_ALL_DATA_PROCESSING.sh [options-for-engine-pipeline]
+  ./DO_GIGA_DATA_PROCESSING.sh [options-for-engine-pipeline]
 
 Purpose:
   End-to-end combined data processing:
@@ -51,6 +52,7 @@ Purpose:
 Options:
   --batch-months <int>            Run month ingest/training for N months in a row
                                   ending at --month YYYY-MM (default: 1)
+  --with-own-urls                 Keep OWN-URLS ingestion enabled when using --month
   --skip-location-validation      Skip DO_LOCATION_MODIFIER.sh --skip-ingress pass
   -h, --help                      Show this message
 
@@ -86,8 +88,12 @@ while [[ $# -gt 0 ]]; do
       RUN_LOCATION_VALIDATION=0
       shift
       ;;
+    --with-own-urls)
+      USE_OWN_URLS=1
+      shift
+      ;;
     --skip-ingress)
-      echo "--skip-ingress is not allowed for DO_ALL_DATA_PROCESSING.sh." >&2
+      echo "--skip-ingress is not allowed for DO_GIGA_DATA_PROCESSING.sh." >&2
       echo "Use DO_ENGINE_PIPELINE.sh directly if you need to skip ingress." >&2
       exit 1
       ;;
@@ -115,6 +121,10 @@ fi
 if [[ "$BATCH_MONTHS" -gt 1 ]] && [[ -z "$EXPLICIT_MONTH" ]]; then
   echo "--batch-months requires --month YYYY-MM as the batch end month." >&2
   exit 1
+fi
+
+if [[ -n "$EXPLICIT_MONTH" && "$USE_OWN_URLS" -eq 0 ]]; then
+  engine_args+=(--no-own-urls)
 fi
 
 run_engine_for_month() {

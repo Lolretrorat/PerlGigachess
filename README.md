@@ -45,14 +45,16 @@ Master pipeline wrappers:
 ./DO_LOCATION_MODIFIER.sh
 ./DO_PARAMATER_EXTRACTION.sh
 ./DO_ENGINE_PIPELINE.sh
-./DO_ALL_DATA_PROCESSING.sh
-./DO_ALL_DATA_PROCESSING.sh --month 2026-01 --batch-months 3
+./DO_GIGA_DATA_PROCESSING.sh
+./DO_GIGA_DATA_PROCESSING.sh --month 2026-01 --batch-months 3
+./DO_GIGA_DATA_PROCESSING.sh --month 2026-01 --batch-months 3 --with-own-urls
 ```
 
 - `DO_LOCATION_MODIFIER.sh` runs ingest + location modifier training + validation.
 - `DO_PARAMATER_EXTRACTION.sh` runs ingest + engine training notebook and emits a migration bundle.
 - `DO_ENGINE_PIPELINE.sh` runs parameter extraction, applies the newest patch when present, and validates via `perl -c` + `perft`.
-- `DO_ALL_DATA_PROCESSING.sh` runs the combined location + parameter + engine patch pipeline in one command.
+- `DO_GIGA_DATA_PROCESSING.sh` runs the combined location + parameter + engine patch pipeline in one command.
+  In `--month` mode it defaults to `--no-own-urls`; add `--with-own-urls` to include URL-log ingestion.
 
 Regression tests live under `tests/`:
 

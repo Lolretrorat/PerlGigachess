@@ -251,7 +251,14 @@ else
   echo "==> Skipping ingest"
 fi
 
-if [[ ! -f "$PGN_PATH" ]]; then
+ENGINE_INPUT_SOURCE_MODE="existing_pgn"
+ENGINE_LICHESS_DB_URLS=""
+if [[ "$RUN_LICHESS_DB" -eq 1 && "$RUN_OWN_URLS" -eq 0 ]]; then
+  ENGINE_INPUT_SOURCE_MODE="lichess_db_urls"
+  ENGINE_LICHESS_DB_URLS="https://database.lichess.org/standard/lichess_db_standard_rated_${LICHESS_MONTH}.pgn.zst"
+fi
+
+if [[ "$ENGINE_INPUT_SOURCE_MODE" == "existing_pgn" && ! -f "$PGN_PATH" ]]; then
   echo "Missing PGN for training: $PGN_PATH" >&2
   exit 1
 fi
@@ -263,12 +270,22 @@ fi
 RUN_MIGRATION_BUNDLE="V${RUN_MIGRATION_TIMESTAMP}__${MIGRATION_SUFFIX}"
 
 nb_env=(
-  ENGINE_TRAINING_INPUT_SOURCE_MODE=existing_pgn
+  ENGINE_TRAINING_INPUT_SOURCE_MODE="$ENGINE_INPUT_SOURCE_MODE"
   ENGINE_TRAINING_PGN_PATH="$PGN_PATH"
   ENGINE_TRAINING_APPLY_ENGINE_PATCH=0
   ENGINE_TRAINING_MIGRATION_SUFFIX="$MIGRATION_SUFFIX"
   ENGINE_TRAINING_MIGRATION_TIMESTAMP="$RUN_MIGRATION_TIMESTAMP"
 )
+
+if [[ "$ENGINE_INPUT_SOURCE_MODE" == "lichess_db_urls" ]]; then
+  nb_env+=(
+    ENGINE_TRAINING_LICHESS_DB_URLS="$ENGINE_LICHESS_DB_URLS"
+    ENGINE_TRAINING_LICHESS_DB_TMP_DIR="$TMP_DIR"
+  )
+  if [[ "$KEEP_DOWNLOAD" -eq 1 ]]; then
+    nb_env+=(ENGINE_TRAINING_KEEP_DB_DOWNLOADS=1)
+  fi
+fi
 
 if [[ -n "$MIN_PARAM_SCORE" ]]; then
   nb_env+=(ENGINE_TRAINING_MIN_PARAM_SCORE="$MIN_PARAM_SCORE")
