@@ -720,6 +720,8 @@ sub handle_game_event {
     $game->{state_move_count} = 0;
     $game->{state_initial_fen} = undef;
     update_turn_from_event($game, $event);
+    _set_game_time_control($game, $event);
+    _set_game_time_control($game, $event);
     print {$engine_in} "ucinewgame\n";
     maybe_apply_speed_depth($game, $engine_out, $engine_in);
     maybe_move($game, $engine_out, $engine_in);
@@ -849,18 +851,15 @@ sub maybe_move {
     return;
   }
 
-  my $my_clock_before_ms = _my_clock_ms($game);
   my $analysis = compute_bestmove($game, $engine_out, $engine_in);
+  my $threshold_ms = _time_control_threshold_ms($game);
   if (ref $analysis eq 'HASH'
     && defined $analysis->{elapsed_ms}
-    && defined $my_clock_before_ms
-    && $my_clock_before_ms > 0)
+    && defined $threshold_ms
+    && $threshold_ms > 0
+    && $analysis->{elapsed_ms} > $threshold_ms)
   {
-    my $warn_threshold_ms = int($my_clock_before_ms * 0.10);
-    $warn_threshold_ms = 1 if $warn_threshold_ms < 1;
-    if ($analysis->{elapsed_ms} > $warn_threshold_ms) {
-      log_warn("You're not saying anything, Tony.");
-    }
+    log_warn("You're not saying anything, Tony.");
   }
   if (ref $analysis eq 'HASH' && defined $analysis->{elapsed_ms}
     && $analysis->{elapsed_ms} >= $think_slow_ms)
@@ -898,18 +897,6 @@ sub maybe_move {
     last unless _is_retryable_illegal_reject($res);
     log_warn("Retrying with alternate legal move for $game->{id} after HTTP 400");
   }
-}
-
-sub _my_clock_ms {
-  my ($game) = @_;
-  return unless ref $game eq 'HASH';
-  return unless defined $game->{my_color};
-
-  my $clock = $game->{my_color} eq 'white'
-    ? $game->{wtime}
-    : $game->{btime};
-  return unless defined $clock && $clock =~ /^\d+$/;
-  return $clock + 0;
 }
 
 sub _sync_state_from_game {
@@ -1059,6 +1046,49 @@ sub _git_branch_name {
   return;
 }
 
+sub _set_game_time_control {
+  my ($game, $event) = @_;
+  return unless ref $game eq 'HASH';
+  return unless ref $event eq 'HASH';
+  my $raw = $event->{timeControl} // $event->{state}{timeControl} // $event->{timecontrol};
+  my $ms = _parse_time_control_ms($raw);
+  return unless defined $ms && $ms > 0;
+  $game->{time_control_base_ms} = $ms;
+}
+
+sub _parse_time_control_ms {
+  my ($raw) = @_;
+  return unless defined $raw;
+  if (!ref $raw) {
+    if ($raw =~ /^(\d+)(?:\+(\d+))?$/) {
+      return $1 * 1000;
+    }
+    if ($raw =~ /^(\d+)$/) {
+      return $1 * 1000;
+    }
+  }
+  if (ref $raw eq 'HASH') {
+    for my $key (qw(initialTime initialTimeMs base initial initial_millis)) {
+      if (defined $raw->{$key} && $raw->{$key} =~ /^\d+$/) {
+        return $raw->{$key} + 0;
+      }
+    }
+    if (defined $raw->{seconds} && $raw->{seconds} =~ /^\d+$/) {
+      return $raw->{seconds} * 1000;
+    }
+  }
+  return;
+}
+
+sub _time_control_threshold_ms {
+  my ($game) = @_;
+  return unless ref $game eq 'HASH';
+  my $base = $game->{time_control_base_ms};
+  return unless defined $base && $base > 0;
+  my $threshold = int($base * 0.10);
+  return $threshold > 0 ? $threshold : 1;
+}
+
 sub _set_engine_depth {
   my ($game, $engine_out, $engine_in, $target, $reason) = @_;
   return unless ref $game eq 'HASH';
@@ -1141,7 +1171,9 @@ sub compute_bestmove {
   print {$engine_in} "\n";
 
   my $go;
-  if (defined $game->{wtime} && defined $game->{btime}) {
+  if (defined $depth_override) {
+    $go = "go depth $depth_override";
+  } elsif (defined $game->{wtime} && defined $game->{btime}) {
     $go = sprintf 'go wtime %d btime %d', $game->{wtime}, $game->{btime};
     if (defined $game->{winc} && defined $game->{binc}) {
       $go .= sprintf ' winc %d binc %d', $game->{winc}, $game->{binc};

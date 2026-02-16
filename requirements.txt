@@ -2,4 +2,5 @@ numpy>=1.26
 python-chess>=1.999
 zstandard>=0.22
 pandas>=2.2
+matplotlib>=3.8
 scikit-learn>=1.4
