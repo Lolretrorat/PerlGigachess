@@ -57,28 +57,39 @@ for my $entry (@$base_entries, @$delta_entries) {
 
 my @out;
 for my $key (keys %by_key) {
-  my @moves = map {
-    my $stats = $by_key{$key}{$_};
-    {
-      uci    => $_,
-      weight => $stats->{played},
-      played => $stats->{played},
+  my $moves_by_uci = $by_key{$key};
+  my @moves;
+  my $position_played = 0;
+
+  for my $uci (keys %{$moves_by_uci}) {
+    my $stats = $moves_by_uci->{$uci};
+    my $played = $stats->{played};
+    $position_played += $played;
+    push @moves, {
+      uci    => $uci,
+      weight => $played,
+      played => $played,
       white  => $stats->{white},
       draw   => $stats->{draw},
       black  => $stats->{black},
-    }
-  } keys %{ $by_key{$key} };
+    };
+  }
 
   @moves = sort {
     ($b->{played} <=> $a->{played}) || ($a->{uci} cmp $b->{uci})
   } @moves;
 
-  push @out, { key => $key, moves => \@moves };
+  push @out, {
+    key => $key,
+    moves => \@moves,
+    _total_played => $position_played,
+  };
 }
 
 @out = sort {
-  (_total_played($b) <=> _total_played($a)) || ($a->{key} cmp $b->{key})
+  (($b->{_total_played} // 0) <=> ($a->{_total_played} // 0)) || ($a->{key} cmp $b->{key})
 } @out;
+delete $_->{_total_played} for @out;
 
 my $out_dir = dirname($output);
 make_path($out_dir) unless -d $out_dir;
@@ -113,13 +124,4 @@ sub _num {
   my ($v, $default) = @_;
   return $default unless defined $v && $v =~ /^-?\d+(?:\.\d+)?$/;
   return 0 + $v;
-}
-
-sub _total_played {
-  my ($entry) = @_;
-  my $sum = 0;
-  for my $move (@{ $entry->{moves} || [] }) {
-    $sum += _num($move->{played}, _num($move->{weight}, 0));
-  }
-  return $sum;
 }

@@ -11,7 +11,11 @@ use constant 1.03 {
   CASTLE => 2,
   EP => 3,
   HALFMOVE => 4,
-  MOVE => 5
+  MOVE => 5,
+  KING_IDX => 6,
+  OPP_KING_IDX => 7,
+  PIECE_COUNT => 8,
+  STATE_KEY => 9,
 };
 #use constant KINGS => 6;
 
@@ -82,38 +86,39 @@ sub set_fen {
     OOB, OOB, OOB, OOB, OOB, OOB, OOB, OOB, OOB, OOB
   ];
 
-  #$self->[KINGS] = [];
+  my $king_idx;
+  my $opp_king_idx;
+  my $piece_count = 0;
 
 
   my $rank = 90;
-  foreach my $row (split /\//, $1, 8)
-  {
+  my $flip_board = $self->[TURN] ? 1 : 0;
+  foreach my $row (split m{/}, $1, 8) {
     my $file = 1;
-    foreach my $code (split //, $row) {
-      if ($code =~ m/^[BKNPQRbknpqr]$/)
-      {
-	if ($self->[TURN]) {
-	  my $piece = -$l2p{$code};
-          $self->[BOARD][110 - $rank + $file] = $piece;
-	  #$self->[KINGS][1] = 110 - $rank + $file if $piece == KING;
-	  #$self->[KINGS][0] = 110 - $rank + $file if $piece == OPP_KING;
-	} else {
-	  my $piece = $l2p{$code};
-          $self->[BOARD][$rank + $file] = $piece;
-	  #$self->[KINGS][0] = $rank + $file if $piece == KING;
-	  #$self->[KINGS][1] = $rank + $file if $piece == OPP_KING;
-	}
-
-        # Next square
-        $file ++;
-      } elsif ($code =~ m/^[1-8]$/) {
-        $file += $code;
+    for (my $char_idx = 0; $char_idx < length($row); $char_idx++) {
+      my $code = substr($row, $char_idx, 1);
+      my $mapped_piece = $l2p{$code};
+      if (defined $mapped_piece) {
+        my $piece = $flip_board ? -$mapped_piece : $mapped_piece;
+        my $idx = $flip_board ? (110 - $rank + $file) : ($rank + $file);
+        $self->[BOARD][$idx] = $piece;
+        $piece_count++;
+        $king_idx = $idx if $piece == KING;
+        $opp_king_idx = $idx if $piece == OPP_KING;
+        $file++;
+      } elsif ($code ge '1' && $code le '8') {
+        $file += ord($code) - ord('0');
       } else {
         die "Illegal character $code in FEN string";
       }
     }
     $rank -= 10;
   }
+
+  $self->[KING_IDX] = $king_idx;
+  $self->[OPP_KING_IDX] = $opp_king_idx;
+  $self->[PIECE_COUNT] = $piece_count;
+  $self->[STATE_KEY] = undef;
 }
 
 # Return a FEN string representing the current game state
@@ -289,6 +294,16 @@ sub make_move {
   my $to_piece   = $board[$move->[1]];
   my $is_capture = ($to_piece // 0) < 0 ? 1 : 0;
   my $is_en_passant = 0;
+  my $piece_count = $self->[PIECE_COUNT];
+  if (!defined $piece_count) {
+    $piece_count = 0;
+    for my $idx (21 .. 28, 31 .. 38, 41 .. 48, 51 .. 58, 61 .. 68, 71 .. 78, 81 .. 88, 91 .. 98) {
+      my $piece = $board[$idx] // 0;
+      $piece_count++ if abs($piece) >= PAWN && abs($piece) <= KING;
+    }
+  }
+  my $own_king_idx = $self->[KING_IDX];
+  my $opp_king_idx = $self->[OPP_KING_IDX];
 
   # En-passant capture moves to an empty target square.
   if ($from_piece == PAWN
@@ -301,6 +316,7 @@ sub make_move {
     $is_en_passant = 1;
     $is_capture = 1;
     $board[$move->[1] - 10] = EMPTY;
+    $piece_count--;
   }
 
   # make move
@@ -330,6 +346,8 @@ sub make_move {
   }
 
   @board[$move->[0], $move->[1]] = (0, $move->[2] || $from_piece);
+  $piece_count-- if $is_capture && !$is_en_passant;
+  $own_king_idx = $move->[1] if $from_piece == KING;
 
   # Test for legality.
   return undef if checked(\@board);
@@ -357,6 +375,9 @@ sub make_move {
     $new_ep = _flip_idx($move->[0] + 10);
   }
 
+  my $new_king_idx = defined $opp_king_idx ? _flip_idx($opp_king_idx) : undef;
+  my $new_opp_king_idx = defined $own_king_idx ? _flip_idx($own_king_idx) : undef;
+
   return bless [
     \@board,
     ! $self->[TURN],
@@ -364,6 +385,10 @@ sub make_move {
     $new_ep,
     (($from_piece == PAWN || defined $move->[2] || $is_capture || $is_en_passant) ? 0 : $self->[HALFMOVE] + 1),
     ($self->[TURN] ? $self->[MOVE] + 1 : $self->[MOVE]),
+    $new_king_idx,
+    $new_opp_king_idx,
+    $piece_count,
+    undef,
     #[ $self->[KINGS][1], $self->[KINGS][0] ]
   ];
 
