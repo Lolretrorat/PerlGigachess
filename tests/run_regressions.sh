@@ -16,6 +16,9 @@ SKIP_BOOK_UNDERPROMO=0
 SKIP_LICHESS_TIME=0
 SKIP_PDP_QUEEN=0
 SKIP_REP_GUARD=0
+SKIP_UNGUARDED_PLAN=0
+SKIP_PROMO_CHECK=0
+SKIP_XXGZ_REBUILD=0
 
 usage() {
   cat <<'USAGE'
@@ -36,6 +39,9 @@ Options:
   --skip-lichess-time      Skip lichess bot time/depth profile regression check
   --skip-pdp-queen         Skip PDPgjgTd random queen-capture regression check
   --skip-rep-guard         Skip repetition guard quiet-move regression check
+  --skip-unguarded-plan    Skip unguarded-material capture-plan regression check
+  --skip-promo-check       Skip promotion-with-check regression check
+  --skip-xxgz-rebuild      Skip xXgzD7zW state-rebuild regression check
   -h, --help               Show help
 USAGE
 }
@@ -108,6 +114,18 @@ while [[ $# -gt 0 ]]; do
       SKIP_REP_GUARD=1
       shift
       ;;
+    --skip-unguarded-plan)
+      SKIP_UNGUARDED_PLAN=1
+      shift
+      ;;
+    --skip-promo-check)
+      SKIP_PROMO_CHECK=1
+      shift
+      ;;
+    --skip-xxgz-rebuild)
+      SKIP_XXGZ_REBUILD=1
+      shift
+      ;;
     -h|--help)
       usage
       exit 0
@@ -169,6 +187,27 @@ if [[ "$SKIP_REP_GUARD" -eq 0 ]]; then
   (cd "$ROOT_DIR" && perl tests/regression_repetition_guard_quiet_move.pl)
 else
   echo "==> Skipping repetition guard quiet-move check"
+fi
+
+if [[ "$SKIP_UNGUARDED_PLAN" -eq 0 ]]; then
+  echo "==> Unguarded-material capture-plan check"
+  (cd "$ROOT_DIR" && perl tests/regression_unguarded_material_plan.pl)
+else
+  echo "==> Skipping unguarded-material capture-plan check"
+fi
+
+if [[ "$SKIP_PROMO_CHECK" -eq 0 ]]; then
+  echo "==> Promotion-with-check move-order check"
+  (cd "$ROOT_DIR" && perl tests/regression_promotion_check.pl)
+else
+  echo "==> Skipping promotion-with-check move-order check"
+fi
+
+if [[ "$SKIP_XXGZ_REBUILD" -eq 0 ]]; then
+  echo "==> xXgzD7zW state-rebuild guard"
+  (cd "$ROOT_DIR" && perl tests/regression_xxgzd7zw_state_rebuild.pl)
+else
+  echo "==> Skipping xXgzD7zW state-rebuild guard"
 fi
 
 if [[ "$SKIP_PERFT" -eq 0 ]]; then

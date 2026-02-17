@@ -52,6 +52,7 @@ my @engine_parts = shellwords($engine_cmd);
 my $think_tank_ms = $ENV{LICHESS_THINK_TANK_MS};
 $think_tank_ms = 3000 unless defined $think_tank_ms && $think_tank_ms =~ /^\d+$/;
 my $git_branch = _git_branch_name();
+my $is_develop_branch = defined($git_branch) && lc($git_branch) eq 'develop' ? 1 : 0;
 my $branch_override_allowed = _branch_override_allowed($git_branch);
 my $depth_override = $ENV{LICHESS_DEPTH_OVERRIDE};
 if (defined $depth_override) {
@@ -199,6 +200,30 @@ $eval_drop_extra_think_mult += 0;
 $eval_drop_extra_think_mult = 1.0 if $eval_drop_extra_think_mult < 1.0;
 $eval_drop_extra_think_mult = 3.0 if $eval_drop_extra_think_mult > 3.0;
 
+my $develop_depth_bump = $ENV{LICHESS_DEVELOP_DEPTH_BUMP};
+if (!defined $develop_depth_bump || $develop_depth_bump !~ /^-?\d+$/) {
+  $develop_depth_bump = $is_develop_branch ? 1 : 0;
+}
+$develop_depth_bump = int($develop_depth_bump);
+$develop_depth_bump = 0 if $develop_depth_bump < 0;
+$develop_depth_bump = 4 if $develop_depth_bump > 4;
+
+my $develop_think_mult = $ENV{LICHESS_DEVELOP_THINK_MULT};
+if (!defined $develop_think_mult || $develop_think_mult !~ /^\d+(?:\.\d+)?$/) {
+  $develop_think_mult = $is_develop_branch ? 1.12 : 1.0;
+}
+$develop_think_mult += 0;
+$develop_think_mult = 1.0 if $develop_think_mult < 1.0;
+$develop_think_mult = 2.0 if $develop_think_mult > 2.0;
+
+my $develop_cap_mult = $ENV{LICHESS_DEVELOP_CAP_MULT};
+if (!defined $develop_cap_mult || $develop_cap_mult !~ /^\d+(?:\.\d+)?$/) {
+  $develop_cap_mult = $is_develop_branch ? 1.10 : 1.0;
+}
+$develop_cap_mult += 0;
+$develop_cap_mult = 1.0 if $develop_cap_mult < 1.0;
+$develop_cap_mult = 2.0 if $develop_cap_mult > 2.0;
+
 STDOUT->autoflush(1);
 STDERR->autoflush(1);
 
@@ -240,8 +265,8 @@ unless (caller) {
 }
 
 sub main {
-  $SIG{INT}  = sub { log_info('Caught SIGINT, shutting down'); exit 0 };
-  $SIG{TERM} = sub { log_info('Caught SIGTERM, shutting down'); exit 0 };
+  $SIG{INT}  = sub { log_info('Received SIGINT; shutting down'); exit 0 };
+  $SIG{TERM} = sub { log_info('Received SIGTERM; shutting down'); exit 0 };
   $SIG{CHLD} = sub { reap_children() };
 
   if ($dry_run) {
@@ -258,7 +283,7 @@ sub main {
     or die "Unable to discover bot id from /api/account response\n";
   my $branch_desc = defined $git_branch && length $git_branch ? $git_branch : '(unknown branch)';
   my $depth_desc = defined $depth_override ? $depth_override : 'none';
-  log_info("Logged in as $account->{username} ($bot_id) on branch $branch_desc, depth override is $depth_desc");
+  log_info("Logged in as $account->{username} ($bot_id). branch=$branch_desc depth_override=$depth_desc");
   if ($is_production_profile) {
     my $mult = sprintf('%.2f', $prod_opening_boost_mult);
     my $cap_mult = sprintf('%.2f', $prod_opening_cap_mult);
@@ -266,6 +291,11 @@ sub main {
     my $think_mult = sprintf('%.2f', $prod_think_mult);
     my $think_cap = sprintf('%.2f', $prod_cap_mult);
     log_info("Production think boost enabled: think_mult=$think_mult cap_mult=$think_cap floor_ms=$prod_floor_ms");
+  }
+  if ($is_develop_branch) {
+    my $think_mult = sprintf('%.2f', $develop_think_mult);
+    my $cap_mult = sprintf('%.2f', $develop_cap_mult);
+    log_info("Develop depth/think profile: depth_bump=$develop_depth_bump think_mult=$think_mult cap_mult=$cap_mult");
   }
   my $post_book_mult = sprintf('%.2f', $post_book_think_mult);
   my $post_book_cap = sprintf('%.2f', $post_book_cap_mult);
@@ -307,7 +337,7 @@ sub stream_events {
       handle_event($event);
     });
     if (!$ok) {
-      log_warn('Event stream closed unexpectedly, reconnecting');
+      log_warn('Event stream closed unexpectedly; reconnecting');
     }
     sleep 2;
   }
@@ -325,7 +355,7 @@ sub reap_children {
 }
 
 sub run_dry_run {
-  log_info('Running lichess dry run (no network)');
+  log_info('Running Lichess dry run (no network)');
   $bot_id = 'dry-run-bot';
   $auth_header = 'Bearer dry-run-token';
   %handled_challenges = ();
@@ -479,7 +509,7 @@ sub handle_event {
     stop_game_handler($game_id) if $game_id ne 'unknown';
     log_finished_game_url($game);
   } else {
-    log_info("Unhandled event type '$type'");
+    log_info("Ignoring unhandled event type '$type'");
   }
 }
 
@@ -508,7 +538,8 @@ sub log_finished_game_url {
 
   my $url = game_url_from_payload($game);
   unless (defined $url && length $url) {
-    log_warn('Unable to determine URL for finished game');
+    my $id = $game->{id} // 'unknown';
+    log_warn("Could not determine URL for finished game $id");
     return;
   }
 
@@ -681,13 +712,13 @@ sub handle_challenge {
   my ($challenge) = @_;
   $challenge = extract_challenge_payload($challenge);
   unless (ref $challenge eq 'HASH') {
-    log_warn('Challenge event missing challenge payload');
+    log_warn('Challenge event is missing challenge payload; ignoring');
     return;
   }
 
   my $id = $challenge->{id};
   unless (defined $id && length $id) {
-    log_warn('Challenge event missing id');
+    log_warn('Challenge event is missing id; ignoring');
     return;
   }
 
@@ -903,8 +934,14 @@ sub handle_game_event {
     log_debug("gameFull for $game->{id}");
     $game->{initial_fen} = $event->{initialFen} && $event->{initialFen} ne 'startpos'
       ? $event->{initialFen} : 'startpos';
-    $game->{my_color} =
-      ($event->{white}{id} && $event->{white}{id} eq $bot_id) ? 'white' : 'black';
+    my $resolved_color = _resolve_my_color_from_gamefull($event, $game->{my_color});
+    if (defined $resolved_color) {
+      my $prior = normalize_color($game->{my_color});
+      if (defined $prior && $prior ne $resolved_color) {
+        log_warn("Resolved game color changed for $game->{id}: $prior -> $resolved_color");
+      }
+      $game->{my_color} = $resolved_color;
+    }
     $game->{status} = $event->{state}{status} // 'started';
     $game->{moves}  = parse_moves($event->{state}{moves});
     $game->{wtime}  = $event->{state}{wtime};
@@ -963,6 +1000,54 @@ sub normalize_color {
   return 'white' if $color eq 'white';
   return 'black' if $color eq 'black';
   return;
+}
+
+sub _normalize_player_id {
+  my ($id) = @_;
+  return unless defined $id;
+  $id =~ s/^\s+//;
+  $id =~ s/\s+$//;
+  return unless length $id;
+  return lc $id;
+}
+
+sub _extract_player_id {
+  my ($slot) = @_;
+  return unless ref $slot eq 'HASH';
+
+  if (defined $slot->{id} && length $slot->{id}) {
+    return _normalize_player_id($slot->{id});
+  }
+  if (ref($slot->{user}) eq 'HASH'
+    && defined $slot->{user}{id}
+    && length $slot->{user}{id})
+  {
+    return _normalize_player_id($slot->{user}{id});
+  }
+  if (defined $slot->{name} && length $slot->{name}) {
+    return _normalize_player_id($slot->{name});
+  }
+  return;
+}
+
+sub _resolve_my_color_from_gamefull {
+  my ($event, $seed_color, $bot_id_override) = @_;
+  my $seed = normalize_color($seed_color);
+  return $seed unless ref $event eq 'HASH';
+
+  my $bot = defined $bot_id_override ? $bot_id_override : $bot_id;
+  $bot = _normalize_player_id($bot);
+  my $white_id = _extract_player_id($event->{white});
+  my $black_id = _extract_player_id($event->{black});
+
+  if (defined $bot) {
+    return 'white' if defined $white_id && $white_id eq $bot;
+    return 'black' if defined $black_id && $black_id eq $bot;
+  }
+
+  my $event_color = normalize_color($event->{color});
+  return $event_color if defined $event_color;
+  return $seed;
 }
 
 sub normalize_fen {
@@ -1073,7 +1158,7 @@ sub maybe_move {
       source => 'forced-mate',
       mate => 1,
     };
-    log_info("Forced mate move selected $forced_mate_move in $game->{id}");
+    log_info("Critical position in $game->{id}: found immediate forced mate, selecting $forced_mate_move");
   } elsif (defined $tablebase_move) {
     $analysis = {
       move => $tablebase_move,
@@ -1082,7 +1167,7 @@ sub maybe_move {
       go_cmd => 'tablebase',
       source => 'tablebase',
     };
-    log_info("Tablebase selected $tablebase_move in $game->{id}");
+    log_info("Critical position in $game->{id}: tablebase verdict selects $tablebase_move");
   } else {
     $analysis = compute_bestmove($game, $engine_out, $engine_in, $state);
   }
@@ -1093,7 +1178,14 @@ sub maybe_move {
     && $threshold_ms > 0
     && $analysis->{elapsed_ms} > $threshold_ms)
   {
-    log_warn("You're not saying anything, Tony.");
+    log_warn(
+      sprintf(
+        'Engine think exceeded time threshold in %s: elapsed=%dms threshold=%dms',
+        ($game->{id} // 'unknown'),
+        $analysis->{elapsed_ms},
+        $threshold_ms,
+      )
+    );
   }
   if (ref $analysis eq 'HASH' && defined $analysis->{elapsed_ms}
     && $analysis->{elapsed_ms} >= $think_tank_ms)
@@ -1124,14 +1216,14 @@ sub maybe_move {
     my $move = defined $best ? $best : 'none';
     my $cand_eval = _telemetry_candidate_eval_summary($analysis);
     log_info(sprintf(
-      'opening_telemetry game=%s ply=%d go=%s depth=%s elapsed_ms=%s move=%s cand_eval=%s',
+      'Opening decision in %s at ply %d: command=%s, depth=%s, elapsed=%sms, move=%s, eval=%s',
       ($game->{id} // 'unknown'),
       $plies,
-      _quote_log_field($go_cmd),
+      $go_cmd,
       $depth,
       $elapsed_ms,
       $move,
-      _quote_log_field($cand_eval),
+      $cand_eval,
     ));
   }
   my @candidates = _candidate_moves($state, $best);
@@ -1158,8 +1250,9 @@ sub maybe_move {
       @candidates = _reorder_candidates_for_repetition($game, $state, \@candidates, $analysis);
     }
   }
+  _log_critical_position_decision($game, $analysis, $candidates[0]) if @candidates;
   unless (@candidates) {
-    log_warn("No legal move available for $game->{id}");
+    log_warn("No legal move available for $game->{id}; skipping move submission");
     return;
   }
 
@@ -1180,7 +1273,7 @@ sub maybe_move {
     }
 
     last unless _is_retryable_illegal_reject($res);
-    log_warn("Retrying with alternate legal move for $game->{id} after HTTP 400");
+    log_warn("Move was rejected with HTTP 400 in $game->{id}; retrying with an alternate legal move");
   }
 }
 
@@ -1243,7 +1336,7 @@ sub _rethink_with_multiplier {
   return $analysis unless ref $extra eq 'HASH' && defined $extra->{move};
   log_info(
     sprintf(
-      'Extra think (%s) in %s: %s -> %s',
+      'Re-evaluated %s position in %s: %s -> %s',
       ($reason // 'unknown'),
       ($game->{id} // 'unknown'),
       _analysis_eval_label($analysis),
@@ -1268,6 +1361,16 @@ sub _maybe_rethink_on_eval_drop {
   return $analysis unless $drop >= $eval_drop_extra_think_cp;
 
   my $mult = $eval_drop_extra_think_mult;
+  log_info(
+    sprintf(
+      'Critical position in %s: eval dropped from %+dcp to %+dcp (drop=%dcp), triggering extra think x%.2f',
+      ($game->{id} // 'unknown'),
+      int($prev_cp),
+      $current_cp,
+      $drop,
+      $mult,
+    )
+  );
   my $rethink = _rethink_with_multiplier(
     $game,
     $engine_out,
@@ -1445,7 +1548,7 @@ sub _sync_state_from_game {
       $initial eq 'startpos' ? Chess::State->new() : Chess::State->new($initial);
     };
     if (!$state || $@) {
-      log_warn("Could not create state from initial FEN for $game->{id}: $@");
+      log_warn("Failed to create board state from initial FEN for $game->{id}: $@");
       $game->{state_obj} = undef;
       $game->{state_move_count} = 0;
       $game->{state_initial_fen} = undef;
@@ -1461,14 +1564,14 @@ sub _sync_state_from_game {
     my $uci = $moves->[$i];
     my $encoded = eval { $state->encode_move($uci) };
     if (!$encoded || $@) {
-      log_warn("Failed to encode move '$uci' in $game->{id}: $@");
+      log_warn("Failed to encode historical move '$uci' while rebuilding $game->{id}: $@");
       $game->{state_obj} = undef;
       $game->{state_move_count} = 0;
       return;
     }
     my $next = eval { $state->make_move($encoded) };
     if (!defined $next || $@) {
-      log_warn("Illegal historical move '$uci' while rebuilding $game->{id}");
+      log_warn("Historical move '$uci' is illegal while rebuilding $game->{id}");
       $game->{state_obj} = undef;
       $game->{state_move_count} = 0;
       return;
@@ -1725,11 +1828,17 @@ sub _reorder_candidates_for_repetition {
       };
     }
     if ($blocked) {
-      log_info("Repetition guard ($policy, cp=$cp) kept engine move for $game->{id}: candidate $to blocked ($blocked_reason, score_drop=$score_drop)");
+      log_info(
+        "Repetition guard kept the engine's top move in $game->{id}: "
+        . "blocked alternative $to (policy=$policy, cp=$cp, reason=$blocked_reason, score_drop=$score_drop)"
+      );
       return @$candidates_ref;
     }
     my $cp_log = defined($cp) ? $cp : 'n/a';
-    log_info("Repetition guard ($policy, cp=$cp_log, score_drop=$score_drop, visits_after=$visits_after) reordered move candidates for $game->{id}: $from -> $to");
+    log_info(
+      "Repetition guard reordered candidates in $game->{id}: "
+      . "$from -> $to (policy=$policy, cp=$cp_log, score_drop=$score_drop, visits_after=$visits_after)"
+    );
   }
   return @ordered;
 }
@@ -2192,6 +2301,17 @@ sub _movetime_for_game_ms {
       $budget_ms = $speed_floor if $speed_floor > 0 && $budget_ms < $speed_floor && $usable_ms >= $speed_floor;
     }
   }
+  if ($is_develop_branch && $speed ne 'bullet') {
+    if ($develop_cap_mult > 1.0) {
+      my $dev_cap_ms = int($effective_cap_ms * $develop_cap_mult);
+      $dev_cap_ms = $effective_cap_ms if $dev_cap_ms < $effective_cap_ms;
+      $effective_cap_ms = $dev_cap_ms if $dev_cap_ms > $effective_cap_ms;
+    }
+    if ($develop_think_mult > 1.0 && $remaining_ms >= 20_000) {
+      my $boosted_ms = int($budget_ms * $develop_think_mult);
+      $budget_ms = $boosted_ms if $boosted_ms > $budget_ms;
+    }
+  }
 
   my $min_ms =
       $speed eq 'bullet' ? ($remaining_ms <= 10_000 ? 70 : 110)
@@ -2252,6 +2372,9 @@ sub maybe_apply_speed_depth {
 
   my $target = $speed_depth_targets{$speed};
   return unless defined $target;
+  if ($is_develop_branch && $develop_depth_bump > 0) {
+    $target += $develop_depth_bump;
+  }
   my $current_depth = $game->{engine_depth};
   $current_depth = $game->{engine_depth_default} if !defined $current_depth;
   return if defined $current_depth && $current_depth == $target;
@@ -2290,12 +2413,32 @@ sub _telemetry_candidate_eval_summary {
   return @parts ? join(',', @parts) : 'none';
 }
 
-sub _quote_log_field {
-  my ($value) = @_;
-  $value = '' unless defined $value;
-  $value =~ s/\\/\\\\/g;
-  $value =~ s/"/\\"/g;
-  return qq("$value");
+sub _log_critical_position_decision {
+  my ($game, $analysis, $selected_move) = @_;
+  return unless ref $game eq 'HASH' && ref $analysis eq 'HASH';
+  return if (($analysis->{source} // '') eq 'tablebase');
+  return if (($analysis->{source} // '') eq 'forced-mate');
+
+  my $move = defined $selected_move && length $selected_move
+    ? $selected_move
+    : ($analysis->{move} // $analysis->{candidate});
+  return unless defined $move && length $move;
+
+  my $game_id = $game->{id} // 'unknown';
+  if (defined $analysis->{mate}) {
+    my $mate = int($analysis->{mate});
+    my $desc = $mate > 0 ? "mate in $mate" : "opponent mate in " . abs($mate);
+    log_info("Critical position in $game_id: engine sees $desc, choosing $move");
+    return;
+  }
+
+  return unless defined $analysis->{cp};
+  my $cp = int($analysis->{cp});
+  return unless abs($cp) >= 220;
+  my $context = $cp >= 0
+    ? 'pressing for conversion'
+    : 'prioritizing defense';
+  log_info("Critical position in $game_id: eval=" . sprintf('%+dcp', $cp) . ", choosing $move while $context");
 }
 
 sub compute_bestmove {
@@ -2346,6 +2489,9 @@ sub compute_bestmove {
     $go = "go movetime $movetime";
   }
   print {$engine_in} "$go\n";
+  if (defined $opts->{reason} && length $opts->{reason}) {
+    log_info("Search adjustment for $game->{id}: $go (reason=$opts->{reason})");
+  }
 
   my %analysis = (
     move   => undef,
@@ -2354,10 +2500,10 @@ sub compute_bestmove {
   while (my $line = <$engine_out>) {
     $line =~ s/[\r\n]+$//;
     if ($line =~ /^info\b/) {
-      if ($line =~ /^info string Thinking\.\.\.\s*(.*)$/) {
+      if ($line =~ /^info string\s*(.*)$/) {
         my $msg = $1 // '';
         $msg =~ s/\s+$//;
-        log_info("Thinking... $msg in $game->{id}");
+        log_info("Engine search note for $game->{id}: $msg") if length $msg;
         next;
       }
       if ($line =~ /\bdepth\s+(\d+)/) {
@@ -2403,7 +2549,7 @@ sub send_move {
       $body = substr($body, 0, 180);
       $extra = " body='$body'";
     }
-    log_warn("Move $move for $game_id was rejected: " . $res->{status_line} . $extra);
+    log_warn("Lichess rejected move $move in game $game_id: " . $res->{status_line} . $extra);
     return $res;
   }
   return $res;
@@ -2498,7 +2644,10 @@ sub _drain_ndjson {
     log_debug("NDJSON $path: $line") if $debug;
     my $payload = eval { decode_json($line) };
     if ($@) {
-      log_warn("Failed to decode payload '$line': $@");
+      my $snippet = $line;
+      $snippet =~ s/\s+/ /g;
+      $snippet = substr($snippet, 0, 180);
+      log_warn("Failed to decode NDJSON payload on $path; skipping line. payload='$snippet' error=$@");
       next;
     }
     $callback->($payload);
@@ -2955,10 +3104,10 @@ sub stream_ndjson {
     if (!$sock) {
       my $err = $last_tls_error || IO::Socket::SSL::errstr() || 'unknown';
       if ($retry_limit && $attempt >= $retry_limit) {
-        log_warn("Unable to open TLS socket for $path after $attempt attempts: $err");
+        log_warn("Failed to open TLS socket for $path after $attempt attempts: $err");
         return 0;
       }
-      log_warn("Unable to open TLS socket: $err");
+      log_warn("Failed to open TLS socket for $path: $err");
       log_info("Retrying stream $path in ${retry_delay}s");
       sleep $retry_delay;
       $retry_delay = _next_backoff_delay($retry_delay, $max_retry_delay);
@@ -2978,7 +3127,9 @@ sub stream_ndjson {
     if (!$headers->{status} || $headers->{status} !~ /^2/) {
       my $status_line = $headers->{status_line} // 'unknown';
       my $body = _read_all($sock);
-      log_warn("Stream $path failed: $status_line body=$body");
+      $body =~ s/\s+/ /g if defined $body;
+      $body = substr($body // '', 0, 180);
+      log_warn("Stream request for $path failed: $status_line body='$body'");
       _clear_socket_buffer($sock);
       close $sock;
       if ($retry_limit && $attempt >= $retry_limit) {
@@ -2991,7 +3142,7 @@ sub stream_ndjson {
       next;
     }
 
-    log_info("Stream $path status " . ($headers->{status_line} // 'unknown'));
+    log_info("Stream $path connected: " . ($headers->{status_line} // 'unknown'));
     my $buffer = '';
     my $ok = 0;
     my $te = $headers->{'transfer-encoding'} // '';
@@ -3027,7 +3178,7 @@ sub stream_ndjson {
     close $sock;
 
     if ($ok) {
-      log_info("Stream $path completed");
+      log_info("Stream $path completed cleanly");
       return 1;
     }
 

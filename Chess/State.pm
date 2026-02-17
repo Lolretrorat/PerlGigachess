@@ -431,8 +431,10 @@ sub attacked {
     return 1 if $board->[$idx + $_] == OPP_KING;
   }
 
-  return 1 if $board->[$idx - 11] == OPP_PAWN ||
-              $board->[$idx - 9] == OPP_PAWN;
+  # Board is always oriented to side-to-move, so opponent pawns attack
+  # from +9/+11 relative to our king square.
+  return 1 if $board->[$idx + 11] == OPP_PAWN ||
+              $board->[$idx + 9] == OPP_PAWN;
 
   # check knight attacks from here
   for (-21, -19, -12, -8, 8, 12, 19, 21) {

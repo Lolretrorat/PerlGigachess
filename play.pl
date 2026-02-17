@@ -183,12 +183,12 @@ sub run_uci {
       foreach my $temp (split / /, $moves) {
         my $encoded = eval { $state->encode_move($temp) };
         if (! $encoded || $@) {
-          print "info string ignored invalid move token '$temp' in position command\n";
+          print "info string Ignored invalid move token '$temp' while applying position moves; remaining tokens were skipped\n";
           last;
         }
         my $next_state = eval { $state->make_move($encoded) };
         if (! defined $next_state || $@) {
-          print "info string ignored illegal move token '$temp' in position command\n";
+          print "info string Ignored illegal move token '$temp' while applying position moves; remaining tokens were skipped\n";
           last;
         }
         $state = $next_state;
@@ -200,11 +200,11 @@ sub run_uci {
       $go{depth} = int($depth_from_cmd) if defined $depth_from_cmd;
       my $status = _current_draw_status($state, \%history);
       if ($status->{force}) {
-        print "info string Forced draw: $status->{force}\n";
+        print "info string Forced draw reached ($status->{force}); returning bestmove 0000\n";
         print "bestmove 0000\n";
         next;
       } elsif ($status->{claim}) {
-        print "info string Draw available: $status->{claim}\n";
+        print "info string Draw can be claimed now ($status->{claim})\n";
       }
       my $go_depth = defined $go{depth} ? _normalize_depth($go{depth}) : $depth;
       my $engine = Chess::Engine->new(\$state, $go_depth, { workers => $workers });
@@ -222,6 +222,9 @@ sub run_uci {
         $time_args{strict_depth} = 1;
       }
       $time_args{use_book} = $own_book;
+      my $critical_mate_logged = 0;
+      my $critical_swing_logged = 0;
+      my $last_cp_for_swing;
       my $on_think_update = sub {
         my ($cur_depth, $cur_score, $candidate_move) = @_;
         return unless defined $candidate_move;
@@ -231,8 +234,26 @@ sub run_uci {
         print "info depth $cur_depth score $score_kind $score_value pv $candidate_uci\n";
         my $eval_label = $score_kind eq 'mate'
           ? "mate $score_value"
-          : $score_value;
-        print "info string Thinking... depth $cur_depth candidate $candidate_uci eval $eval_label\n";
+          : _signed_cp($score_value);
+        print "info string Search update: depth $cur_depth, candidate $candidate_uci, eval $eval_label\n";
+        if ($score_kind eq 'mate' && !$critical_mate_logged) {
+          my $mate_desc = $score_value > 0
+            ? "mate in $score_value"
+            : "opponent mate in " . abs($score_value);
+          print "info string Critical position: forcing line detected ($mate_desc); prioritizing tactical accuracy\n";
+          $critical_mate_logged = 1;
+        } elsif ($score_kind eq 'cp') {
+          if (defined $last_cp_for_swing && !$critical_swing_logged) {
+            my $swing = abs($score_value - $last_cp_for_swing);
+            if ($cur_depth >= 6 && $swing >= 120) {
+              print "info string Critical position: eval swing " . _signed_cp($last_cp_for_swing)
+                . " to " . _signed_cp($score_value)
+                . " cp at depth $cur_depth; reassessing tactical stability\n";
+              $critical_swing_logged = 1;
+            }
+          }
+          $last_cp_for_swing = $score_value;
+        }
       };
       my ($move, $score, $searched_depth) = $engine->think($on_think_update, \%time_args);
       if (!defined $move) {
@@ -247,7 +268,7 @@ sub run_uci {
           $second_time_args{movetime_ms} = _bumped_movetime_ms($second_time_args{movetime_ms});
         }
         my $ply = _opening_ply($state);
-        print "info string Opening king safety guard triggered at ply $ply; retrying deeper search\n";
+        print "info string Heuristic decision: opening king safety guard triggered at ply $ply for an early non-castling king move; retrying with deeper search\n";
         my ($second_move, $second_score, $second_searched_depth) =
           $second_engine->think($on_think_update, \%second_time_args);
         if (defined $second_move) {
@@ -257,6 +278,17 @@ sub run_uci {
       if (defined $score && defined $searched_depth) {
         my ($score_kind, $score_value) = _uci_score_tokens($score);
         print "info depth $searched_depth score $score_kind $score_value\n";
+        my $best_uci = $state->decode_move($move);
+        $best_uci = '0000' unless defined $best_uci && length $best_uci;
+        if ($score_kind eq 'mate') {
+          my $mate_desc = $score_value > 0
+            ? "mate in $score_value"
+            : "opponent mate in " . abs($score_value);
+          print "info string Critical position decision: selecting $best_uci with $mate_desc at depth $searched_depth\n";
+        } elsif (abs($score_value) >= 250) {
+          print "info string Critical position decision: selecting $best_uci with eval " . _signed_cp($score_value)
+            . " cp at depth $searched_depth\n";
+        }
       }
       print "bestmove " . $state->decode_move($move) . "\n";
     } elsif ($input eq 'quit') {
@@ -287,6 +319,13 @@ sub _mate_score_from_cp {
   my $mate_moves = int(($distance + 1) / 2);
   $mate_moves = 1 if $mate_moves < 1;
   return $cp >= 0 ? $mate_moves : -$mate_moves;
+}
+
+sub _signed_cp {
+  my ($cp) = @_;
+  return '+0' unless defined $cp;
+  my $v = int($cp);
+  return sprintf('%+d', $v);
 }
 
 sub print_board {

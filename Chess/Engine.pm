@@ -118,6 +118,15 @@ use constant KING_DANGER_OPEN_FILE_PENALTY => 3;       # Higher => open king fil
 use constant KING_DANGER_ADJ_FILE_PENALTY => 2;        # Higher => adjacent open files near king hurt more.
 use constant KING_AGGRESSION_ENEMY_PIECE_START => 10;  # Higher => king aggression starts earlier as enemy material shrinks.
 use constant KING_AGGRESSION_RANK_BONUS => 6;          # Higher => reward for king penetration in late game.
+use constant UNGUARDED_TARGET_VALUE_SCALE => 0.24;      # Higher => reward/punish attacked loose material more.
+use constant UNGUARDED_TARGET_DEFENDED_SCALE => 0.55;   # Higher => keep more pressure score on defended targets.
+use constant UNGUARDED_TARGET_VIABLE_BONUS => 3;        # Higher => prefer lines with favorable capture plans.
+use constant UNGUARDED_TARGET_VALUE_MARGIN => 8;        # Higher => allow wider attacker-victim value margin.
+use constant UNGUARDED_CAPTURE_ORDER_BONUS => 85;       # Higher => prioritize captures on loose targets.
+use constant UNGUARDED_CAPTURE_VIABLE_ORDER_BONUS => 45; # Higher => prioritize captures with favorable exchanges.
+use constant KING_SHUFFLE_MIDGAME_MIN_PIECES => 18;     # Lower => penalize quiet king shuffles earlier.
+use constant KING_SHUFFLE_ORDER_PENALTY => 160;         # Higher => discourage aimless king moves in middlegame.
+use constant PROMOTION_CHECK_ORDER_BONUS => 220;        # Higher => prioritize promotion moves that immediately check.
 use constant MAX_ROOT_WORKERS => 64;                   # Higher => allows wider root split across child workers.
 
 my %history_scores;
@@ -304,12 +313,12 @@ sub _is_square_attacked_by_side {
   my $king = $attacker_sign * KING;
 
   if ($attacker_sign > 0) {
-    if (($board->[$idx - 11] // OOB) == $pawn || ($board->[$idx - 9] // OOB) == $pawn) {
+    if (($board->[$idx + 11] // OOB) == $pawn || ($board->[$idx + 9] // OOB) == $pawn) {
       $cache->{$cache_key} = 1 if defined $cache_key;
       return 1;
     }
   } else {
-    if (($board->[$idx + 11] // OOB) == $pawn || ($board->[$idx + 9] // OOB) == $pawn) {
+    if (($board->[$idx - 11] // OOB) == $pawn || ($board->[$idx - 9] // OOB) == $pawn) {
       $cache->{$cache_key} = 1 if defined $cache_key;
       return 1;
     }
@@ -516,6 +525,109 @@ sub _hanging_piece_score {
       my $defended = _is_square_attacked_by_side($board, $idx, -1, $attack_cache) ? 1 : 0;
       my $delta = $defended ? int($penalty * HANGING_DEFENDED_SCALE) : $penalty;
       $score += $delta;
+    }
+  }
+
+  return $score;
+}
+
+sub _least_attacker_value {
+  my ($board, $target_idx, $attacker_sign) = @_;
+  return unless $attacker_sign == 1 || $attacker_sign == -1;
+
+  my $pawn = $attacker_sign * PAWN;
+  my $knight = $attacker_sign * KNIGHT;
+  my $bishop = $attacker_sign * BISHOP;
+  my $rook = $attacker_sign * ROOK;
+  my $queen = $attacker_sign * QUEEN;
+  my $king = $attacker_sign * KING;
+
+  my $best;
+  my $update_best = sub {
+    my ($piece) = @_;
+    return unless defined $piece;
+    my $value = abs($piece_values{$piece} // 0);
+    return unless $value > 0;
+    $best = $value if !defined($best) || $value < $best;
+  };
+
+  if ($attacker_sign > 0) {
+    $update_best->($pawn) if (($board->[$target_idx + 11] // OOB) == $pawn);
+    $update_best->($pawn) if (($board->[$target_idx + 9] // OOB) == $pawn);
+  } else {
+    $update_best->($pawn) if (($board->[$target_idx - 11] // OOB) == $pawn);
+    $update_best->($pawn) if (($board->[$target_idx - 9] // OOB) == $pawn);
+  }
+
+  for my $inc (-21, -19, -12, -8, 8, 12, 19, 21) {
+    $update_best->($knight) if (($board->[$target_idx + $inc] // OOB) == $knight);
+  }
+
+  for my $inc (-11, -10, -9, -1, 1, 9, 10, 11) {
+    $update_best->($king) if (($board->[$target_idx + $inc] // OOB) == $king);
+  }
+
+  for my $inc (-10, -1, 1, 10) {
+    my $dest = $target_idx;
+    while (1) {
+      $dest += $inc;
+      my $piece = $board->[$dest] // OOB;
+      next if $piece == EMPTY;
+      if ($piece == $rook || $piece == $queen) {
+        $update_best->($piece);
+      }
+      last;
+    }
+  }
+
+  for my $inc (-11, -9, 9, 11) {
+    my $dest = $target_idx;
+    while (1) {
+      $dest += $inc;
+      my $piece = $board->[$dest] // OOB;
+      next if $piece == EMPTY;
+      if ($piece == $bishop || $piece == $queen) {
+        $update_best->($piece);
+      }
+      last;
+    }
+  }
+
+  return $best;
+}
+
+sub _unguarded_material_plan_score {
+  my ($board, $attack_cache) = @_;
+  my $score = 0;
+
+  for my $idx (@board_indices) {
+    my $piece = $board->[$idx] // 0;
+    next unless $piece;
+    my $abs_piece = abs($piece);
+    next if $abs_piece < PAWN || $abs_piece > QUEEN;
+    next if $abs_piece == KING;
+
+    my $piece_sign = $piece > 0 ? 1 : -1;
+    my $enemy_sign = -$piece_sign;
+
+    next unless _is_square_attacked_by_side($board, $idx, $enemy_sign, $attack_cache);
+    my $defended = _is_square_attacked_by_side($board, $idx, $piece_sign, $attack_cache) ? 1 : 0;
+
+    my $victim_value = abs($piece_values{$piece} // 0);
+    next unless $victim_value > 0;
+    my $least_attacker = _least_attacker_value($board, $idx, $enemy_sign);
+    my $viable = defined($least_attacker) && $least_attacker <= ($victim_value + UNGUARDED_TARGET_VALUE_MARGIN);
+
+    my $delta = int($victim_value * UNGUARDED_TARGET_VALUE_SCALE + 0.5);
+    $delta += UNGUARDED_TARGET_VIABLE_BONUS if $viable;
+    if ($defended) {
+      $delta = int($delta * UNGUARDED_TARGET_DEFENDED_SCALE + 0.5);
+    }
+
+    if ($piece < 0) {
+      $score += $delta;
+    } else {
+      $score -= $delta;
     }
   }
 
@@ -735,6 +847,34 @@ sub _unsafe_capture_penalty {
   return $penalty;
 }
 
+sub _capture_plan_order_bonus {
+  my ($board, $move, $from_piece, $to_piece) = @_;
+  return 0 unless $to_piece < 0;
+
+  my $bonus = 0;
+  my $dest_idx = $move->[1];
+  my $defended = _is_square_attacked_by_side($board, $dest_idx, -1) ? 1 : 0;
+  $bonus += UNGUARDED_CAPTURE_ORDER_BONUS if !$defended;
+
+  my $attacker_value = abs($piece_values{$from_piece} // 0);
+  my $victim_value = abs($piece_values{$to_piece} // 0);
+  if ($attacker_value > 0
+      && $victim_value > 0
+      && $attacker_value <= ($victim_value + UNGUARDED_TARGET_VALUE_MARGIN)) {
+    $bonus += UNGUARDED_CAPTURE_VIABLE_ORDER_BONUS;
+  }
+
+  return $bonus;
+}
+
+sub _promotion_check_order_bonus {
+  my ($state, $move) = @_;
+  return 0 unless defined $move->[2];
+  my $new_state = $state->make_move($move);
+  return 0 unless defined $new_state;
+  return $new_state->is_checked ? PROMOTION_CHECK_ORDER_BONUS : 0;
+}
+
 sub _ordered_moves {
   my ($state, $ply, $tt_move_key, $prev_move_key) = @_;
   my @scored;
@@ -783,12 +923,14 @@ sub _move_order_score {
     my $attacker_value = abs($piece_values{$from_piece} || 0);
     $score += 1000 + 10 * $victim_value - $attacker_value;
     $score -= _unsafe_capture_penalty($state, $move, $from_piece, $to_piece);
+    $score += _capture_plan_order_bonus($board, $move, $from_piece, $to_piece);
   }
 
   if (defined $move->[2]) {
     my $promo = abs($piece_values{$move->[2]} || 0);
     my $pawn = abs($piece_values{PAWN} || 1);
     $score += 500 + ($promo - $pawn);
+    $score += _promotion_check_order_bonus($state, $move);
   }
 
   if (defined $move->[3]) {
@@ -807,6 +949,14 @@ sub _move_order_score {
     $score += _history_bonus($move_key);
     $score += _killer_bonus($move_key, $ply);
     $score += _countermove_bonus($move_key, $prev_move_key);
+  }
+
+  if (abs($from_piece) == KING
+      && !$is_capture
+      && !defined $move->[3]
+      && !$state->is_checked
+      && _piece_count($state) >= KING_SHUFFLE_MIDGAME_MIN_PIECES) {
+    $score -= KING_SHUFFLE_ORDER_PENALTY;
   }
 
   return $score;
@@ -1262,6 +1412,7 @@ sub _evaluate_board {
   });
   $score += _passed_pawn_score($board);
   $score += _hanging_piece_score($board, \%attack_cache);
+  $score += _unguarded_material_plan_score($board, \%attack_cache);
   $score += _king_danger_score($board, \%attack_cache, $our_king_idx, $opp_king_idx);
   $score += _king_aggression_score($board, $friendly_non_king, $enemy_non_king);
 
