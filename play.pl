@@ -5,6 +5,7 @@ use warnings;
 
 use Getopt::Long qw(GetOptions);
 use IO::Handle;
+use Time::HiRes qw(time sleep);
 $| = 1;
 STDOUT->autoflush(1);
 STDERR->autoflush(1);
@@ -22,6 +23,7 @@ use Chess::TableUtil qw(canonical_fen_key);
 my $uci_mode = 0;
 my $depth = 15;
 my $fen;
+my $engine_delay_ms = _normalize_delay_ms($ENV{PLAY_ENGINE_DELAY_MS} // 300);
 my %GO_NUMERIC_TOKEN = map { $_ => 1 } qw(
   wtime btime winc binc movestogo movetime depth
 );
@@ -30,10 +32,12 @@ my %GO_FLAG_TOKEN = map { $_ => 1 } qw(ponder infinite);
 GetOptions(
   'uci'    => \$uci_mode,
   'depth=i' => \$depth,
+  'engine-delay-ms=i' => \$engine_delay_ms,
   'fen=s'   => \$fen,
-) or die "Usage: $0 [--depth N] [--fen FEN] [--uci]\n";
+) or die "Usage: $0 [--depth N] [--fen FEN] [--engine-delay-ms MS] [--uci]\n";
 
 $depth = _normalize_depth($depth);
+$engine_delay_ms = _normalize_delay_ms($engine_delay_ms);
 
 my $state = Chess::State->new($fen);
 
@@ -42,11 +46,11 @@ if ($uci_mode) {
   exit 0;
 }
 
-run_interactive($state, $depth);
+run_interactive($state, $depth, $engine_delay_ms);
 exit 0;
 
 sub run_interactive {
-  my ($state, $depth) = @_;
+  my ($state, $depth, $engine_delay_ms) = @_;
 
   my $engine = Chess::Engine->new(\$state, $depth);
   my %history;
@@ -81,7 +85,11 @@ sub run_interactive {
         next;
       }
     } else {
+      my $think_started_at = time();
       $move = $engine->think;
+      my $elapsed_ms = int((time() - $think_started_at) * 1000);
+      my $remaining_delay_ms = $engine_delay_ms - $elapsed_ms;
+      sleep($remaining_delay_ms / 1000) if $remaining_delay_ms > 0;
       print "> " . $state->decode_move($move) . "\n";
     }
 
@@ -282,6 +290,15 @@ sub _normalize_depth {
   $value = int($value);
   $value = 1 if $value < 1;
   $value = 20 if $value > 20;
+  return $value;
+}
+
+sub _normalize_delay_ms {
+  my ($value) = @_;
+  $value = 0 unless defined $value && $value =~ /^-?\d+$/;
+  $value = int($value);
+  $value = 0 if $value < 0;
+  $value = 5000 if $value > 5000;
   return $value;
 }
 
