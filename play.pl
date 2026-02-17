@@ -220,9 +220,12 @@ sub run_uci {
         return unless defined $candidate_move;
         my $candidate_uci = eval { $state->decode_move($candidate_move) };
         $candidate_uci = '0000' unless defined $candidate_uci && length $candidate_uci;
-        my $cp = int($cur_score // 0);
-        print "info depth $cur_depth score cp $cp pv $candidate_uci\n";
-        print "info string Thinking... depth $cur_depth candidate $candidate_uci eval $cp\n";
+        my ($score_kind, $score_value) = _uci_score_tokens($cur_score);
+        print "info depth $cur_depth score $score_kind $score_value pv $candidate_uci\n";
+        my $eval_label = $score_kind eq 'mate'
+          ? "mate $score_value"
+          : $score_value;
+        print "info string Thinking... depth $cur_depth candidate $candidate_uci eval $eval_label\n";
       };
       my ($move, $score, $searched_depth) = $engine->think($on_think_update, \%time_args);
       if (!defined $move) {
@@ -245,7 +248,8 @@ sub run_uci {
         }
       }
       if (defined $score && defined $searched_depth) {
-        print "info depth $searched_depth score cp " . int($score) . "\n";
+        my ($score_kind, $score_value) = _uci_score_tokens($score);
+        print "info depth $searched_depth score $score_kind $score_value\n";
       }
       print "bestmove " . $state->decode_move($move) . "\n";
     } elsif ($input eq 'quit') {
@@ -254,6 +258,28 @@ sub run_uci {
       print "unknown command '$input'\n" if $debug;
     }
   }
+}
+
+sub _uci_score_tokens {
+  my ($score) = @_;
+  my $cp = int($score // 0);
+  my $mate_score = _mate_score_from_cp($cp);
+  if (defined $mate_score) {
+    return ('mate', $mate_score);
+  }
+  return ('cp', $cp);
+}
+
+sub _mate_score_from_cp {
+  my ($cp) = @_;
+  return unless defined $cp;
+  my $mate_base = Chess::Engine::MATE_SCORE();
+  my $abs_cp = abs(int($cp));
+  my $distance = $mate_base - $abs_cp;
+  return if $distance < 0 || $distance > 256;
+  my $mate_moves = int(($distance + 1) / 2);
+  $mate_moves = 1 if $mate_moves < 1;
+  return $cp >= 0 ? $mate_moves : -$mate_moves;
 }
 
 sub print_board {
