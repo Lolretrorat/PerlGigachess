@@ -59,10 +59,6 @@ if (defined $depth_override) {
     $depth_override = undef;
   }
 }
-my $default_override_depth = 4;
-$depth_override = $default_override_depth
-  if $branch_override_allowed && !defined $depth_override;
-$depth_override = undef unless defined $depth_override && $branch_override_allowed;
 my $is_production_profile = $branch_override_allowed ? 0 : 1;
 
 my $prod_opening_boost_mult = $ENV{LICHESS_PROD_OPENING_MULT};
@@ -88,6 +84,22 @@ if (!defined $prod_opening_cap_mult || $prod_opening_cap_mult !~ /^\d+(?:\.\d+)?
 $prod_opening_cap_mult += 0;
 $prod_opening_cap_mult = 1.0 if $prod_opening_cap_mult < 1.0;
 $prod_opening_cap_mult = 2.0 if $prod_opening_cap_mult > 2.0;
+
+my $prod_opening_floor_ms = $ENV{LICHESS_PROD_OPENING_FLOOR_MS};
+if (!defined $prod_opening_floor_ms || $prod_opening_floor_ms !~ /^\d+$/) {
+  $prod_opening_floor_ms = 8000;
+}
+$prod_opening_floor_ms = int($prod_opening_floor_ms);
+$prod_opening_floor_ms = 0 if $prod_opening_floor_ms < 0;
+$prod_opening_floor_ms = 30_000 if $prod_opening_floor_ms > 30_000;
+
+my $prod_opening_floor_plies = $ENV{LICHESS_PROD_OPENING_FLOOR_PLIES};
+if (!defined $prod_opening_floor_plies || $prod_opening_floor_plies !~ /^\d+$/) {
+  $prod_opening_floor_plies = 16;
+}
+$prod_opening_floor_plies = int($prod_opening_floor_plies);
+$prod_opening_floor_plies = 0 if $prod_opening_floor_plies < 0;
+$prod_opening_floor_plies = 80 if $prod_opening_floor_plies > 80;
 
 STDOUT->autoflush(1);
 STDERR->autoflush(1);
@@ -152,7 +164,7 @@ sub main {
   if ($is_production_profile) {
     my $mult = sprintf('%.2f', $prod_opening_boost_mult);
     my $cap_mult = sprintf('%.2f', $prod_opening_cap_mult);
-    log_info("Production opening time boost enabled: mult=$mult plies=$prod_opening_boost_plies cap_mult=$cap_mult");
+    log_info("Production opening time boost enabled: mult=$mult plies=$prod_opening_boost_plies cap_mult=$cap_mult floor_ms=$prod_opening_floor_ms floor_plies=$prod_opening_floor_plies");
   }
 
   stream_events();
@@ -937,6 +949,30 @@ sub maybe_move {
     );
   }
   my $best = (ref $analysis eq 'HASH') ? $analysis->{move} : undef;
+  my $plies = _opening_ply_count($game);
+  if ($plies < 20) {
+    my $go_cmd = (ref $analysis eq 'HASH' && defined $analysis->{go_cmd})
+      ? $analysis->{go_cmd}
+      : '';
+    my $depth = (ref $analysis eq 'HASH' && defined $analysis->{depth})
+      ? $analysis->{depth}
+      : 'na';
+    my $elapsed_ms = (ref $analysis eq 'HASH' && defined $analysis->{elapsed_ms})
+      ? $analysis->{elapsed_ms}
+      : 'na';
+    my $move = defined $best ? $best : 'none';
+    my $cand_eval = _telemetry_candidate_eval_summary($analysis);
+    log_info(sprintf(
+      'opening_telemetry game=%s ply=%d go=%s depth=%s elapsed_ms=%s move=%s cand_eval=%s',
+      ($game->{id} // 'unknown'),
+      $plies,
+      _quote_log_field($go_cmd),
+      $depth,
+      $elapsed_ms,
+      $move,
+      _quote_log_field($cand_eval),
+    ));
+  }
   my @candidates = _candidate_moves($state, $best);
   unless (@candidates) {
     log_warn("No legal move available for $game->{id}");
@@ -1235,12 +1271,12 @@ sub _movetime_for_game_ms {
   my $share_cap_ms = int(($remaining_ms * $max_share) + $increment_ms);
   $share_cap_ms = 60 if $share_cap_ms < 60;
   $budget_ms = $share_cap_ms if $budget_ms > $share_cap_ms;
+  my $plies = _opening_ply_count($game);
 
   if ($is_production_profile
     && $prod_opening_boost_plies > 0
     && $prod_opening_boost_mult > 1.0)
   {
-    my $plies = _opening_ply_count($game);
     if ($plies < $prod_opening_boost_plies) {
       my $remaining_phase = ($prod_opening_boost_plies - $plies) / $prod_opening_boost_plies;
       my $opening_mult = 1.0 + (($prod_opening_boost_mult - 1.0) * $remaining_phase);
@@ -1252,6 +1288,27 @@ sub _movetime_for_game_ms {
         $budget_ms = $boosted_ms if $boosted_ms > $budget_ms;
         $budget_ms = $opening_cap_ms if $budget_ms > $opening_cap_ms;
       }
+    }
+  }
+
+  if ($is_production_profile
+    && $prod_opening_floor_plies > 0
+    && $prod_opening_floor_ms > 0
+    && $plies < $prod_opening_floor_plies
+    && $speed eq 'rapid'
+    && $increment_ms == 0)
+  {
+    my $base_ms = $game->{time_control_base_ms};
+    my $is_ten_zero_rapid = defined $base_ms
+      && $base_ms =~ /^\d+$/
+      && $base_ms >= 8 * 60 * 1000
+      && $base_ms <= 12 * 60 * 1000;
+    if ($is_ten_zero_rapid && $usable_ms >= $prod_opening_floor_ms) {
+      my $opening_cap_ms = int($max_cap_ms * $prod_opening_cap_mult);
+      $opening_cap_ms = $max_cap_ms if $opening_cap_ms < $max_cap_ms;
+      $opening_cap_ms = $prod_opening_floor_ms if $opening_cap_ms < $prod_opening_floor_ms;
+      $effective_cap_ms = $opening_cap_ms if $opening_cap_ms > $effective_cap_ms;
+      $budget_ms = $prod_opening_floor_ms if $budget_ms < $prod_opening_floor_ms;
     }
   }
 
@@ -1327,6 +1384,30 @@ sub _format_eval_suffix {
   return @parts ? " (engine " . join(', ', @parts) . ")" : '';
 }
 
+sub _telemetry_candidate_eval_summary {
+  my ($analysis) = @_;
+  return 'none' unless ref $analysis eq 'HASH';
+
+  my @parts;
+  my $candidate = $analysis->{candidate};
+  $candidate = $analysis->{move} if !defined $candidate && defined $analysis->{move};
+  push @parts, "pv:$candidate" if defined $candidate && length $candidate;
+  if (defined $analysis->{mate}) {
+    push @parts, sprintf('mate:%+d', $analysis->{mate});
+  } elsif (defined $analysis->{cp}) {
+    push @parts, sprintf('cp:%+d', $analysis->{cp});
+  }
+  return @parts ? join(',', @parts) : 'none';
+}
+
+sub _quote_log_field {
+  my ($value) = @_;
+  $value = '' unless defined $value;
+  $value =~ s/\\/\\\\/g;
+  $value =~ s/"/\\"/g;
+  return qq("$value");
+}
+
 sub compute_bestmove {
   my ($game, $engine_out, $engine_in) = @_;
   my $started_at = time;
@@ -1351,7 +1432,10 @@ sub compute_bestmove {
   }
   print {$engine_in} "$go\n";
 
-  my %analysis = (move => undef);
+  my %analysis = (
+    move   => undef,
+    go_cmd => $go,
+  );
   while (my $line = <$engine_out>) {
     $line =~ s/[\r\n]+$//;
     if ($line =~ /^info\b/) {

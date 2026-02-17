@@ -24,6 +24,7 @@ my $uci_mode = 0;
 my $depth = 15;
 my $fen;
 my $engine_delay_ms = _normalize_delay_ms($ENV{PLAY_ENGINE_DELAY_MS} // 300);
+my $opening_king_guard_max_ply = 16;
 my %GO_NUMERIC_TOKEN = map { $_ => 1 } qw(
   wtime btime winc binc movestogo movetime depth
 );
@@ -214,7 +215,7 @@ sub run_uci {
         $time_args{strict_depth} = 1;
       }
       $time_args{use_book} = $own_book;
-      my ($move, $score, $searched_depth) = $engine->think(sub {
+      my $on_think_update = sub {
         my ($cur_depth, $cur_score, $candidate_move) = @_;
         return unless defined $candidate_move;
         my $candidate_uci = eval { $state->decode_move($candidate_move) };
@@ -222,10 +223,26 @@ sub run_uci {
         my $cp = int($cur_score // 0);
         print "info depth $cur_depth score cp $cp pv $candidate_uci\n";
         print "info string Thinking... depth $cur_depth candidate $candidate_uci eval $cp\n";
-      }, \%time_args);
+      };
+      my ($move, $score, $searched_depth) = $engine->think($on_think_update, \%time_args);
       if (!defined $move) {
         print "bestmove 0000\n";
         next;
+      }
+      if (_should_retry_opening_king_move($state, $move, $opening_king_guard_max_ply)) {
+        my $second_depth = _normalize_depth($go_depth + 1);
+        my $second_engine = Chess::Engine->new(\$state, $second_depth);
+        my %second_time_args = %time_args;
+        if (defined $second_time_args{movetime_ms}) {
+          $second_time_args{movetime_ms} = _bumped_movetime_ms($second_time_args{movetime_ms});
+        }
+        my $ply = _opening_ply($state);
+        print "info string Opening king safety guard triggered at ply $ply; retrying deeper search\n";
+        my ($second_move, $second_score, $second_searched_depth) =
+          $second_engine->think($on_think_update, \%second_time_args);
+        if (defined $second_move) {
+          ($move, $score, $searched_depth) = ($second_move, $second_score, $second_searched_depth);
+        }
       }
       if (defined $score && defined $searched_depth) {
         print "info depth $searched_depth score cp " . int($score) . "\n";
@@ -300,6 +317,46 @@ sub _normalize_delay_ms {
   $value = 0 if $value < 0;
   $value = 5000 if $value > 5000;
   return $value;
+}
+
+sub _opening_ply {
+  my ($state) = @_;
+  my $move = int($state->[Chess::State::MOVE] // 1);
+  $move = 1 if $move < 1;
+  my $turn = $state->[Chess::State::TURN] ? 1 : 0;
+  return (($move - 1) * 2) + $turn;
+}
+
+sub _is_non_castling_king_move {
+  my ($state, $move) = @_;
+  return 0 unless defined $move && ref($move) eq 'ARRAY';
+  return 0 if defined $move->[3];
+  my $from = $move->[0];
+  return 0 unless defined $from;
+  return ($state->[Chess::State::BOARD][$from] // EMPTY) == KING ? 1 : 0;
+}
+
+sub _legal_move_count {
+  my ($state) = @_;
+  return scalar Chess::State::generate_moves($state);
+}
+
+sub _should_retry_opening_king_move {
+  my ($state, $move, $max_ply) = @_;
+  return 0 if _opening_ply($state) > $max_ply;
+  return 0 unless _is_non_castling_king_move($state, $move);
+  return 0 if $state->is_checked;
+  return _legal_move_count($state) > 1 ? 1 : 0;
+}
+
+sub _bumped_movetime_ms {
+  my ($movetime_ms) = @_;
+  return $movetime_ms unless defined $movetime_ms;
+  my $base = int($movetime_ms);
+  return $base if $base <= 0;
+  my $bumped = int($base * 1.5);
+  $bumped = $base + 50 if $bumped <= $base;
+  return $bumped;
 }
 
 sub _parse_go_command {
