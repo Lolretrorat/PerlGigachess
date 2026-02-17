@@ -166,9 +166,27 @@ sub main {
     my $cap_mult = sprintf('%.2f', $prod_opening_cap_mult);
     log_info("Production opening time boost enabled: mult=$mult plies=$prod_opening_boost_plies cap_mult=$cap_mult floor_ms=$prod_opening_floor_ms floor_plies=$prod_opening_floor_plies");
   }
+  _log_syzygy_runtime_status();
 
   stream_events();
   return 0;
+}
+
+sub _log_syzygy_runtime_status {
+  my $enabled = $ENV{CHESS_SYZYGY_ENABLED};
+  if (defined $enabled && length $enabled) {
+    my $norm = lc $enabled;
+    if ($norm =~ /^(?:0|false|off|no)$/) {
+      log_info('Syzygy probing disabled by CHESS_SYZYGY_ENABLED');
+      return;
+    }
+  }
+  my @paths = _syzygy_paths();
+  if (!@paths) {
+    log_warn('Syzygy probing unavailable: set CHESS_SYZYGY_PATH to one or more local tablebase directories');
+    return;
+  }
+  log_info('Syzygy probing enabled for up to ' . _syzygy_max_pieces() . ' pieces');
 }
 
 sub stream_events {
@@ -939,7 +957,20 @@ sub maybe_move {
     return;
   }
 
-  my $analysis = compute_bestmove($game, $engine_out, $engine_in);
+  my $tablebase_move = _tablebase_move_for_state($game, $state);
+  my $analysis;
+  if (defined $tablebase_move) {
+    $analysis = {
+      move => $tablebase_move,
+      candidate => $tablebase_move,
+      elapsed_ms => 1,
+      go_cmd => 'tablebase',
+      source => 'tablebase',
+    };
+    log_info("Tablebase selected $tablebase_move in $game->{id}");
+  } else {
+    $analysis = compute_bestmove($game, $engine_out, $engine_in, $state);
+  }
   my $threshold_ms = _time_control_threshold_ms($game);
   if (ref $analysis eq 'HASH'
     && defined $analysis->{elapsed_ms}
@@ -1212,6 +1243,34 @@ sub _sync_state_from_game {
   return $state;
 }
 
+sub _tablebase_move_for_state {
+  my ($game, $state) = @_;
+  return unless ref $state;
+  return unless _syzygy_ready();
+
+  my $piece_count = _state_piece_count($state);
+  return unless defined $piece_count;
+  return unless $piece_count <= _syzygy_max_pieces();
+
+  my $table_move = eval { Chess::EndgameTable::choose_move($state) };
+  if (!defined $table_move || $@) {
+    return;
+  }
+
+  my $uci;
+  if (ref $table_move eq 'ARRAY') {
+    $uci = eval { $state->decode_move($table_move) };
+    return if $@;
+  } elsif (!ref $table_move) {
+    $uci = $table_move;
+  }
+  return unless defined $uci && $uci =~ /^[a-h][1-8][a-h][1-8][nbrq]?$/;
+
+  my %legal = map { $_ => 1 } $state->get_moves;
+  return unless $legal{$uci};
+  return $uci;
+}
+
 sub _candidate_moves {
   my ($state, $proposed) = @_;
   my @legal = $state->get_moves;
@@ -1387,8 +1446,63 @@ sub _opening_ply_count {
   return scalar(@$moves);
 }
 
+sub _state_piece_count {
+  my ($state) = @_;
+  return unless ref $state;
+  my $cached = $state->[Chess::State::PIECE_COUNT];
+  return $cached if defined $cached;
+  my $board = $state->[Chess::State::BOARD];
+  return unless ref $board eq 'ARRAY';
+
+  my $count = 0;
+  for my $idx (21 .. 98) {
+    next if $idx % 10 == 0 || $idx % 10 == 9;
+    my $piece = $board->[$idx] // 0;
+    my $abs_piece = abs($piece);
+    $count++ if $abs_piece >= 1 && $abs_piece <= 6;
+  }
+  return $count;
+}
+
+sub _syzygy_max_pieces {
+  my $max = $ENV{CHESS_SYZYGY_MAX_PIECES};
+  $max = 7 unless defined $max && $max =~ /^\d+$/;
+  $max = int($max);
+  $max = 2 if $max < 2;
+  $max = 16 if $max > 16;
+  return $max;
+}
+
+sub _syzygy_paths {
+  my $raw = $ENV{CHESS_SYZYGY_PATH} // '';
+  return () unless length $raw;
+  my $sep = ($^O eq 'MSWin32') ? ';' : ':';
+  my %seen;
+  my @paths = grep {
+    -d $_ && !$seen{$_}++
+  } grep {
+    defined $_ && length $_
+  } map {
+    my $p = $_;
+    $p =~ s/^\s+//;
+    $p =~ s/\s+$//;
+    $p;
+  } split /\Q$sep\E/, $raw;
+  return @paths;
+}
+
+sub _syzygy_ready {
+  my $enabled = $ENV{CHESS_SYZYGY_ENABLED};
+  if (defined $enabled && length $enabled) {
+    my $norm = lc $enabled;
+    return 0 if $norm =~ /^(?:0|false|off|no)$/;
+  }
+  my @paths = _syzygy_paths();
+  return @paths ? 1 : 0;
+}
+
 sub _movetime_for_game_ms {
-  my ($game) = @_;
+  my ($game, $state) = @_;
   if (defined $ENV{LICHESS_MOVETIME_MS} && $ENV{LICHESS_MOVETIME_MS} =~ /^\d+$/) {
     my $forced = int($ENV{LICHESS_MOVETIME_MS});
     return $forced if $forced > 0;
@@ -1417,6 +1531,28 @@ sub _movetime_for_game_ms {
     : $speed eq 'rapid' ? 3000
     : $speed eq 'classical' ? 5000
     : 7000;
+  my $piece_count = _state_piece_count($state);
+  if (defined $piece_count && $speed ne 'bullet') {
+    if ($piece_count <= 14) {
+      $horizon = int($horizon * 0.85);
+      $horizon = 12 if $horizon < 12;
+      $max_share += 0.020;
+      $max_cap_ms = int($max_cap_ms * 1.45);
+    }
+    if ($piece_count <= 10) {
+      $horizon = int($horizon * 0.78);
+      $horizon = 10 if $horizon < 10;
+      $max_share += 0.030;
+      $max_cap_ms = int($max_cap_ms * 1.65);
+    }
+    if ($piece_count <= _syzygy_max_pieces() && _syzygy_ready()) {
+      $horizon = int($horizon * 0.72);
+      $horizon = 8 if $horizon < 8;
+      $max_share += 0.030;
+      $max_cap_ms = int($max_cap_ms * 1.40);
+    }
+    $max_share = 0.22 if $max_share > 0.22;
+  }
   my $effective_cap_ms = $max_cap_ms;
 
   my $reserve_pct =
@@ -1475,6 +1611,10 @@ sub _movetime_for_game_ms {
   }
 
   my $min_ms = $remaining_ms <= 10_000 ? 60 : ($remaining_ms <= 30_000 ? 100 : 140);
+  if (defined $piece_count && $piece_count <= 10 && $remaining_ms >= 90_000 && $speed ne 'bullet' && $speed ne 'blitz') {
+    my $endgame_floor = $speed eq 'classical' ? 4500 : 3500;
+    $budget_ms = $endgame_floor if $budget_ms < $endgame_floor && $usable_ms >= $endgame_floor;
+  }
   $budget_ms = $min_ms if $budget_ms < $min_ms;
   $budget_ms = $effective_cap_ms if $budget_ms > $effective_cap_ms;
   return $budget_ms;
@@ -1571,7 +1711,7 @@ sub _quote_log_field {
 }
 
 sub compute_bestmove {
-  my ($game, $engine_out, $engine_in) = @_;
+  my ($game, $engine_out, $engine_in, $state) = @_;
   my $started_at = time;
 
   my $moves = $game->{moves} // [];
@@ -1589,7 +1729,7 @@ sub compute_bestmove {
   if (defined $depth_override) {
     $go = "go depth $depth_override";
   } else {
-    my $movetime = _movetime_for_game_ms($game);
+    my $movetime = _movetime_for_game_ms($game, $state);
     $go = "go movetime $movetime";
   }
   print {$engine_in} "$go\n";
