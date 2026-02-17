@@ -96,6 +96,10 @@ use constant EARLY_ROOK_MOVE_PENALTY => 3;             # Higher => discourages e
 use constant EARLY_QUEEN_MOVE_PENALTY => 4;            # Higher => discourages early queen activity.
 use constant UNCASTLED_KING_PENALTY => 5;              # Higher => penalizes staying uncastled more.
 use constant CENTRAL_KING_PENALTY => 3;                # Higher => penalizes central uncastled king more.
+use constant EARLY_KING_WALK_HOME_PENALTY => 3;        # Higher => penalize leaving e1 before castling.
+use constant EARLY_KING_WALK_EXPOSED_FILE_PENALTY => 1; # Higher => penalize uncastled king on c-f files.
+use constant EARLY_KING_WALK_CENTRAL_FILE_PENALTY => 2; # Higher => penalize uncastled king on d-f files.
+use constant EARLY_KING_WALK_ADVANCED_RANK_PENALTY => 2; # Higher => penalize uncastled king off back rank.
 use constant HANGING_DEFENDED_SCALE => 0.4;           # Higher => softens hanging penalty less when defended.
 use constant HANGING_MOVE_GUARD_BONUS => 18;           # Higher => penalizes quiet self-pins/hangs more.
 use constant LMR_KING_DANGER_THRESHOLD => 4;          # Lower => disables LMR sooner in king-danger positions.
@@ -380,6 +384,11 @@ sub _development_score {
       $piece_count++ if $abs_piece >= PAWN && $abs_piece <= KING;
     }
   }
+  my $king_walk_phase = 0;
+  if ($piece_count > MID_ENDGAME_PIECE_THRESHOLD) {
+    my $phase_span = max(1, OPENING_PIECE_COUNT_THRESHOLD - MID_ENDGAME_PIECE_THRESHOLD);
+    $king_walk_phase = _clamp(($piece_count - MID_ENDGAME_PIECE_THRESHOLD) / $phase_span, 0, 1);
+  }
 
   my $king_idx = exists $opts->{king_idx} ? $opts->{king_idx} : _find_piece_idx($board, KING);
   my $is_castled = defined $king_idx && ($king_idx == 23 || $king_idx == 27);
@@ -414,6 +423,16 @@ sub _development_score {
     if (defined $queen_idx && $queen_idx != 24 && $undeveloped_minors >= 2) {
       $score -= EARLY_QUEEN_MOVE_PENALTY;
     }
+  }
+
+  if ($uncastled && $king_idx != 25 && $king_walk_phase > 0) {
+    my $file = _file_of_idx($king_idx);
+    my $rank = _rank_of_idx($king_idx);
+    my $walk_penalty = EARLY_KING_WALK_HOME_PENALTY;
+    $walk_penalty += EARLY_KING_WALK_EXPOSED_FILE_PENALTY if $file >= 3 && $file <= 6;
+    $walk_penalty += EARLY_KING_WALK_CENTRAL_FILE_PENALTY if $file >= 4 && $file <= 6;
+    $walk_penalty += EARLY_KING_WALK_ADVANCED_RANK_PENALTY if $rank >= 2;
+    $score -= int($walk_penalty * $king_walk_phase + 0.5);
   }
 
   my $opponent_has_queen = exists $opts->{opponent_has_queen}
