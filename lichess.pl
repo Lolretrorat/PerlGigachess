@@ -33,6 +33,7 @@ use File::Path qw(make_path);
 use Chess::State;
 use Chess::Engine ();
 use Chess::Book ();
+use Chess::TableUtil qw(canonical_fen_key);
 
 eval {
   require IO::Socket::SSL;
@@ -101,6 +102,30 @@ if (!defined $prod_opening_floor_plies || $prod_opening_floor_plies !~ /^\d+$/) 
 $prod_opening_floor_plies = int($prod_opening_floor_plies);
 $prod_opening_floor_plies = 0 if $prod_opening_floor_plies < 0;
 $prod_opening_floor_plies = 80 if $prod_opening_floor_plies > 80;
+
+my $prod_think_mult = $ENV{LICHESS_PROD_THINK_MULT};
+if (!defined $prod_think_mult || $prod_think_mult !~ /^\d+(?:\.\d+)?$/) {
+  $prod_think_mult = 1.18;
+}
+$prod_think_mult += 0;
+$prod_think_mult = 1.0 if $prod_think_mult < 1.0;
+$prod_think_mult = 2.0 if $prod_think_mult > 2.0;
+
+my $prod_cap_mult = $ENV{LICHESS_PROD_CAP_MULT};
+if (!defined $prod_cap_mult || $prod_cap_mult !~ /^\d+(?:\.\d+)?$/) {
+  $prod_cap_mult = 1.35;
+}
+$prod_cap_mult += 0;
+$prod_cap_mult = 1.0 if $prod_cap_mult < 1.0;
+$prod_cap_mult = 2.0 if $prod_cap_mult > 2.0;
+
+my $prod_floor_ms = $ENV{LICHESS_PROD_FLOOR_MS};
+if (!defined $prod_floor_ms || $prod_floor_ms !~ /^\d+$/) {
+  $prod_floor_ms = 2600;
+}
+$prod_floor_ms = int($prod_floor_ms);
+$prod_floor_ms = 0 if $prod_floor_ms < 0;
+$prod_floor_ms = 30_000 if $prod_floor_ms > 30_000;
 
 my $post_book_think_mult = $ENV{LICHESS_POST_BOOK_THINK_MULT};
 if (!defined $post_book_think_mult || $post_book_think_mult !~ /^\d+(?:\.\d+)?$/) {
@@ -182,6 +207,9 @@ sub main {
     my $mult = sprintf('%.2f', $prod_opening_boost_mult);
     my $cap_mult = sprintf('%.2f', $prod_opening_cap_mult);
     log_info("Production opening time boost enabled: mult=$mult plies=$prod_opening_boost_plies cap_mult=$cap_mult floor_ms=$prod_opening_floor_ms floor_plies=$prod_opening_floor_plies");
+    my $think_mult = sprintf('%.2f', $prod_think_mult);
+    my $think_cap = sprintf('%.2f', $prod_cap_mult);
+    log_info("Production think boost enabled: think_mult=$think_mult cap_mult=$think_cap floor_ms=$prod_floor_ms");
   }
   my $post_book_mult = sprintf('%.2f', $post_book_think_mult);
   my $post_book_cap = sprintf('%.2f', $post_book_cap_mult);
@@ -977,9 +1005,20 @@ sub maybe_move {
     return;
   }
 
+  my $forced_mate_move = _forced_mate_move_for_state($state);
   my $tablebase_move = _tablebase_move_for_state($game, $state);
   my $analysis;
-  if (defined $tablebase_move) {
+  if (defined $forced_mate_move) {
+    $analysis = {
+      move => $forced_mate_move,
+      candidate => $forced_mate_move,
+      elapsed_ms => 1,
+      go_cmd => 'forced-mate',
+      source => 'forced-mate',
+      mate => 1,
+    };
+    log_info("Forced mate move selected $forced_mate_move in $game->{id}");
+  } elsif (defined $tablebase_move) {
     $analysis = {
       move => $tablebase_move,
       candidate => $tablebase_move,
@@ -1039,6 +1078,8 @@ sub maybe_move {
     ));
   }
   my @candidates = _candidate_moves($state, $best);
+  @candidates = _reorder_candidates_for_mate($state, \@candidates, $analysis);
+  @candidates = _reorder_candidates_for_repetition($game, $state, \@candidates, $analysis);
   unless (@candidates) {
     log_warn("No legal move available for $game->{id}");
     return;
@@ -1291,6 +1332,61 @@ sub _tablebase_move_for_state {
   return $uci;
 }
 
+sub _forced_mate_move_for_state {
+  my ($state) = @_;
+  return unless ref $state;
+
+  my @legal = $state->get_moves;
+  foreach my $uci (@legal) {
+    my $encoded = eval { $state->encode_move($uci) };
+    next if !$encoded || $@;
+
+    my $next = eval { $state->make_move($encoded) };
+    next if !defined $next || $@;
+
+    my @reply = $next->get_moves;
+    if (!@reply && $next->is_checked) {
+      return $uci;
+    }
+  }
+  return;
+}
+
+sub _reorder_candidates_for_mate {
+  my ($state, $candidates_ref, $analysis) = @_;
+  return @$candidates_ref unless ref $candidates_ref eq 'ARRAY' && @$candidates_ref;
+  return @$candidates_ref unless ref $analysis eq 'HASH';
+  return @$candidates_ref unless defined $analysis->{mate} && ($analysis->{mate} // 0) > 0;
+  return @$candidates_ref if (($analysis->{source} // '') eq 'forced-mate');
+
+  my @scored;
+  for my $idx (0 .. $#$candidates_ref) {
+    my $uci = $candidates_ref->[$idx];
+    my $encoded = eval { $state->encode_move($uci) };
+    if (!$encoded || $@) {
+      push @scored, [ $idx, 0, $uci ];
+      next;
+    }
+    my $next = eval { $state->make_move($encoded) };
+    if (!defined $next || $@) {
+      push @scored, [ $idx, 0, $uci ];
+      next;
+    }
+
+    my @reply = $next->get_moves;
+    my $score = 0;
+    $score += 100_000 if !@reply && $next->is_checked;
+    $score += 2_000 if $next->is_checked;
+    $score -= 50 * scalar(@reply);
+    push @scored, [ $idx, $score, $uci ];
+  }
+
+  my @ordered = map { $_->[2] } sort {
+    $b->[1] <=> $a->[1] || $a->[0] <=> $b->[0]
+  } @scored;
+  return @ordered;
+}
+
 sub _candidate_moves {
   my ($state, $proposed) = @_;
   my @legal = $state->get_moves;
@@ -1321,6 +1417,142 @@ sub _candidate_moves {
   }
 
   return @ordered;
+}
+
+sub _reorder_candidates_for_repetition {
+  my ($game, $state, $candidates_ref, $analysis) = @_;
+  return @$candidates_ref unless ref $candidates_ref eq 'ARRAY' && @$candidates_ref;
+  return @$candidates_ref unless _should_apply_repetition_guard($game, $state, $analysis);
+
+  my $visits = _position_visit_counts_from_game($game);
+  return @$candidates_ref unless ref $visits eq 'HASH' && %$visits;
+
+  my $board = $state->[Chess::State::BOARD];
+  my $last_move = _last_uci_move($game);
+  my @scored;
+  for my $idx (0 .. $#$candidates_ref) {
+    my $uci = $candidates_ref->[$idx];
+    my $encoded = eval { $state->encode_move($uci) };
+    if (!$encoded || $@) {
+      push @scored, [ $idx, 0, $uci ];
+      next;
+    }
+
+    my $next = eval { $state->make_move($encoded) };
+    if (!defined $next || $@) {
+      push @scored, [ $idx, 0, $uci ];
+      next;
+    }
+
+    my $next_key = canonical_fen_key($next);
+    my $visits_after = ($visits->{$next_key} // 0) + 1;
+    my $penalty = 0;
+    $penalty -= 10_000 if $visits_after >= 3;
+    $penalty -= 3_500 if $visits_after == 2;
+
+    my $target = $board->[$encoded->[1]] // 0;
+    $penalty += 900 if $target < 0; # prefer converting material when ahead
+    $penalty += 450 if _is_pawn_advance_move($state, $encoded);
+
+    if ($last_move && _is_simple_backtrack($uci, $last_move)) {
+      $penalty -= 2_000;
+    }
+
+    if ($next->is_checked) {
+      $penalty += 350;
+    }
+
+    push @scored, [ $idx, $penalty, $uci ];
+  }
+
+  my @ordered = map { $_->[2] } sort {
+    $b->[1] <=> $a->[1] || $a->[0] <=> $b->[0]
+  } @scored;
+
+  if ($ordered[0] ne $candidates_ref->[0]) {
+    log_info("Repetition guard reordered move candidates for $game->{id}: $candidates_ref->[0] -> $ordered[0]");
+  }
+  return @ordered;
+}
+
+sub _should_apply_repetition_guard {
+  my ($game, $state, $analysis) = @_;
+  return 0 unless ref $game eq 'HASH' && ref $state;
+  return 0 if ref($analysis) eq 'HASH' && (($analysis->{source} // '') eq 'tablebase');
+
+  my ($remaining_ms, $increment_ms) = _clock_for_side_ms($game);
+  return 0 unless defined $remaining_ms;
+  return 0 if $remaining_ms < 18_000;
+  return 0 if defined $increment_ms && $increment_ms < 500 && $remaining_ms < 35_000;
+
+  my $piece_count = _state_piece_count($state);
+  my $is_endgame = defined $piece_count && $piece_count <= 14;
+
+  return 1 if $is_endgame && ref($analysis) eq 'HASH' && defined($analysis->{mate}) && ($analysis->{mate} // 0) > 0;
+  return 1 if $is_endgame && ref($analysis) eq 'HASH' && defined($analysis->{cp}) && ($analysis->{cp} // 0) >= 45;
+  return 1 if ref($analysis) eq 'HASH' && defined($analysis->{cp}) && ($analysis->{cp} // 0) >= 90;
+  return 0;
+}
+
+sub _position_visit_counts_from_game {
+  my ($game) = @_;
+  my %visits;
+  return \%visits unless ref $game eq 'HASH';
+
+  my $moves = $game->{moves};
+  return \%visits unless ref $moves eq 'ARRAY';
+
+  my $initial = ($game->{initial_fen} && $game->{initial_fen} ne 'startpos')
+    ? $game->{initial_fen}
+    : 'startpos';
+  my $state = eval {
+    $initial eq 'startpos' ? Chess::State->new() : Chess::State->new($initial);
+  };
+  return \%visits if !$state || $@;
+
+  my $key = canonical_fen_key($state);
+  $visits{$key}++;
+  foreach my $uci (@$moves) {
+    my $encoded = eval { $state->encode_move($uci) };
+    last if !$encoded || $@;
+    my $next = eval { $state->make_move($encoded) };
+    last if !defined $next || $@;
+    $state = $next;
+    my $next_key = canonical_fen_key($state);
+    $visits{$next_key}++;
+  }
+  return \%visits;
+}
+
+sub _last_uci_move {
+  my ($game) = @_;
+  return unless ref $game eq 'HASH';
+  my $moves = $game->{moves};
+  return unless ref $moves eq 'ARRAY' && @$moves;
+  my $last = $moves->[-1];
+  return unless defined $last && $last =~ /^[a-h][1-8][a-h][1-8][nbrq]?$/;
+  return $last;
+}
+
+sub _is_simple_backtrack {
+  my ($candidate, $last) = @_;
+  return 0 unless defined $candidate && defined $last;
+  return 0 unless $candidate =~ /^[a-h][1-8][a-h][1-8]$/;
+  return 0 unless $last =~ /^[a-h][1-8][a-h][1-8]$/;
+  return substr($candidate, 0, 2) eq substr($last, 2, 2)
+    && substr($candidate, 2, 2) eq substr($last, 0, 2);
+}
+
+sub _is_pawn_advance_move {
+  my ($state, $move) = @_;
+  return 0 unless ref($state) && ref($move) eq 'ARRAY';
+  my $board = $state->[Chess::State::BOARD];
+  return 0 unless ref $board eq 'ARRAY';
+  my $from_piece = $board->[$move->[0]] // 0;
+  return 0 unless abs($from_piece) == 1;
+  my $from_rank = int($move->[0] / 10);
+  my $to_rank = int($move->[1] / 10);
+  return $to_rank > $from_rank ? 1 : 0;
 }
 
 sub _engine_contender_moves {
@@ -1667,6 +1899,27 @@ sub _movetime_for_game_ms {
       $opening_cap_ms = $prod_opening_floor_ms if $opening_cap_ms < $prod_opening_floor_ms;
       $effective_cap_ms = $opening_cap_ms if $opening_cap_ms > $effective_cap_ms;
       $budget_ms = $prod_opening_floor_ms if $budget_ms < $prod_opening_floor_ms;
+    }
+  }
+
+  if ($is_production_profile && $speed ne 'bullet') {
+    if ($prod_cap_mult > 1.0) {
+      my $prod_cap_ms = int($effective_cap_ms * $prod_cap_mult);
+      $prod_cap_ms = $effective_cap_ms if $prod_cap_ms < $effective_cap_ms;
+      $effective_cap_ms = $prod_cap_ms if $prod_cap_ms > $effective_cap_ms;
+    }
+    if ($prod_think_mult > 1.0 && $remaining_ms >= 45_000) {
+      my $boosted_ms = int($budget_ms * $prod_think_mult);
+      $budget_ms = $boosted_ms if $boosted_ms > $budget_ms;
+    }
+    if ($prod_floor_ms > 0 && $remaining_ms >= 90_000) {
+      my $speed_floor =
+          $speed eq 'classical' ? int($prod_floor_ms * 1.60)
+        : $speed eq 'blitz'     ? int($prod_floor_ms * 0.55)
+        : $speed eq 'rapid'     ? $prod_floor_ms
+        : int($prod_floor_ms * 0.80);
+      $speed_floor = 0 if $speed_floor < 0;
+      $budget_ms = $speed_floor if $speed_floor > 0 && $budget_ms < $speed_floor && $usable_ms >= $speed_floor;
     }
   }
 
