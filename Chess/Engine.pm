@@ -86,6 +86,11 @@ use constant MIDDLEGAME_MAX_PIECE_COUNT => 28;         # Higher => pawn-candidat
 use constant PAWN_CANDIDATE_MIN_BUDGET_MS => 120;      # Lower => allow pawn-candidate extra think in tighter clocks.
 use constant PAWN_CANDIDATE_EXTRA_TIME_SHARE => 0.08;  # Higher => larger soft-deadline extension on pawn candidates.
 use constant PAWN_CANDIDATE_EXTRA_TIME_MAX_MS => 180;  # Higher => larger absolute cap for pawn-candidate extension.
+use constant ROOT_NEAR_TIE_DELTA => 6;                 # Lower => fewer positions treated as contested at the root.
+use constant ROOT_CLEAR_BEST_DELTA => 18;              # Higher => require larger lead before treating root as forced/easy.
+use constant CRITICAL_EXTRA_TIME_SHARE => 0.28;        # Higher => spend more budget in contested/volatile root positions.
+use constant CRITICAL_EXTRA_TIME_MAX_MS => 260;        # Higher => larger absolute cap for critical-position time boosts.
+use constant CRITICAL_EXTENSION_MAX_HITS => 2;         # Higher => allow more repeated critical extensions per move.
 use constant DEVELOPMENT_MINOR_PENALTY => 2;           # Higher => punishes undeveloped minors more.
 use constant EARLY_ROOK_MOVE_PENALTY => 3;             # Higher => discourages early rook moves before development.
 use constant EARLY_QUEEN_MOVE_PENALTY => 4;            # Higher => discourages early queen activity.
@@ -113,6 +118,7 @@ my %transposition_table;
 my $tt_size = 0;
 my %counter_moves;
 my $tt_generation = 0;
+my %root_search_stats;
 
 my $search_has_deadline = 0;
 my $search_soft_deadline = 0;
@@ -1219,6 +1225,14 @@ sub _evaluate_board {
 sub _search {
   my ($state, $depth, $alpha, $beta, $ply, $prev_move_key) = @_;
   $ply //= 0;
+  if ($ply == 0) {
+    %root_search_stats = (
+      legal_moves => 0,
+      best_value => undef,
+      second_value => undef,
+      best_move_key => undef,
+    );
+  }
   _check_time_or_abort();
 
   if ($depth <= 0) {
@@ -1315,6 +1329,21 @@ sub _search {
       $value -= _hanging_move_penalty($new_state, $move);
     }
 
+    if ($ply == 0) {
+      $root_search_stats{legal_moves} = $legal_moves;
+      my $best_root = $root_search_stats{best_value};
+      if (!defined $best_root || $value > $best_root) {
+        $root_search_stats{second_value} = $best_root if defined $best_root;
+        $root_search_stats{best_value} = $value;
+        $root_search_stats{best_move_key} = $child_prev_move_key;
+      } else {
+        my $second_root = $root_search_stats{second_value};
+        if (!defined $second_root || $value > $second_root) {
+          $root_search_stats{second_value} = $value;
+        }
+      }
+    }
+
     if ($value > $best_value) {
       $best_value = $value;
       $best_move = $move;
@@ -1335,6 +1364,12 @@ sub _search {
   }
 
   if (! $legal_moves) {
+    if ($ply == 0) {
+      $root_search_stats{legal_moves} = 0;
+      $root_search_stats{best_value} = undef;
+      $root_search_stats{second_value} = undef;
+      $root_search_stats{best_move_key} = undef;
+    }
     my $mate_or_draw = $state->is_checked ? (-MATE_SCORE + $ply) : 0;
     return ($mate_or_draw, undef);
   }
@@ -1415,6 +1450,7 @@ sub think {
   my $prev_best_move_key;
   my $had_prev_score = 0;
   my $pawn_candidate_extension_used = 0;
+  my $critical_extension_hits = 0;
 
   DEPTH_LOOP:
   for my $depth (1 .. $max_depth) {
@@ -1479,6 +1515,22 @@ sub think {
 
     my $score_delta = $had_prev_score ? abs($iteration_score - $prev_score) : 0;
     my $volatile = $pv_changed || $score_delta > (SCORE_STABILITY_DELTA * 4) || $aspiration_expansions >= 2;
+    my $root_legal_moves = $root_search_stats{legal_moves} // 0;
+    my $root_gap;
+    if (defined $root_search_stats{best_value} && defined $root_search_stats{second_value}) {
+      $root_gap = $root_search_stats{best_value} - $root_search_stats{second_value};
+    }
+    my $near_tie_root = defined $root_gap
+      && $root_legal_moves >= 3
+      && $root_gap <= ROOT_NEAR_TIE_DELTA;
+    my $clear_best_root = defined $root_gap && $root_gap >= ROOT_CLEAR_BEST_DELTA;
+    my $forced_or_easy_root = $root_legal_moves == 1
+      || ($root_legal_moves >= 2 && $root_legal_moves <= 3
+        && $clear_best_root
+        && !$pv_changed
+        && $aspiration_expansions == 0
+        && $score_delta <= (SCORE_STABILITY_DELTA * 2));
+    my $critical_position = $volatile || $near_tie_root;
 
     if ($had_prev_score && abs($iteration_score - $prev_score) <= SCORE_STABILITY_DELTA) {
       $stability_hits++;
@@ -1492,9 +1544,28 @@ sub think {
       eval { $on_update->($depth, $iteration_score, $best_move); };
     }
 
-    if ($time_policy->{has_clock} && !$time_policy->{panic_level} && $volatile) {
-      my $extra_ms = int(($time_policy->{budget_ms} || 0) * 0.25);
-      _extend_soft_deadline($extra_ms);
+    if ($time_policy->{has_clock}
+      && !$time_policy->{panic_level}
+      && $critical_position
+      && !$forced_or_easy_root
+      && $critical_extension_hits < CRITICAL_EXTENSION_MAX_HITS)
+    {
+      my $extra_share = $near_tie_root ? CRITICAL_EXTRA_TIME_SHARE : 0.20;
+      my $extra_ms = int(($time_policy->{budget_ms} || 0) * $extra_share);
+      $extra_ms = min(CRITICAL_EXTRA_TIME_MAX_MS, $extra_ms);
+      if ($extra_ms > 0) {
+        _extend_soft_deadline($extra_ms);
+        $critical_extension_hits++;
+      }
+    }
+
+    if ($time_policy->{has_clock}
+      && $forced_or_easy_root
+      && !$critical_position
+      && $depth >= max(3, $easy_move_depth - 1)
+      && $stable_best_hits >= 1)
+    {
+      last DEPTH_LOOP;
     }
 
     if ($time_policy->{has_clock}
@@ -1515,7 +1586,7 @@ sub think {
     }
 
     if ($time_policy->{has_clock} && $depth >= $easy_move_depth) {
-      my $easy_move = !$volatile
+      my $easy_move = !$critical_position
         && $stable_best_hits >= 2
         && $score_delta <= SCORE_STABILITY_DELTA
         && $aspiration_expansions == 0;

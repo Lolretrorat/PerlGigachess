@@ -891,16 +891,7 @@ sub maybe_move {
     && $threshold_ms > 0
     && $analysis->{elapsed_ms} > $threshold_ms)
   {
-    my $base_ms = $game->{time_control_base_ms} // 0;
-    log_warn(
-      sprintf(
-        'Think exceeded 10%% of time control in %s: %dms > %dms (base=%dms)',
-        $game->{id},
-        $analysis->{elapsed_ms},
-        $threshold_ms,
-        $base_ms,
-      )
-    );
+    log_warn("You're not saying anything, Tony.");
   }
   if (ref $analysis eq 'HASH' && defined $analysis->{elapsed_ms}
     && $analysis->{elapsed_ms} >= $think_slow_ms)
