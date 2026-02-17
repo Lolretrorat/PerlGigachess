@@ -47,8 +47,8 @@ my $token = $ENV{LICHESS_TOKEN} // '';
 my $engine_cmd = $ENV{LICHESS_ENGINE_CMD} // "$^X $RealBin/play.pl --uci";
 my @engine_parts = shellwords($engine_cmd);
 @engine_parts or die "Unable to parse LICHESS_ENGINE_CMD '$engine_cmd'\n";
-my $think_slow_ms = $ENV{LICHESS_THINK_SLOW_MS} // 3000;
-$think_slow_ms = 3000 unless defined $think_slow_ms && $think_slow_ms =~ /^\d+$/;
+my $think_tank_ms = $ENV{LICHESS_THINK_TANK_MS};
+$think_tank_ms = 3000 unless defined $think_tank_ms && $think_tank_ms =~ /^\d+$/;
 my $git_branch = _git_branch_name();
 my $branch_override_allowed = _branch_override_allowed($git_branch);
 my $depth_override = $ENV{LICHESS_DEPTH_OVERRIDE};
@@ -924,7 +924,7 @@ sub maybe_move {
     log_warn("You're not saying anything, Tony.");
   }
   if (ref $analysis eq 'HASH' && defined $analysis->{elapsed_ms}
-    && $analysis->{elapsed_ms} >= $think_slow_ms)
+    && $analysis->{elapsed_ms} >= $think_tank_ms)
   {
     log_info(
       sprintf(
