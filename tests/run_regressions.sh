@@ -15,6 +15,7 @@ SKIP_OWN_URLS=0
 SKIP_BOOK_UNDERPROMO=0
 SKIP_LICHESS_TIME=0
 SKIP_PDP_QUEEN=0
+SKIP_REP_GUARD=0
 
 usage() {
   cat <<'USAGE'
@@ -34,6 +35,7 @@ Options:
   --skip-book-underpromo   Skip opening-book SAN underpromotion regression check
   --skip-lichess-time      Skip lichess bot time/depth profile regression check
   --skip-pdp-queen         Skip PDPgjgTd random queen-capture regression check
+  --skip-rep-guard         Skip repetition guard quiet-move regression check
   -h, --help               Show help
 USAGE
 }
@@ -102,6 +104,10 @@ while [[ $# -gt 0 ]]; do
       SKIP_PDP_QUEEN=1
       shift
       ;;
+    --skip-rep-guard)
+      SKIP_REP_GUARD=1
+      shift
+      ;;
     -h|--help)
       usage
       exit 0
@@ -156,6 +162,13 @@ if [[ "$SKIP_PDP_QUEEN" -eq 0 ]]; then
   (cd "$ROOT_DIR" && perl tests/regression_pdpgjgtd_queen_capture.pl)
 else
   echo "==> Skipping PDPgjgTd queen-capture guard"
+fi
+
+if [[ "$SKIP_REP_GUARD" -eq 0 ]]; then
+  echo "==> Repetition guard quiet-move check"
+  (cd "$ROOT_DIR" && perl tests/regression_repetition_guard_quiet_move.pl)
+else
+  echo "==> Skipping repetition guard quiet-move check"
 fi
 
 if [[ "$SKIP_PERFT" -eq 0 ]]; then

@@ -159,6 +159,46 @@ $repetition_seek_cp = int($repetition_seek_cp);
 $repetition_seek_cp = -$repetition_seek_cp if $repetition_seek_cp > 0;
 $repetition_seek_cp = -1000 if $repetition_seek_cp < -1000;
 
+my $repetition_keep_best_cp = $ENV{LICHESS_REPETITION_KEEP_BEST_CP};
+if (!defined $repetition_keep_best_cp || $repetition_keep_best_cp !~ /^\d+$/) {
+  $repetition_keep_best_cp = 45;
+}
+$repetition_keep_best_cp = int($repetition_keep_best_cp);
+$repetition_keep_best_cp = 0 if $repetition_keep_best_cp < 0;
+$repetition_keep_best_cp = 1000 if $repetition_keep_best_cp > 1000;
+
+my $repetition_max_reorder_drop = $ENV{LICHESS_REPETITION_MAX_REORDER_SCORE_DROP};
+if (!defined $repetition_max_reorder_drop || $repetition_max_reorder_drop !~ /^\d+$/) {
+  $repetition_max_reorder_drop = 1400;
+}
+$repetition_max_reorder_drop = int($repetition_max_reorder_drop);
+$repetition_max_reorder_drop = 0 if $repetition_max_reorder_drop < 0;
+$repetition_max_reorder_drop = 20000 if $repetition_max_reorder_drop > 20000;
+
+my $repetition_rethink_mult = $ENV{LICHESS_REPETITION_RETHINK_MULT};
+if (!defined $repetition_rethink_mult || $repetition_rethink_mult !~ /^\d+(?:\.\d+)?$/) {
+  $repetition_rethink_mult = 1.60;
+}
+$repetition_rethink_mult += 0;
+$repetition_rethink_mult = 1.0 if $repetition_rethink_mult < 1.0;
+$repetition_rethink_mult = 3.0 if $repetition_rethink_mult > 3.0;
+
+my $eval_drop_extra_think_cp = $ENV{LICHESS_EVAL_DROP_EXTRA_THINK_CP};
+if (!defined $eval_drop_extra_think_cp || $eval_drop_extra_think_cp !~ /^\d+$/) {
+  $eval_drop_extra_think_cp = 40;
+}
+$eval_drop_extra_think_cp = int($eval_drop_extra_think_cp);
+$eval_drop_extra_think_cp = 0 if $eval_drop_extra_think_cp < 0;
+$eval_drop_extra_think_cp = 1000 if $eval_drop_extra_think_cp > 1000;
+
+my $eval_drop_extra_think_mult = $ENV{LICHESS_EVAL_DROP_EXTRA_THINK_MULT};
+if (!defined $eval_drop_extra_think_mult || $eval_drop_extra_think_mult !~ /^\d+(?:\.\d+)?$/) {
+  $eval_drop_extra_think_mult = 1.55;
+}
+$eval_drop_extra_think_mult += 0;
+$eval_drop_extra_think_mult = 1.0 if $eval_drop_extra_think_mult < 1.0;
+$eval_drop_extra_think_mult = 3.0 if $eval_drop_extra_think_mult > 3.0;
+
 STDOUT->autoflush(1);
 STDERR->autoflush(1);
 
@@ -1068,6 +1108,7 @@ sub maybe_move {
       )
     );
   }
+  $analysis = _maybe_rethink_on_eval_drop($game, $engine_out, $engine_in, $state, $analysis);
   my $best = (ref $analysis eq 'HASH') ? $analysis->{move} : undef;
   my $plies = _opening_ply_count($game);
   if ($plies < 20) {
@@ -1096,6 +1137,27 @@ sub maybe_move {
   my @candidates = _candidate_moves($state, $best);
   @candidates = _reorder_candidates_for_mate($state, \@candidates, $analysis);
   @candidates = _reorder_candidates_for_repetition($game, $state, \@candidates, $analysis);
+  if (ref($game->{repetition_guard_meta}) eq 'HASH'
+    && $game->{repetition_guard_meta}{blocked}
+    && !(ref($analysis) eq 'HASH' && (($analysis->{source} // '') eq 'tablebase')))
+  {
+    my $rethink = _rethink_with_multiplier(
+      $game,
+      $engine_out,
+      $engine_in,
+      $state,
+      $analysis,
+      $repetition_rethink_mult,
+      'repetition-guard',
+    );
+    if (_analysis_prefers($rethink, $analysis)) {
+      $analysis = $rethink;
+      $best = (ref $analysis eq 'HASH') ? $analysis->{move} : undef;
+      @candidates = _candidate_moves($state, $best);
+      @candidates = _reorder_candidates_for_mate($state, \@candidates, $analysis);
+      @candidates = _reorder_candidates_for_repetition($game, $state, \@candidates, $analysis);
+    }
+  }
   unless (@candidates) {
     log_warn("No legal move available for $game->{id}");
     return;
@@ -1110,6 +1172,9 @@ sub maybe_move {
     if ($res->{success}) {
       $game->{pending_move} = $candidate;
       $game->{is_my_turn}   = 0;
+      if (ref $analysis eq 'HASH' && defined $analysis->{cp}) {
+        $game->{last_engine_cp} = int($analysis->{cp});
+      }
       log_info("Played $candidate in $game->{id}" . _format_eval_suffix($analysis));
       return;
     }
@@ -1117,6 +1182,102 @@ sub maybe_move {
     last unless _is_retryable_illegal_reject($res);
     log_warn("Retrying with alternate legal move for $game->{id} after HTTP 400");
   }
+}
+
+sub _analysis_eval_label {
+  my ($analysis) = @_;
+  return 'none' unless ref $analysis eq 'HASH';
+  return 'mate ' . ($analysis->{mate} // 0) if defined $analysis->{mate};
+  return 'cp ' . ($analysis->{cp} // 0) if defined $analysis->{cp};
+  return 'none';
+}
+
+sub _analysis_prefers {
+  my ($candidate, $baseline) = @_;
+  return 0 unless ref $candidate eq 'HASH';
+  return 1 unless ref $baseline eq 'HASH';
+  return 0 unless defined $candidate->{move};
+
+  my $cand_mate = $candidate->{mate};
+  my $base_mate = $baseline->{mate};
+  if (defined $cand_mate || defined $base_mate) {
+    return 1 if defined $cand_mate && !defined $base_mate && $cand_mate > 0;
+    return 0 if !defined $cand_mate && defined $base_mate && $base_mate > 0;
+    if (defined $cand_mate && defined $base_mate) {
+      if ($cand_mate > 0 && $base_mate > 0) {
+        return 1 if $cand_mate < $base_mate;
+        return 0 if $cand_mate > $base_mate;
+      } elsif ($cand_mate < 0 && $base_mate < 0) {
+        return 1 if $cand_mate > $base_mate;
+        return 0 if $cand_mate < $base_mate;
+      } else {
+        return 1 if $cand_mate > $base_mate;
+        return 0 if $cand_mate < $base_mate;
+      }
+    }
+  }
+
+  return 0 unless defined $candidate->{cp};
+  return 1 unless defined $baseline->{cp};
+  return $candidate->{cp} > $baseline->{cp} ? 1 : 0;
+}
+
+sub _rethink_with_multiplier {
+  my ($game, $engine_out, $engine_in, $state, $analysis, $multiplier, $reason) = @_;
+  return $analysis unless ref $analysis eq 'HASH';
+  return $analysis if (($analysis->{source} // '') eq 'tablebase');
+  return $analysis if (($analysis->{source} // '') eq 'forced-mate');
+  return $analysis unless defined $analysis->{move};
+
+  my $extra = compute_bestmove(
+    $game,
+    $engine_out,
+    $engine_in,
+    $state,
+    {
+      movetime_multiplier => $multiplier,
+      depth_bump => 1,
+      reason => $reason,
+    },
+  );
+  return $analysis unless ref $extra eq 'HASH' && defined $extra->{move};
+  log_info(
+    sprintf(
+      'Extra think (%s) in %s: %s -> %s',
+      ($reason // 'unknown'),
+      ($game->{id} // 'unknown'),
+      _analysis_eval_label($analysis),
+      _analysis_eval_label($extra),
+    )
+  );
+  return $extra;
+}
+
+sub _maybe_rethink_on_eval_drop {
+  my ($game, $engine_out, $engine_in, $state, $analysis) = @_;
+  return $analysis unless ref $analysis eq 'HASH';
+  return $analysis unless defined $analysis->{cp};
+  return $analysis unless ref $game eq 'HASH';
+  return $analysis if (($analysis->{source} // '') eq 'tablebase');
+  return $analysis if (($analysis->{source} // '') eq 'forced-mate');
+
+  my $prev_cp = $game->{last_engine_cp};
+  return $analysis unless defined $prev_cp && $prev_cp =~ /^-?\d+$/;
+  my $current_cp = int($analysis->{cp});
+  my $drop = int($prev_cp) - $current_cp;
+  return $analysis unless $drop >= $eval_drop_extra_think_cp;
+
+  my $mult = $eval_drop_extra_think_mult;
+  my $rethink = _rethink_with_multiplier(
+    $game,
+    $engine_out,
+    $engine_in,
+    $state,
+    $analysis,
+    $mult,
+    'eval-drop',
+  );
+  return _analysis_prefers($rethink, $analysis) ? $rethink : $analysis;
 }
 
 sub _resync_game_from_lichess {
@@ -1437,6 +1598,9 @@ sub _candidate_moves {
 
 sub _reorder_candidates_for_repetition {
   my ($game, $state, $candidates_ref, $analysis) = @_;
+  if (ref $game eq 'HASH') {
+    delete $game->{repetition_guard_meta};
+  }
   return @$candidates_ref unless ref $candidates_ref eq 'ARRAY' && @$candidates_ref;
   my $policy = _repetition_policy($analysis);
   return @$candidates_ref unless _should_apply_repetition_guard($game, $state, $analysis, $policy);
@@ -1463,42 +1627,109 @@ sub _reorder_candidates_for_repetition {
 
     my $next_key = canonical_fen_key($next);
     my $visits_after = ($visits->{$next_key} // 0) + 1;
+    my $gives_check = $next->is_checked ? 1 : 0;
     my $score = 0;
     if ($policy eq 'seek') {
       $score += 10_000 if $visits_after >= 3;
       $score += 3_500 if $visits_after == 2;
     } else {
       $score -= 10_000 if $visits_after >= 3;
-      $score -= 3_500 if $visits_after == 2;
+      if ($visits_after == 2) {
+        my $avoid_penalty = 2_200;
+        if (ref $analysis eq 'HASH' && defined $analysis->{cp}) {
+          my $cp = int($analysis->{cp});
+          if ($cp >= ($repetition_keep_best_cp + 40)) {
+            $avoid_penalty = 700;
+          } elsif ($cp >= ($repetition_keep_best_cp + 15)) {
+            $avoid_penalty = 1_150;
+          } elsif ($cp >= $repetition_keep_best_cp) {
+            $avoid_penalty = 1_600;
+          }
+        }
+        $score -= $avoid_penalty;
+      }
     }
 
     my $target = $board->[$encoded->[1]] // 0;
+    my $is_capture = $target < 0 ? 1 : 0;
+    my $is_pawn_advance = _is_pawn_advance_move($state, $encoded) ? 1 : 0;
+    my $is_promo = length($uci) > 4 ? 1 : 0;
     if ($policy eq 'seek') {
-      $score -= 900 if $target < 0;
-      $score -= 450 if _is_pawn_advance_move($state, $encoded);
+      $score -= 900 if $is_capture;
+      $score -= 450 if $is_pawn_advance;
     } else {
-      $score += 900 if $target < 0; # prefer converting material when ahead
-      $score += 450 if _is_pawn_advance_move($state, $encoded);
+      $score += 900 if $is_capture; # prefer converting material when ahead
+      if ($is_pawn_advance && !$is_capture && !$gives_check && !$is_promo) {
+        $score -= 250; # avoid random quiet pawn pushes just to dodge repetition
+      }
     }
 
     if ($last_move && _is_simple_backtrack($uci, $last_move)) {
       $score += ($policy eq 'seek') ? 2_000 : -2_000;
     }
 
-    if ($next->is_checked) {
+    if ($gives_check) {
       $score += 350;
     }
 
-    push @scored, [ $idx, $score, $uci ];
+    push @scored, [ $idx, $score, $uci, $visits_after, $is_capture, $gives_check, $is_promo ];
   }
 
   my @ordered = map { $_->[2] } sort {
     $b->[1] <=> $a->[1] || $a->[0] <=> $b->[0]
   } @scored;
 
-  if ($ordered[0] ne $candidates_ref->[0]) {
-    my $cp = (ref($analysis) eq 'HASH' && defined $analysis->{cp}) ? $analysis->{cp} : 'n/a';
-    log_info("Repetition guard ($policy, cp=$cp) reordered move candidates for $game->{id}: $candidates_ref->[0] -> $ordered[0]");
+  my %score_for = map { $_->[2] => $_->[1] } @scored;
+  my %visits_after_for = map { $_->[2] => $_->[3] } @scored;
+  my %capture_for = map { $_->[2] => $_->[4] } @scored;
+  my %check_for = map { $_->[2] => $_->[5] } @scored;
+  my %promo_for = map { $_->[2] => $_->[6] } @scored;
+  my $from = $candidates_ref->[0];
+  my $to = $ordered[0];
+  if (defined $from && defined $to && $to ne $from) {
+    my $cp = (ref($analysis) eq 'HASH' && defined $analysis->{cp}) ? int($analysis->{cp}) : undef;
+    my $from_score = $score_for{$from} // 0;
+    my $to_score = $score_for{$to} // 0;
+    my $score_drop = $from_score - $to_score;
+    my $visits_after = $visits_after_for{$to} // 0;
+    my $to_is_capture = $capture_for{$to} ? 1 : 0;
+    my $to_is_check = $check_for{$to} ? 1 : 0;
+    my $to_is_promo = $promo_for{$to} ? 1 : 0;
+    my $blocked = 0;
+    my $blocked_reason = '';
+    if ($policy eq 'avoid'
+      && defined $cp
+      && $cp >= $repetition_keep_best_cp)
+    {
+      my $quiet_non_forcing = !$to_is_capture && !$to_is_check && !$to_is_promo;
+      if ($quiet_non_forcing && $visits_after <= 1) {
+        $blocked = 1;
+        $blocked_reason = 'quiet-nonforcing';
+      } elsif ($score_drop > $repetition_max_reorder_drop) {
+        $blocked = 1;
+        $blocked_reason = 'score-drop';
+      }
+    }
+    if (ref $game eq 'HASH') {
+      $game->{repetition_guard_meta} = {
+        policy => $policy,
+        cp => defined($cp) ? $cp : undef,
+        from => $from,
+        to => $to,
+        from_score => $from_score,
+        to_score => $to_score,
+        score_drop => $score_drop,
+        visits_after => $visits_after,
+        blocked => $blocked ? 1 : 0,
+        blocked_reason => $blocked_reason,
+      };
+    }
+    if ($blocked) {
+      log_info("Repetition guard ($policy, cp=$cp) kept engine move for $game->{id}: candidate $to blocked ($blocked_reason, score_drop=$score_drop)");
+      return @$candidates_ref;
+    }
+    my $cp_log = defined($cp) ? $cp : 'n/a';
+    log_info("Repetition guard ($policy, cp=$cp_log, score_drop=$score_drop, visits_after=$visits_after) reordered move candidates for $game->{id}: $from -> $to");
   }
   return @ordered;
 }
@@ -1525,6 +1756,10 @@ sub _should_apply_repetition_guard {
   my ($game, $state, $analysis, $policy) = @_;
   return 0 unless ref $game eq 'HASH' && ref $state;
   return 0 if ref($analysis) eq 'HASH' && (($analysis->{source} // '') eq 'tablebase');
+  if (ref($analysis) eq 'HASH' && defined $analysis->{mate}) {
+    my $mate = int($analysis->{mate});
+    return 0 if abs($mate) <= 2;
+  }
   $policy = _repetition_policy($analysis) unless defined $policy;
   return defined $policy ? 1 : 0;
 }
@@ -2064,7 +2299,8 @@ sub _quote_log_field {
 }
 
 sub compute_bestmove {
-  my ($game, $engine_out, $engine_in, $state) = @_;
+  my ($game, $engine_out, $engine_in, $state, $opts) = @_;
+  $opts = {} unless ref $opts eq 'HASH';
   my $started_at = time;
 
   my $moves = $game->{moves} // [];
@@ -2080,9 +2316,33 @@ sub compute_bestmove {
 
   my $go;
   if (defined $depth_override) {
-    $go = "go depth $depth_override";
+    my $depth = int($depth_override);
+    if (defined $opts->{depth_bump} && $opts->{depth_bump} =~ /^-?\d+$/) {
+      $depth += int($opts->{depth_bump});
+    }
+    $depth = 1 if $depth < 1;
+    $depth = 20 if $depth > 20;
+    $go = "go depth $depth";
   } else {
     my $movetime = _movetime_for_game_ms($game, $state);
+    if (defined $opts->{movetime_multiplier} && $opts->{movetime_multiplier} =~ /^\d+(?:\.\d+)?$/) {
+      my $mult = $opts->{movetime_multiplier} + 0;
+      $mult = 1.0 if $mult < 1.0;
+      $mult = 3.0 if $mult > 3.0;
+      my $boosted = int($movetime * $mult);
+      my ($remaining_ms, $inc_ms) = _clock_for_side_ms($game);
+      if (defined $remaining_ms && defined $inc_ms) {
+        my $cap = int(($remaining_ms * 0.45) + ($inc_ms * 2));
+        $cap = $remaining_ms - 200 if $cap > ($remaining_ms - 200);
+        $cap = 80 if $cap < 80;
+        $boosted = $cap if $boosted > $cap;
+      }
+      $movetime = $boosted if $boosted > $movetime;
+    }
+    if (defined $opts->{movetime_floor_ms} && $opts->{movetime_floor_ms} =~ /^\d+$/) {
+      my $floor = int($opts->{movetime_floor_ms});
+      $movetime = $floor if $floor > $movetime;
+    }
     $go = "go movetime $movetime";
   }
   print {$engine_in} "$go\n";
