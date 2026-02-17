@@ -27,7 +27,7 @@ my $workers = 1;
 my $engine_delay_ms = _normalize_delay_ms($ENV{PLAY_ENGINE_DELAY_MS} // 300);
 my $opening_king_guard_max_ply = 16;
 my %GO_NUMERIC_TOKEN = map { $_ => 1 } qw(
-  wtime btime winc binc movestogo movetime depth
+  wtime btime winc binc movestogo movetime depth nodes mate
 );
 my %GO_FLAG_TOKEN = map { $_ => 1 } qw(ponder infinite);
 
@@ -121,6 +121,7 @@ sub run_uci {
   my $debug = 0;
   my $move_overhead_ms = 100;
   my $own_book = 1;
+  my $multi_pv = 1;
   my %history;
   _record_position($state, \%history);
 
@@ -133,6 +134,7 @@ sub run_uci {
       print "option name Depth type spin default $depth min 1 max 20\n";
       print "option name Workers type spin default $workers min 1 max 64\n";
       print "option name MoveOverhead type spin default $move_overhead_ms min 0 max 1000\n";
+      print "option name MultiPV type spin default $multi_pv min 1 max 16\n";
       print "option name OwnBook type check default true\n";
       print "uciok\n";
     } elsif ($input =~ m/^debug (on|off)$/) {
@@ -153,6 +155,9 @@ sub run_uci {
         $new_overhead = 0 if $new_overhead < 0;
         $new_overhead = 1000 if $new_overhead > 1000;
         $move_overhead_ms = $new_overhead;
+      } elsif ($name eq 'multipv') {
+        my $new_multipv = $value =~ /(-?\d+)/ ? $1 : $multi_pv;
+        $multi_pv = _normalize_multipv($new_multipv);
       } elsif ($name eq 'ownbook') {
         my $normalized = lc $value;
         $normalized =~ s/^\s+//;
@@ -221,21 +226,25 @@ sub run_uci {
       if (defined $go{depth}) {
         $time_args{strict_depth} = 1;
       }
+      $time_args{multipv} = $multi_pv;
       $time_args{use_book} = $own_book;
       my $critical_mate_logged = 0;
       my $critical_swing_logged = 0;
       my $last_cp_for_swing;
+      my @latest_pv_lines;
       my $on_think_update = sub {
-        my ($cur_depth, $cur_score, $candidate_move) = @_;
-        return unless defined $candidate_move;
-        my $candidate_uci = eval { $state->decode_move($candidate_move) };
-        $candidate_uci = '0000' unless defined $candidate_uci && length $candidate_uci;
-        my ($score_kind, $score_value) = _uci_score_tokens($cur_score);
-        print "info depth $cur_depth score $score_kind $score_value pv $candidate_uci\n";
+        my ($cur_depth, $cur_score, $candidate_move, $update) = @_;
+        my @pv_lines = _build_uci_pv_lines($state, $cur_score, $candidate_move, $update, $multi_pv);
+        return unless @pv_lines;
+        @latest_pv_lines = @pv_lines;
+        _emit_uci_pv_info_lines($cur_depth, \@pv_lines, $multi_pv);
+        my $best_line = $pv_lines[0];
+        my $candidate_uci = $best_line->{pv}[0] // '0000';
+        my ($score_kind, $score_value) = _uci_score_tokens($best_line->{score});
         my $eval_label = $score_kind eq 'mate'
           ? "mate $score_value"
           : _signed_cp($score_value);
-        print "info string Search update: depth $cur_depth, candidate $candidate_uci, eval $eval_label\n";
+        print "info string depth $cur_depth, candidate $candidate_uci, eval $eval_label\n";
         if ($score_kind eq 'mate' && !$critical_mate_logged) {
           my $mate_desc = $score_value > 0
             ? "mate in $score_value"
@@ -276,8 +285,17 @@ sub run_uci {
         }
       }
       if (defined $score && defined $searched_depth) {
+        my @final_pv_lines = @latest_pv_lines;
+        if (!@final_pv_lines) {
+          @final_pv_lines = _build_uci_pv_lines($state, $score, $move, undef, $multi_pv);
+        }
+        if (@final_pv_lines) {
+          _emit_uci_pv_info_lines($searched_depth, \@final_pv_lines, $multi_pv);
+        } else {
+          my ($score_kind, $score_value) = _uci_score_tokens($score);
+          print "info depth $searched_depth score $score_kind $score_value\n";
+        }
         my ($score_kind, $score_value) = _uci_score_tokens($score);
-        print "info depth $searched_depth score $score_kind $score_value\n";
         my $best_uci = $state->decode_move($move);
         $best_uci = '0000' unless defined $best_uci && length $best_uci;
         if ($score_kind eq 'mate') {
@@ -291,6 +309,10 @@ sub run_uci {
         }
       }
       print "bestmove " . $state->decode_move($move) . "\n";
+    } elsif ($input eq 'stop') {
+      print "info string stop acknowledged (synchronous go loop; no active background search)\n" if $debug;
+    } elsif ($input eq 'ponderhit') {
+      print "info string ponderhit acknowledged (ponder mode unsupported in this build)\n" if $debug;
     } elsif ($input eq 'quit') {
       exit 0;
     } else {
@@ -326,6 +348,91 @@ sub _signed_cp {
   return '+0' unless defined $cp;
   my $v = int($cp);
   return sprintf('%+d', $v);
+}
+
+sub _normalize_multipv {
+  my ($value) = @_;
+  $value = 1 unless defined $value && $value =~ /^-?\d+$/;
+  $value = int($value);
+  $value = 1 if $value < 1;
+  $value = 16 if $value > 16;
+  return $value;
+}
+
+sub _decode_pv_move {
+  my ($state, $mv) = @_;
+  return unless defined $mv;
+  return $mv if !ref($mv) && $mv =~ /^[a-h][1-8][a-h][1-8][nbrq]?$/i;
+  return unless ref($mv) eq 'ARRAY';
+  my $uci = eval { $state->decode_move($mv) };
+  return unless defined $uci && $uci =~ /^[a-h][1-8][a-h][1-8][nbrq]?$/i;
+  return $uci;
+}
+
+sub _build_uci_pv_lines {
+  my ($state, $cur_score, $candidate_move, $update, $multi_pv) = @_;
+  my $limit = _normalize_multipv($multi_pv);
+  my @lines;
+
+  if (ref($update) eq 'HASH' && ref($update->{pv_lines}) eq 'ARRAY') {
+    for my $raw (@{$update->{pv_lines}}) {
+      next unless ref($raw) eq 'HASH';
+      my $pv_ref = $raw->{pv};
+      next unless ref($pv_ref) eq 'ARRAY';
+      my @pv_uci;
+      my $cursor_state = $state;
+      for my $move (@{$pv_ref}) {
+        last unless defined $cursor_state;
+        my $uci = _decode_pv_move($cursor_state, $move);
+        last unless defined $uci;
+        push @pv_uci, $uci;
+        last unless ref($move) eq 'ARRAY';
+        my $next_state = $cursor_state->make_move($move);
+        last unless defined $next_state;
+        $cursor_state = $next_state;
+      }
+      next unless @pv_uci;
+      push @lines, {
+        multipv => int($raw->{multipv} // (scalar(@lines) + 1)),
+        score => int($raw->{score} // $cur_score // 0),
+        pv => \@pv_uci,
+      };
+      last if @lines >= $limit;
+    }
+  }
+
+  if (!@lines && defined $candidate_move) {
+    my $candidate_uci = _decode_pv_move($state, $candidate_move);
+    if (defined $candidate_uci) {
+      push @lines, {
+        multipv => 1,
+        score => int($cur_score // 0),
+        pv => [ $candidate_uci ],
+      };
+    }
+  }
+
+  return @lines;
+}
+
+sub _emit_uci_pv_info_lines {
+  my ($depth, $pv_lines, $multi_pv) = @_;
+  return unless ref($pv_lines) eq 'ARRAY' && @{$pv_lines};
+  my $limit = _normalize_multipv($multi_pv);
+  my $count = 0;
+
+  for my $line (@{$pv_lines}) {
+    next unless ref($line) eq 'HASH';
+    my $pv = $line->{pv};
+    next unless ref($pv) eq 'ARRAY' && @{$pv};
+    my $score = int($line->{score} // 0);
+    my ($score_kind, $score_value) = _uci_score_tokens($score);
+    my $mpv = int($line->{multipv} // ($count + 1));
+    $mpv = 1 if $mpv < 1;
+    print "info depth $depth multipv $mpv score $score_kind $score_value pv " . join(' ', @{$pv}) . "\n";
+    $count++;
+    last if $count >= $limit;
+  }
 }
 
 sub print_board {

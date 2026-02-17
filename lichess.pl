@@ -42,6 +42,7 @@ eval {
   1;
 } or die "Install IO::Socket::SSL and Mozilla::CA to use lichess.pl: $@";
 
+my $loaded_as_library = caller ? 1 : 0;
 load_env("$RealBin/.env");
 
 my $dry_run = $ENV{LICHESS_DRY_RUN} ? 1 : 0;
@@ -1178,14 +1179,7 @@ sub maybe_move {
     && $threshold_ms > 0
     && $analysis->{elapsed_ms} > $threshold_ms)
   {
-    log_warn(
-      sprintf(
-        'Engine think exceeded time threshold in %s: elapsed=%dms threshold=%dms',
-        ($game->{id} // 'unknown'),
-        $analysis->{elapsed_ms},
-        $threshold_ms,
-      )
-    );
+    log_info("You're not saying anything, Tony.");
   }
   if (ref $analysis eq 'HASH' && defined $analysis->{elapsed_ms}
     && $analysis->{elapsed_ms} >= $think_tank_ms)
@@ -1813,6 +1807,7 @@ sub _reorder_candidates_for_repetition {
         $blocked_reason = 'score-drop';
       }
     }
+    #TODO: this is broken and needs to be fixed 
     if (ref $game eq 'HASH') {
       $game->{repetition_guard_meta} = {
         policy => $policy,
@@ -2151,7 +2146,11 @@ sub _syzygy_ready {
 
 sub _movetime_for_game_ms {
   my ($game, $state) = @_;
-  if (defined $ENV{LICHESS_MOVETIME_MS} && $ENV{LICHESS_MOVETIME_MS} =~ /^\d+$/) {
+  my $allow_forced_movetime = !$loaded_as_library || $ENV{LICHESS_ALLOW_FORCED_MOVETIME_IN_LIBRARY};
+  if ($allow_forced_movetime
+    && defined $ENV{LICHESS_MOVETIME_MS}
+    && $ENV{LICHESS_MOVETIME_MS} =~ /^\d+$/)
+  {
     my $forced = int($ENV{LICHESS_MOVETIME_MS});
     return $forced if $forced > 0;
   }
@@ -2162,7 +2161,10 @@ sub _movetime_for_game_ms {
   my $speed = normalize_speed($game->{speed}) // '';
   if ($state && _state_has_book_move($state)) {
     my $book_ms = _book_fast_movetime_ms_for_speed($speed);
-    if (defined $ENV{LICHESS_BOOK_MOVETIME_MS} && $ENV{LICHESS_BOOK_MOVETIME_MS} =~ /^\d+$/) {
+    if ($allow_forced_movetime
+      && defined $ENV{LICHESS_BOOK_MOVETIME_MS}
+      && $ENV{LICHESS_BOOK_MOVETIME_MS} =~ /^\d+$/)
+    {
       my $forced_book_ms = int($ENV{LICHESS_BOOK_MOVETIME_MS});
       $book_ms = $forced_book_ms if $forced_book_ms > 0;
     }
@@ -2358,6 +2360,37 @@ sub _set_engine_depth {
   return;
 }
 
+sub _effective_engine_depth_for_game {
+  my ($game) = @_;
+  return unless ref $game eq 'HASH';
+
+  my $depth = $game->{engine_depth};
+  $depth = $game->{engine_depth_default} if !defined $depth;
+  return unless defined $depth && $depth =~ /^-?\d+$/;
+
+  my $min_depth = defined $game->{engine_depth_min} ? int($game->{engine_depth_min}) : 1;
+  my $max_depth = defined $game->{engine_depth_max} ? int($game->{engine_depth_max}) : 20;
+  $depth = int($depth);
+  $depth = $min_depth if $depth < $min_depth;
+  $depth = $max_depth if $depth > $max_depth;
+  return $depth;
+}
+
+sub _bumped_engine_depth_for_game {
+  my ($game, $bump) = @_;
+  return unless defined $bump && $bump =~ /^-?\d+$/;
+
+  my $depth = _effective_engine_depth_for_game($game);
+  return unless defined $depth;
+  $depth += int($bump);
+
+  my $min_depth = defined $game->{engine_depth_min} ? int($game->{engine_depth_min}) : 1;
+  my $max_depth = defined $game->{engine_depth_max} ? int($game->{engine_depth_max}) : 20;
+  $depth = $min_depth if $depth < $min_depth;
+  $depth = $max_depth if $depth > $max_depth;
+  return $depth;
+}
+
 sub maybe_apply_speed_depth {
   my ($game, $engine_out, $engine_in) = @_;
   return unless ref $game eq 'HASH';
@@ -2458,10 +2491,14 @@ sub compute_bestmove {
   print {$engine_in} "\n";
 
   my $go;
+  my $bumped_depth;
+  if (defined $opts->{depth_bump} && $opts->{depth_bump} =~ /^-?\d+$/) {
+    $bumped_depth = int($opts->{depth_bump});
+  }
   if (defined $depth_override) {
     my $depth = int($depth_override);
-    if (defined $opts->{depth_bump} && $opts->{depth_bump} =~ /^-?\d+$/) {
-      $depth += int($opts->{depth_bump});
+    if (defined $bumped_depth) {
+      $depth += $bumped_depth;
     }
     $depth = 1 if $depth < 1;
     $depth = 20 if $depth > 20;
@@ -2486,7 +2523,12 @@ sub compute_bestmove {
       my $floor = int($opts->{movetime_floor_ms});
       $movetime = $floor if $floor > $movetime;
     }
-    $go = "go movetime $movetime";
+    my $go_depth = _bumped_engine_depth_for_game($game, $bumped_depth);
+    if (defined $go_depth) {
+      $go = "go depth $go_depth movetime $movetime";
+    } else {
+      $go = "go movetime $movetime";
+    }
   }
   print {$engine_in} "$go\n";
   if (defined $opts->{reason} && length $opts->{reason}) {
@@ -2503,7 +2545,7 @@ sub compute_bestmove {
       if ($line =~ /^info string\s*(.*)$/) {
         my $msg = $1 // '';
         $msg =~ s/\s+$//;
-        log_info("Engine search note for $game->{id}: $msg") if length $msg;
+        log_info("Thinking... $msg in $game->{id}") if length $msg;
         next;
       }
       if ($line =~ /\bdepth\s+(\d+)/) {

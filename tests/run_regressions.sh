@@ -19,6 +19,7 @@ SKIP_REP_GUARD=0
 SKIP_UNGUARDED_PLAN=0
 SKIP_PROMO_CHECK=0
 SKIP_XXGZ_REBUILD=0
+SKIP_PROTOCOL=0
 
 usage() {
   cat <<'USAGE'
@@ -42,6 +43,7 @@ Options:
   --skip-unguarded-plan    Skip unguarded-material capture-plan regression check
   --skip-promo-check       Skip promotion-with-check regression check
   --skip-xxgz-rebuild      Skip xXgzD7zW state-rebuild regression check
+  --skip-protocol          Skip UCI protocol contract regression check
   -h, --help               Show help
 USAGE
 }
@@ -126,6 +128,10 @@ while [[ $# -gt 0 ]]; do
       SKIP_XXGZ_REBUILD=1
       shift
       ;;
+    --skip-protocol)
+      SKIP_PROTOCOL=1
+      shift
+      ;;
     -h|--help)
       usage
       exit 0
@@ -208,6 +214,13 @@ if [[ "$SKIP_XXGZ_REBUILD" -eq 0 ]]; then
   (cd "$ROOT_DIR" && perl tests/regression_xxgzd7zw_state_rebuild.pl)
 else
   echo "==> Skipping xXgzD7zW state-rebuild guard"
+fi
+
+if [[ "$SKIP_PROTOCOL" -eq 0 ]]; then
+  echo "==> UCI protocol contract guard"
+  (cd "$ROOT_DIR" && perl tests/regression_uci_protocol.pl)
+else
+  echo "==> Skipping UCI protocol contract guard"
 fi
 
 if [[ "$SKIP_PERFT" -eq 0 ]]; then

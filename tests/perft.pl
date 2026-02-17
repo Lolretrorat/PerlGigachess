@@ -23,6 +23,62 @@ my @positions = (
   'rnbq1k1r/pp1Pbppp/2p5/8/2B5/8/PPP1NnPP/RNBQK2R w KQ - 1 8',
   'r4rk1/1pp1qppp/p1np1n2/2b1p1B1/2B1P1b1/P1NP1N2/1PP1QPPP/R4RK1 w - - 0 10'
 );
+my @position_names = (
+  'kiwipete',
+  'endgame-rook-pawn',
+  'mirror-castle-tactics',
+  'minor-piece-tension',
+  'middlegame-piece-pressure',
+);
+
+my %expected_nodes = (
+  startpos => {
+    1 => 20,
+    2 => 400,
+    3 => 8902,
+    4 => 197281,
+    5 => 4865609,
+  },
+  0 => {
+    1 => 48,
+    2 => 2039,
+    3 => 97862,
+    4 => 4085603,
+    5 => 193690690,
+  },
+  1 => {
+    1 => 14,
+    2 => 191,
+    3 => 2812,
+    4 => 43238,
+    5 => 674624,
+  },
+  2 => {
+    1 => 6,
+    2 => 264,
+    3 => 9467,
+    4 => 422333,
+    5 => 15833292,
+  },
+  3 => {
+    1 => 44,
+    2 => 1486,
+    3 => 62379,
+    4 => 2103487,
+    5 => 89941194,
+  },
+  4 => {
+    1 => 46,
+    2 => 2079,
+    3 => 89890,
+    4 => 3894594,
+    5 => 164075551,
+  },
+);
+
+sub usage {
+  die "Usage: perl tests/perft.pl <depth> [position_index 0-4]\n";
+}
 
 
 ##############################################################################
@@ -55,12 +111,27 @@ sub rec_perft {
 
 ##############################################################################
 ## Global max depth
-my $max_depth = $ARGV[0] || die "Must specify a perft depth";
+my $max_depth = shift @ARGV;
+usage() unless defined $max_depth && $max_depth =~ /^\d+$/;
+$max_depth = int($max_depth);
+die "Depth must be between 1 and 5 for asserted regression coverage\n"
+  if $max_depth < 1 || $max_depth > 5;
+
+my $position_arg = shift @ARGV;
+usage() if @ARGV;
 
 # setup board
 my $state;
-if (defined $ARGV[1]) {
-  $state = Chess::State->new($positions[$ARGV[1]]);
+my $position_key = 'startpos';
+my $position_name = 'startpos';
+if (defined $position_arg) {
+  usage() unless $position_arg =~ /^\d+$/;
+  my $position_index = int($position_arg);
+  die "Position index must be between 0 and $#positions\n"
+    if $position_index < 0 || $position_index > $#positions;
+  $state = Chess::State->new($positions[$position_index]);
+  $position_key = $position_index;
+  $position_name = "position[$position_index] $position_names[$position_index]";
 } else {
   $state = Chess::State->new;
 }
@@ -84,3 +155,22 @@ for (my $i = 0; $i < scalar @count; $i ++)
   say "		checks: " . ($count[$i]{checks} || 0);
   say "		checkmates: " . ($count[$i]{checkmates} || 0);
 }
+
+my $expected = $expected_nodes{$position_key}
+  or die "No expected-node table found for $position_name\n";
+
+my @mismatches;
+for my $depth (1 .. $max_depth) {
+  die "Missing expected-node baseline for $position_name depth $depth\n"
+    unless exists $expected->{$depth};
+  my $actual = $count[$depth]{nodes} || 0;
+  my $want = $expected->{$depth};
+  push @mismatches, "depth $depth expected $want got $actual"
+    if $actual != $want;
+}
+
+if (@mismatches) {
+  die "Perft regression failed for $position_name:\n" . join("\n", @mismatches) . "\n";
+}
+
+say "Perft regression OK for $position_name through depth $max_depth";
