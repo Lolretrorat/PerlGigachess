@@ -47,8 +47,8 @@ my $token = $ENV{LICHESS_TOKEN} // '';
 my $engine_cmd = $ENV{LICHESS_ENGINE_CMD} // "$^X $RealBin/play.pl --uci";
 my @engine_parts = shellwords($engine_cmd);
 @engine_parts or die "Unable to parse LICHESS_ENGINE_CMD '$engine_cmd'\n";
-my $think_slow_ms = $ENV{LICHESS_THINK_SLOW_MS} // 3000;
-$think_slow_ms = 3000 unless defined $think_slow_ms && $think_slow_ms =~ /^\d+$/;
+my $think_tank_ms = $ENV{LICHESS_THINK_TANK_MS};
+$think_tank_ms = 3000 unless defined $think_tank_ms && $think_tank_ms =~ /^\d+$/;
 my $git_branch = _git_branch_name();
 my $branch_override_allowed = _branch_override_allowed($git_branch);
 my $depth_override = $ENV{LICHESS_DEPTH_OVERRIDE};
@@ -63,6 +63,31 @@ my $default_override_depth = 4;
 $depth_override = $default_override_depth
   if $branch_override_allowed && !defined $depth_override;
 $depth_override = undef unless defined $depth_override && $branch_override_allowed;
+my $is_production_profile = $branch_override_allowed ? 0 : 1;
+
+my $prod_opening_boost_mult = $ENV{LICHESS_PROD_OPENING_MULT};
+if (!defined $prod_opening_boost_mult || $prod_opening_boost_mult !~ /^\d+(?:\.\d+)?$/) {
+  $prod_opening_boost_mult = 1.20;
+}
+$prod_opening_boost_mult += 0;
+$prod_opening_boost_mult = 1.0 if $prod_opening_boost_mult < 1.0;
+$prod_opening_boost_mult = 2.0 if $prod_opening_boost_mult > 2.0;
+
+my $prod_opening_boost_plies = $ENV{LICHESS_PROD_OPENING_PLIES};
+if (!defined $prod_opening_boost_plies || $prod_opening_boost_plies !~ /^\d+$/) {
+  $prod_opening_boost_plies = 18;
+}
+$prod_opening_boost_plies = int($prod_opening_boost_plies);
+$prod_opening_boost_plies = 0 if $prod_opening_boost_plies < 0;
+$prod_opening_boost_plies = 80 if $prod_opening_boost_plies > 80;
+
+my $prod_opening_cap_mult = $ENV{LICHESS_PROD_OPENING_CAP_MULT};
+if (!defined $prod_opening_cap_mult || $prod_opening_cap_mult !~ /^\d+(?:\.\d+)?$/) {
+  $prod_opening_cap_mult = 1.25;
+}
+$prod_opening_cap_mult += 0;
+$prod_opening_cap_mult = 1.0 if $prod_opening_cap_mult < 1.0;
+$prod_opening_cap_mult = 2.0 if $prod_opening_cap_mult > 2.0;
 
 STDOUT->autoflush(1);
 STDERR->autoflush(1);
@@ -124,6 +149,11 @@ sub main {
   my $branch_desc = defined $git_branch && length $git_branch ? $git_branch : '(unknown branch)';
   my $depth_desc = defined $depth_override ? $depth_override : 'none';
   log_info("Logged in as $account->{username} ($bot_id) on branch $branch_desc, depth override is $depth_desc");
+  if ($is_production_profile) {
+    my $mult = sprintf('%.2f', $prod_opening_boost_mult);
+    my $cap_mult = sprintf('%.2f', $prod_opening_cap_mult);
+    log_info("Production opening time boost enabled: mult=$mult plies=$prod_opening_boost_plies cap_mult=$cap_mult");
+  }
 
   stream_events();
   return 0;
@@ -894,7 +924,7 @@ sub maybe_move {
     log_warn("You're not saying anything, Tony.");
   }
   if (ref $analysis eq 'HASH' && defined $analysis->{elapsed_ms}
-    && $analysis->{elapsed_ms} >= $think_slow_ms)
+    && $analysis->{elapsed_ms} >= $think_tank_ms)
   {
     log_info(
       sprintf(
@@ -1151,6 +1181,14 @@ sub _clock_for_side_ms {
   return ($remaining + 0, $increment + 0);
 }
 
+sub _opening_ply_count {
+  my ($game) = @_;
+  return 0 unless ref $game eq 'HASH';
+  my $moves = $game->{moves};
+  return 0 unless ref $moves eq 'ARRAY';
+  return scalar(@$moves);
+}
+
 sub _movetime_for_game_ms {
   my ($game) = @_;
   if (defined $ENV{LICHESS_MOVETIME_MS} && $ENV{LICHESS_MOVETIME_MS} =~ /^\d+$/) {
@@ -1181,6 +1219,7 @@ sub _movetime_for_game_ms {
     : $speed eq 'rapid' ? 3000
     : $speed eq 'classical' ? 5000
     : 7000;
+  my $effective_cap_ms = $max_cap_ms;
 
   my $reserve_pct =
       $remaining_ms <= 10_000 ? 0.35
@@ -1197,9 +1236,28 @@ sub _movetime_for_game_ms {
   $share_cap_ms = 60 if $share_cap_ms < 60;
   $budget_ms = $share_cap_ms if $budget_ms > $share_cap_ms;
 
+  if ($is_production_profile
+    && $prod_opening_boost_plies > 0
+    && $prod_opening_boost_mult > 1.0)
+  {
+    my $plies = _opening_ply_count($game);
+    if ($plies < $prod_opening_boost_plies) {
+      my $remaining_phase = ($prod_opening_boost_plies - $plies) / $prod_opening_boost_plies;
+      my $opening_mult = 1.0 + (($prod_opening_boost_mult - 1.0) * $remaining_phase);
+      if ($opening_mult > 1.0) {
+        my $boosted_ms = int($budget_ms * $opening_mult);
+        my $opening_cap_ms = int($max_cap_ms * $prod_opening_cap_mult);
+        $opening_cap_ms = $max_cap_ms if $opening_cap_ms < $max_cap_ms;
+        $effective_cap_ms = $opening_cap_ms if $opening_cap_ms > $effective_cap_ms;
+        $budget_ms = $boosted_ms if $boosted_ms > $budget_ms;
+        $budget_ms = $opening_cap_ms if $budget_ms > $opening_cap_ms;
+      }
+    }
+  }
+
   my $min_ms = $remaining_ms <= 10_000 ? 60 : ($remaining_ms <= 30_000 ? 100 : 140);
   $budget_ms = $min_ms if $budget_ms < $min_ms;
-  $budget_ms = $max_cap_ms if $budget_ms > $max_cap_ms;
+  $budget_ms = $effective_cap_ms if $budget_ms > $effective_cap_ms;
   return $budget_ms;
 }
 

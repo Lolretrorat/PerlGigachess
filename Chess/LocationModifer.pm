@@ -252,12 +252,6 @@ sub _process_game_lines {
     return 1;
 }
 
-sub _clean_pgn_body {
-    my ($body) = @_;
-    my @tokens = grep { $_ !~ /^\$\d+$/ } _tokenize_movetext($body);
-    return join ' ', @tokens;
-}
-
 sub _tokenize_movetext {
     my ($body) = @_;
     my @tokens;
