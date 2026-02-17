@@ -16,7 +16,7 @@ PGN_PATH="$ROOT_DIR/data/lichess_games_export.pgn"
 CLEAR_OWN_URL_LOG=1
 SKIP_LOCATION_INGRESS=1
 
-TMP_DIR="/tmp"
+TMP_DIR="${PERLGIGACHESS_TMP_DIR:-/mnt/throughput/perlgigachess-tmp}"
 KEEP_DOWNLOAD=0
 ALLOW_DUPLICATE_SOURCE=0
 
@@ -49,7 +49,7 @@ Options:
   --pgn <path>                    Training PGN path (default: data/lichess_games_export.pgn)
   --keep-url-log                  Do not clear URL log after OWN-URLS ingest
   --include-location-ingress      Keep location training enabled during ingest
-  --tmp-dir <dir>                 Temp directory for ingest (default: /tmp)
+  --tmp-dir <dir>                 Temp directory for ingest (default: /mnt/throughput/perlgigachess-tmp)
   --keep-download                 Keep monthly archive download
   --allow-duplicate-source        Allow duplicate monthly ingest source
   --python <path>                 Python executable (default: .venv/bin/python)

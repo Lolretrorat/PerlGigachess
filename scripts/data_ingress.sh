@@ -23,7 +23,7 @@ OWN_PGN_OUTPUT="$ROOT_DIR/data/lichess_games_export.pgn"
 OWN_APPEND=0
 CLEAR_OWN_URL_LOG=0
 
-TMP_DIR="/tmp"
+TMP_DIR="${PERLGIGACHESS_TMP_DIR:-/mnt/throughput/perlgigachess-tmp}"
 KEEP_DOWNLOAD=0
 
 RUN_LICHESS_DB=0
@@ -42,7 +42,7 @@ Required source flags (at least one):
   OWN-URLS                        Read data/lichess_game_urls.log and run ingest pipeline
 
 Options:
-  --tmp-dir <dir>                 Temp directory (default: /tmp)
+  --tmp-dir <dir>                 Temp directory (default: /mnt/throughput/perlgigachess-tmp)
   --keep-download                 Keep downloaded monthly archive
   --manifest <path>               Ingest manifest path (default: data/lichess_ingest_manifest.json)
   --allow-duplicate-source        Allow ingesting an already-tracked monthly source
@@ -63,6 +63,10 @@ Options:
   --location-output <path>        Location table output (default: data/location_modifiers.json)
   --location-games <n>            Max games for location training (default: 5000)
   --location-scale <n>            Scale passed to ./init train-location
+
+Notes:
+  - For OWN-URLS, you can run fetch-only mode with both --skip-book and --skip-location.
+  - LICHESS-DB-PGNS still requires at least one processing stage (book or location).
 
 Examples:
   scripts/data_ingress.sh LICHESS-DB-PGNS 2025-01
@@ -204,17 +208,22 @@ extract_game_id() {
   [[ -z "$line" ]] && return 1
   [[ "$line" =~ ^# ]] && return 1
 
-  if [[ "$line" =~ ^([A-Za-z0-9]{8})$ ]]; then
+  if [[ "$line" =~ ^([A-Za-z0-9]{8})([A-Za-z0-9]{4})?$ ]]; then
     printf '%s\n' "${BASH_REMATCH[1]}"
     return 0
   fi
 
-  if [[ "$line" =~ ^https?://lichess\.org/([A-Za-z0-9]{8})([/#?].*)?$ ]]; then
+  if [[ "$line" =~ ^https?://lichess\.org/([A-Za-z0-9]{8})([A-Za-z0-9]{4})?([/#?].*)?$ ]]; then
     printf '%s\n' "${BASH_REMATCH[1]}"
     return 0
   fi
 
-  if [[ "$line" =~ ^/?([A-Za-z0-9]{8})([/#?].*)?$ ]]; then
+  if [[ "$line" =~ ^https?://lichess\.org/game/export/([A-Za-z0-9]{8})([A-Za-z0-9]{4})?([/#?].*)?$ ]]; then
+    printf '%s\n' "${BASH_REMATCH[1]}"
+    return 0
+  fi
+
+  if [[ "$line" =~ ^/?([A-Za-z0-9]{8})([A-Za-z0-9]{4})?([/#?].*)?$ ]]; then
     printf '%s\n' "${BASH_REMATCH[1]}"
     return 0
   fi
@@ -574,8 +583,13 @@ if [[ "$RUN_LICHESS_DB" -eq 1 ]] && ! validate_year_month "$LICHESS_MONTH"; then
 fi
 
 if [[ "$RUN_BOOK" -eq 0 && "$RUN_LOCATION" -eq 0 ]]; then
-  echo "Nothing to do: both --skip-book and --skip-location are set" >&2
-  exit 1
+  if [[ "$RUN_OWN_URLS" -eq 1 && "$RUN_LICHESS_DB" -eq 0 ]]; then
+    echo "==> Running OWN-URLS in fetch-only mode (--skip-book --skip-location)"
+  else
+    echo "Nothing to do: both --skip-book and --skip-location are set" >&2
+    echo "Lichess DB ingestion requires at least one processing stage." >&2
+    exit 1
+  fi
 fi
 
 mkdir -p "$TMP_DIR"

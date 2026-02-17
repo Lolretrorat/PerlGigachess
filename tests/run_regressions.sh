@@ -11,6 +11,7 @@ PROMO_MOVETIME=1500
 SKIP_PERFT=0
 SKIP_KG8=0
 SKIP_PROMO=0
+SKIP_OWN_URLS=0
 
 usage() {
   cat <<'USAGE'
@@ -26,6 +27,7 @@ Options:
   --skip-perft             Skip perft sanity pass
   --skip-kg8               Skip hyhMjQD2 regression check
   --skip-promo             Skip promotion-mate regression check
+  --skip-own-urls          Skip OWN-URL parser/ingest regression check
   -h, --help               Show help
 USAGE
 }
@@ -78,6 +80,10 @@ while [[ $# -gt 0 ]]; do
       SKIP_PROMO=1
       shift
       ;;
+    --skip-own-urls)
+      SKIP_OWN_URLS=1
+      shift
+      ;;
     -h|--help)
       usage
       exit 0
@@ -104,6 +110,13 @@ if [[ "$SKIP_PROMO" -eq 0 ]]; then
   (cd "$ROOT_DIR" && perl tests/regression_promotion_mate.pl --depth "$PROMO_DEPTH" --movetime "$PROMO_MOVETIME")
 else
   echo "==> Skipping promotion mate guard"
+fi
+
+if [[ "$SKIP_OWN_URLS" -eq 0 ]]; then
+  echo "==> OWN-URL parser guard (12-char URL handling)"
+  (cd "$ROOT_DIR" && bash tests/regression_own_urls_parser.sh)
+else
+  echo "==> Skipping OWN-URL parser guard"
 fi
 
 if [[ "$SKIP_PERFT" -eq 0 ]]; then

@@ -181,11 +181,11 @@ my %socket_read_buffers;
 my $http_request_sock;
 my $http_request_sock_pid = $$;
 my %speed_depth_targets = (
-  bullet    => 8,
-  blitz     => 10,
-  rapid     => 12,
-  classical => 14,
-  unlimited => 14,
+  bullet    => 10,
+  blitz     => 12,
+  rapid     => 14,
+  classical => 16,
+  unlimited => 17,
 );
 my %speed_horizon_targets = (
   bullet    => 90,
