@@ -32,6 +32,7 @@ use File::Basename qw(dirname);
 use File::Path qw(make_path);
 use Chess::State;
 use Chess::Engine ();
+use Chess::Book ();
 
 eval {
   require IO::Socket::SSL;
@@ -1446,6 +1447,23 @@ sub _opening_ply_count {
   return scalar(@$moves);
 }
 
+sub _book_fast_movetime_ms_for_speed {
+  my ($speed) = @_;
+  return 50  if $speed eq 'bullet';
+  return 90  if $speed eq 'blitz';
+  return 140 if $speed eq 'rapid';
+  return 220 if $speed eq 'classical';
+  return 260;
+}
+
+sub _state_has_book_move {
+  my ($state) = @_;
+  return 0 unless ref $state;
+  my $book_move = eval { Chess::Book::choose_move($state) };
+  return 0 if $@;
+  return defined $book_move ? 1 : 0;
+}
+
 sub _state_piece_count {
   my ($state) = @_;
   return unless ref $state;
@@ -1512,6 +1530,19 @@ sub _movetime_for_game_ms {
   return 800 unless defined $remaining_ms;
 
   my $speed = normalize_speed($game->{speed}) // '';
+  if ($state && _state_has_book_move($state)) {
+    my $book_ms = _book_fast_movetime_ms_for_speed($speed);
+    if (defined $ENV{LICHESS_BOOK_MOVETIME_MS} && $ENV{LICHESS_BOOK_MOVETIME_MS} =~ /^\d+$/) {
+      my $forced_book_ms = int($ENV{LICHESS_BOOK_MOVETIME_MS});
+      $book_ms = $forced_book_ms if $forced_book_ms > 0;
+    }
+    my $usable_book = $remaining_ms - 150;
+    $usable_book = 40 if $usable_book < 40;
+    return $book_ms if $book_ms < $usable_book;
+    return $usable_book;
+  }
+
+  my $plies = _opening_ply_count($game);
   my $horizon = $speed_horizon_targets{$speed} // 60;
   my $inc_weight =
       $speed eq 'bullet' ? 0.20
@@ -1531,27 +1562,33 @@ sub _movetime_for_game_ms {
     : $speed eq 'rapid' ? 3000
     : $speed eq 'classical' ? 5000
     : 7000;
+  if ($plies >= 8 && $plies <= 40 && $speed ne 'bullet') {
+    $horizon = int($horizon * 0.86);
+    $horizon = 12 if $horizon < 12;
+    $max_share += 0.020;
+    $max_cap_ms = int($max_cap_ms * 1.20);
+  }
   my $piece_count = _state_piece_count($state);
   if (defined $piece_count && $speed ne 'bullet') {
     if ($piece_count <= 14) {
-      $horizon = int($horizon * 0.85);
+      $horizon = int($horizon * 0.82);
       $horizon = 12 if $horizon < 12;
-      $max_share += 0.020;
-      $max_cap_ms = int($max_cap_ms * 1.45);
+      $max_share += 0.025;
+      $max_cap_ms = int($max_cap_ms * 1.52);
     }
     if ($piece_count <= 10) {
-      $horizon = int($horizon * 0.78);
+      $horizon = int($horizon * 0.74);
       $horizon = 10 if $horizon < 10;
-      $max_share += 0.030;
-      $max_cap_ms = int($max_cap_ms * 1.65);
+      $max_share += 0.035;
+      $max_cap_ms = int($max_cap_ms * 1.75);
     }
     if ($piece_count <= _syzygy_max_pieces() && _syzygy_ready()) {
-      $horizon = int($horizon * 0.72);
+      $horizon = int($horizon * 0.68);
       $horizon = 8 if $horizon < 8;
-      $max_share += 0.030;
-      $max_cap_ms = int($max_cap_ms * 1.40);
+      $max_share += 0.035;
+      $max_cap_ms = int($max_cap_ms * 1.48);
     }
-    $max_share = 0.22 if $max_share > 0.22;
+    $max_share = 0.24 if $max_share > 0.24;
   }
   my $effective_cap_ms = $max_cap_ms;
 
@@ -1569,7 +1606,6 @@ sub _movetime_for_game_ms {
   my $share_cap_ms = int(($remaining_ms * $max_share) + $increment_ms);
   $share_cap_ms = 60 if $share_cap_ms < 60;
   $budget_ms = $share_cap_ms if $budget_ms > $share_cap_ms;
-  my $plies = _opening_ply_count($game);
 
   if ($is_production_profile
     && $prod_opening_boost_plies > 0
@@ -1612,7 +1648,7 @@ sub _movetime_for_game_ms {
 
   my $min_ms = $remaining_ms <= 10_000 ? 60 : ($remaining_ms <= 30_000 ? 100 : 140);
   if (defined $piece_count && $piece_count <= 10 && $remaining_ms >= 90_000 && $speed ne 'bullet' && $speed ne 'blitz') {
-    my $endgame_floor = $speed eq 'classical' ? 4500 : 3500;
+    my $endgame_floor = $speed eq 'classical' ? 5000 : 3800;
     $budget_ms = $endgame_floor if $budget_ms < $endgame_floor && $usable_ms >= $endgame_floor;
   }
   $budget_ms = $min_ms if $budget_ms < $min_ms;
