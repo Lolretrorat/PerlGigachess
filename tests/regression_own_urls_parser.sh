@@ -49,6 +49,7 @@ URLS
 
 PATH="$MOCK_BIN_DIR:$PATH" \
 MOCK_CURL_CALLS="$MOCK_CALLS" \
+PERLGIGACHESS_OWN_EXPORT_QUERY='clocks=0&evals=0&moves=1&tags=1&opening=1' \
 "$ROOT_DIR/scripts/data_ingress.sh" \
   OWN-URLS \
   --skip-book \

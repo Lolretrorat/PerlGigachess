@@ -181,18 +181,18 @@ my %socket_read_buffers;
 my $http_request_sock;
 my $http_request_sock_pid = $$;
 my %speed_depth_targets = (
-  bullet    => 10,
-  blitz     => 12,
-  rapid     => 14,
-  classical => 16,
-  unlimited => 17,
+  bullet    => 11,
+  blitz     => 13,
+  rapid     => 15,
+  classical => 17,
+  unlimited => 18,
 );
 my %speed_horizon_targets = (
-  bullet    => 90,
-  blitz     => 72,
-  rapid     => 50,
-  classical => 38,
-  unlimited => 34,
+  bullet    => 72,
+  blitz     => 56,
+  rapid     => 40,
+  classical => 30,
+  unlimited => 26,
 );
 
 unless (caller) {
@@ -1838,17 +1838,17 @@ sub _movetime_for_game_ms {
     : $speed eq 'classical' ? 0.45
     : 0.50;
   my $max_share =
-      $speed eq 'bullet' ? 0.035
-    : $speed eq 'blitz' ? 0.055
-    : $speed eq 'rapid' ? 0.080
-    : $speed eq 'classical' ? 0.100
-    : 0.120;
+      $speed eq 'bullet' ? 0.060
+    : $speed eq 'blitz' ? 0.110
+    : $speed eq 'rapid' ? 0.150
+    : $speed eq 'classical' ? 0.200
+    : 0.220;
   my $max_cap_ms =
-      $speed eq 'bullet' ? 900
-    : $speed eq 'blitz' ? 1600
-    : $speed eq 'rapid' ? 3000
-    : $speed eq 'classical' ? 5000
-    : 7000;
+      $speed eq 'bullet' ? 1500
+    : $speed eq 'blitz' ? 3600
+    : $speed eq 'rapid' ? 6500
+    : $speed eq 'classical' ? 10_000
+    : 13_000;
   if ($in_post_book_phase && $speed ne 'bullet') {
     $horizon = int($horizon * 0.86);
     $horizon = 12 if $horizon < 12;
@@ -1958,7 +1958,12 @@ sub _movetime_for_game_ms {
     }
   }
 
-  my $min_ms = $remaining_ms <= 10_000 ? 60 : ($remaining_ms <= 30_000 ? 100 : 140);
+  my $min_ms =
+      $speed eq 'bullet' ? ($remaining_ms <= 10_000 ? 70 : 110)
+    : $speed eq 'blitz' ? ($remaining_ms <= 10_000 ? 90 : 220)
+    : $speed eq 'rapid' ? ($remaining_ms <= 10_000 ? 120 : 420)
+    : $speed eq 'classical' ? ($remaining_ms <= 10_000 ? 140 : 700)
+    : ($remaining_ms <= 10_000 ? 100 : 300);
   if (defined $piece_count && $piece_count <= 10 && $remaining_ms >= 90_000 && $speed ne 'bullet' && $speed ne 'blitz') {
     my $endgame_floor = $speed eq 'classical' ? 5000 : 3800;
     $budget_ms = $endgame_floor if $budget_ms < $endgame_floor && $usable_ms >= $endgame_floor;

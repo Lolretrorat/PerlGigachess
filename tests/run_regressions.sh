@@ -13,6 +13,8 @@ SKIP_KG8=0
 SKIP_PROMO=0
 SKIP_OWN_URLS=0
 SKIP_BOOK_UNDERPROMO=0
+SKIP_LICHESS_TIME=0
+SKIP_PDP_QUEEN=0
 
 usage() {
   cat <<'USAGE'
@@ -30,6 +32,8 @@ Options:
   --skip-promo             Skip promotion-mate regression check
   --skip-own-urls          Skip OWN-URL parser/ingest regression check
   --skip-book-underpromo   Skip opening-book SAN underpromotion regression check
+  --skip-lichess-time      Skip lichess bot time/depth profile regression check
+  --skip-pdp-queen         Skip PDPgjgTd random queen-capture regression check
   -h, --help               Show help
 USAGE
 }
@@ -90,6 +94,14 @@ while [[ $# -gt 0 ]]; do
       SKIP_BOOK_UNDERPROMO=1
       shift
       ;;
+    --skip-lichess-time)
+      SKIP_LICHESS_TIME=1
+      shift
+      ;;
+    --skip-pdp-queen)
+      SKIP_PDP_QUEEN=1
+      shift
+      ;;
     -h|--help)
       usage
       exit 0
@@ -130,6 +142,20 @@ if [[ "$SKIP_BOOK_UNDERPROMO" -eq 0 ]]; then
   (cd "$ROOT_DIR" && bash tests/regression_book_underpromotion.sh)
 else
   echo "==> Skipping opening-book underpromotion SAN guard"
+fi
+
+if [[ "$SKIP_LICHESS_TIME" -eq 0 ]]; then
+  echo "==> Lichess time/depth profile guard"
+  (cd "$ROOT_DIR" && bash tests/regression_lichess_time_profile.sh)
+else
+  echo "==> Skipping lichess time/depth profile guard"
+fi
+
+if [[ "$SKIP_PDP_QUEEN" -eq 0 ]]; then
+  echo "==> PDPgjgTd guard (avoid random queen capture)"
+  (cd "$ROOT_DIR" && perl tests/regression_pdpgjgtd_queen_capture.pl)
+else
+  echo "==> Skipping PDPgjgTd queen-capture guard"
 fi
 
 if [[ "$SKIP_PERFT" -eq 0 ]]; then

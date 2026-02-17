@@ -277,6 +277,20 @@ wait_for_worker_slot() {
   done
 }
 
+own_export_url_for_game_id() {
+  local game_id="$1"
+  local base_url="https://lichess.org/game/export/$game_id"
+  if [[ -z "$OWN_EXPORT_QUERY" ]]; then
+    printf '%s\n' "$base_url"
+    return
+  fi
+  if [[ "$OWN_EXPORT_QUERY" == \?* ]]; then
+    printf '%s%s\n' "$base_url" "$OWN_EXPORT_QUERY"
+    return
+  fi
+  printf '%s?%s\n' "$base_url" "$OWN_EXPORT_QUERY"
+}
+
 fetch_own_urls_to_pgn() {
   local delta_pgn_output="${1:-}"
   local failed_url_output="${2:-}"
@@ -351,7 +365,8 @@ fetch_own_urls_to_pgn() {
 
     for i in "${!game_ids[@]}"; do
       local game_id="${game_ids[$i]}"
-      local url="https://lichess.org/game/export/$game_id"
+      local url
+      url="$(own_export_url_for_game_id "$game_id")"
       local pgn_part="$fetch_tmp_dir/$i.pgn"
       local status_part="$fetch_tmp_dir/$i.status"
 
@@ -367,7 +382,8 @@ fetch_own_urls_to_pgn() {
 
     for i in "${!game_ids[@]}"; do
       local game_id="${game_ids[$i]}"
-      local url="https://lichess.org/game/export/$game_id"
+      local url
+      url="$(own_export_url_for_game_id "$game_id")"
       local pgn_part="$fetch_tmp_dir/$i.pgn"
       local status_part="$fetch_tmp_dir/$i.status"
       local status="fail"
