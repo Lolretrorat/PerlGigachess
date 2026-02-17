@@ -166,9 +166,27 @@ sub main {
     my $cap_mult = sprintf('%.2f', $prod_opening_cap_mult);
     log_info("Production opening time boost enabled: mult=$mult plies=$prod_opening_boost_plies cap_mult=$cap_mult floor_ms=$prod_opening_floor_ms floor_plies=$prod_opening_floor_plies");
   }
+  _log_syzygy_runtime_status();
 
   stream_events();
   return 0;
+}
+
+sub _log_syzygy_runtime_status {
+  my $enabled = $ENV{CHESS_SYZYGY_ENABLED};
+  if (defined $enabled && length $enabled) {
+    my $norm = lc $enabled;
+    if ($norm =~ /^(?:0|false|off|no)$/) {
+      log_info('Syzygy probing disabled by CHESS_SYZYGY_ENABLED');
+      return;
+    }
+  }
+  my @paths = _syzygy_paths();
+  if (!@paths) {
+    log_warn('Syzygy probing unavailable: set CHESS_SYZYGY_PATH to one or more local tablebase directories');
+    return;
+  }
+  log_info('Syzygy probing enabled for up to ' . _syzygy_max_pieces() . ' pieces');
 }
 
 sub stream_events {
@@ -820,9 +838,18 @@ sub handle_game_event {
 
 sub parse_moves {
   my ($moves) = @_;
-  return [] unless defined $moves && length $moves;
-  my @moves = split / /, $moves;
-  return \@moves;
+  return [] unless defined $moves;
+  if (ref $moves eq 'ARRAY') {
+    my @list = grep { defined $_ && length $_ } @$moves;
+    return \@list;
+  }
+  return [] if ref $moves;
+
+  $moves =~ s/^\s+//;
+  $moves =~ s/\s+$//;
+  return [] unless length $moves;
+  my @list = grep { length $_ } split /\s+/, $moves;
+  return \@list;
 }
 
 sub normalize_color {
@@ -920,12 +947,30 @@ sub maybe_move {
   return unless $my_turn;
 
   my $state = _sync_state_from_game($game);
+  if (!$state && _resync_game_from_lichess($game, 'state rebuild failed')) {
+    $state = _sync_state_from_game($game);
+    log_info("Recovered local state for $game->{id} after Lichess resync")
+      if $state;
+  }
   unless ($state) {
     log_warn("Unable to rebuild local state for $game->{id}; skipping move");
     return;
   }
 
-  my $analysis = compute_bestmove($game, $engine_out, $engine_in);
+  my $tablebase_move = _tablebase_move_for_state($game, $state);
+  my $analysis;
+  if (defined $tablebase_move) {
+    $analysis = {
+      move => $tablebase_move,
+      candidate => $tablebase_move,
+      elapsed_ms => 1,
+      go_cmd => 'tablebase',
+      source => 'tablebase',
+    };
+    log_info("Tablebase selected $tablebase_move in $game->{id}");
+  } else {
+    $analysis = compute_bestmove($game, $engine_out, $engine_in, $state);
+  }
   my $threshold_ms = _time_control_threshold_ms($game);
   if (ref $analysis eq 'HASH'
     && defined $analysis->{elapsed_ms}
@@ -997,6 +1042,154 @@ sub maybe_move {
   }
 }
 
+sub _resync_game_from_lichess {
+  my ($game, $reason) = @_;
+  return 0 unless ref $game eq 'HASH';
+  my $game_id = $game->{id};
+  return 0 unless defined $game_id && length $game_id;
+
+  my $moves = $game->{moves};
+  $moves = [] unless ref $moves eq 'ARRAY';
+  my $move_count = scalar(@$moves);
+  my $last_move = $move_count ? ($moves->[-1] // '') : '';
+  my $marker = "$move_count:$last_move";
+  if (defined $game->{last_resync_marker}
+    && $game->{last_resync_marker} eq $marker)
+  {
+    log_debug("Skipping duplicate Lichess resync attempt for $game_id marker=$marker");
+    return 0;
+  }
+  $game->{last_resync_marker} = $marker;
+
+  my $suffix = defined $reason && length $reason ? " ($reason)" : '';
+  log_warn("State desync in $game_id$suffix; polling Lichess for snapshot");
+  my $snapshot = _fetch_game_snapshot_once($game_id);
+  unless (ref $snapshot eq 'HASH') {
+    log_warn("Failed to poll Lichess snapshot for $game_id");
+    return 0;
+  }
+
+  my $snapshot_type = $snapshot->{type} // '';
+  my $state_payload = ref $snapshot->{state} eq 'HASH' ? $snapshot->{state} : {};
+  my $moves_payload = exists $state_payload->{moves}
+    ? $state_payload->{moves}
+    : $snapshot->{moves};
+  unless (defined $moves_payload) {
+    log_warn("Lichess snapshot for $game_id is missing moves payload");
+    return 0;
+  }
+  my $remote_moves = parse_moves($moves_payload);
+  my $remote_initial_fen = normalize_fen(
+    $snapshot->{initialFen} // $snapshot->{fen} // $game->{initial_fen}
+  );
+
+  $game->{initial_fen} = $remote_initial_fen;
+  $game->{moves} = $remote_moves;
+  $game->{status} = $state_payload->{status}
+    if defined $state_payload->{status};
+  $game->{status} = $snapshot->{status}
+    if !defined($state_payload->{status}) && defined($snapshot->{status});
+  $game->{wtime} = $state_payload->{wtime} if defined $state_payload->{wtime};
+  $game->{btime} = $state_payload->{btime} if defined $state_payload->{btime};
+  $game->{winc}  = $state_payload->{winc}  if defined $state_payload->{winc};
+  $game->{binc}  = $state_payload->{binc}  if defined $state_payload->{binc};
+  update_turn_from_event($game, $snapshot);
+  update_turn_from_event($game, $state_payload);
+  $game->{pending_move} = undef;
+
+  $game->{state_obj} = undef;
+  $game->{state_move_count} = 0;
+  $game->{state_initial_fen} = undef;
+
+  my $count = scalar(@{$game->{moves}});
+  log_info("Applied Lichess snapshot for $game_id (type=$snapshot_type moves=$count)");
+  return 1;
+}
+
+sub _fetch_game_snapshot_once {
+  my ($game_id) = @_;
+  return unless defined $game_id && length $game_id;
+
+  my $path = "/bot/game/stream/$game_id";
+  my $sock = _open_lichess_socket();
+  unless ($sock) {
+    my $err = $last_tls_error || IO::Socket::SSL::errstr() || 'unknown';
+    log_warn("Unable to open TLS socket for $path: $err");
+    return;
+  }
+
+  my %headers = (
+    'Host'          => 'lichess.org',
+    'Authorization' => "Bearer $token",
+    'Accept'        => 'application/x-ndjson',
+    'User-Agent'    => $user_agent,
+    'Connection'    => 'close',
+  );
+  unless (_write_http_request($sock, 'GET', "/api$path", \%headers, '')) {
+    my $err = $! ? "$!" : 'unable to write request';
+    log_warn("Snapshot request write failed for $path: $err");
+    _clear_socket_buffer($sock);
+    close $sock;
+    return;
+  }
+
+  my $resp_headers = _read_http_headers($sock);
+  if (!$resp_headers->{status} || $resp_headers->{status} !~ /^2/) {
+    my $status_line = $resp_headers->{status_line} // 'unknown';
+    my $body = _read_all($sock);
+    $body =~ s/\s+/ /g if defined $body;
+    $body = substr($body // '', 0, 180);
+    log_warn("Snapshot request for $path failed: $status_line body='$body'");
+    _clear_socket_buffer($sock);
+    close $sock;
+    return;
+  }
+
+  my $snapshot;
+  my $buffer = '';
+  my $capture = sub {
+    my ($payload) = @_;
+    return unless ref $payload eq 'HASH';
+    $snapshot = $payload unless $snapshot;
+  };
+
+  my $te = $resp_headers->{'transfer-encoding'} // '';
+  if ($te =~ /chunked/i) {
+    while (!$snapshot) {
+      my $len_line = _read_line($sock);
+      last unless defined $len_line;
+      $len_line =~ s/\r?\n$//;
+      $len_line =~ s/;.*$//;
+      next if $len_line eq '';
+      my $len = eval { hex($len_line) };
+      last unless defined $len;
+      last if $len == 0;
+      my $chunk = _read_exact($sock, $len);
+      last unless defined $chunk;
+      _read_exact($sock, 2);
+      $buffer .= $chunk;
+      _drain_ndjson($path, \$buffer, $capture);
+    }
+  } else {
+    while (!$snapshot) {
+      my $chunk = '';
+      my $rv = sysread($sock, $chunk, 4096);
+      last unless defined $rv && $rv > 0;
+      $buffer .= $chunk;
+      _drain_ndjson($path, \$buffer, $capture);
+    }
+  }
+
+  _clear_socket_buffer($sock);
+  close $sock;
+
+  if (!$snapshot) {
+    log_warn("Snapshot stream for $path closed before payload arrived");
+    return;
+  }
+  return $snapshot;
+}
+
 sub _sync_state_from_game {
   my ($game) = @_;
   my $moves = $game->{moves} || [];
@@ -1048,6 +1241,34 @@ sub _sync_state_from_game {
 
   $game->{state_obj} = $state;
   return $state;
+}
+
+sub _tablebase_move_for_state {
+  my ($game, $state) = @_;
+  return unless ref $state;
+  return unless _syzygy_ready();
+
+  my $piece_count = _state_piece_count($state);
+  return unless defined $piece_count;
+  return unless $piece_count <= _syzygy_max_pieces();
+
+  my $table_move = eval { Chess::EndgameTable::choose_move($state) };
+  if (!defined $table_move || $@) {
+    return;
+  }
+
+  my $uci;
+  if (ref $table_move eq 'ARRAY') {
+    $uci = eval { $state->decode_move($table_move) };
+    return if $@;
+  } elsif (!ref $table_move) {
+    $uci = $table_move;
+  }
+  return unless defined $uci && $uci =~ /^[a-h][1-8][a-h][1-8][nbrq]?$/;
+
+  my %legal = map { $_ => 1 } $state->get_moves;
+  return unless $legal{$uci};
+  return $uci;
 }
 
 sub _candidate_moves {
@@ -1225,8 +1446,63 @@ sub _opening_ply_count {
   return scalar(@$moves);
 }
 
+sub _state_piece_count {
+  my ($state) = @_;
+  return unless ref $state;
+  my $cached = $state->[Chess::State::PIECE_COUNT];
+  return $cached if defined $cached;
+  my $board = $state->[Chess::State::BOARD];
+  return unless ref $board eq 'ARRAY';
+
+  my $count = 0;
+  for my $idx (21 .. 98) {
+    next if $idx % 10 == 0 || $idx % 10 == 9;
+    my $piece = $board->[$idx] // 0;
+    my $abs_piece = abs($piece);
+    $count++ if $abs_piece >= 1 && $abs_piece <= 6;
+  }
+  return $count;
+}
+
+sub _syzygy_max_pieces {
+  my $max = $ENV{CHESS_SYZYGY_MAX_PIECES};
+  $max = 7 unless defined $max && $max =~ /^\d+$/;
+  $max = int($max);
+  $max = 2 if $max < 2;
+  $max = 16 if $max > 16;
+  return $max;
+}
+
+sub _syzygy_paths {
+  my $raw = $ENV{CHESS_SYZYGY_PATH} // '';
+  return () unless length $raw;
+  my $sep = ($^O eq 'MSWin32') ? ';' : ':';
+  my %seen;
+  my @paths = grep {
+    -d $_ && !$seen{$_}++
+  } grep {
+    defined $_ && length $_
+  } map {
+    my $p = $_;
+    $p =~ s/^\s+//;
+    $p =~ s/\s+$//;
+    $p;
+  } split /\Q$sep\E/, $raw;
+  return @paths;
+}
+
+sub _syzygy_ready {
+  my $enabled = $ENV{CHESS_SYZYGY_ENABLED};
+  if (defined $enabled && length $enabled) {
+    my $norm = lc $enabled;
+    return 0 if $norm =~ /^(?:0|false|off|no)$/;
+  }
+  my @paths = _syzygy_paths();
+  return @paths ? 1 : 0;
+}
+
 sub _movetime_for_game_ms {
-  my ($game) = @_;
+  my ($game, $state) = @_;
   if (defined $ENV{LICHESS_MOVETIME_MS} && $ENV{LICHESS_MOVETIME_MS} =~ /^\d+$/) {
     my $forced = int($ENV{LICHESS_MOVETIME_MS});
     return $forced if $forced > 0;
@@ -1255,6 +1531,28 @@ sub _movetime_for_game_ms {
     : $speed eq 'rapid' ? 3000
     : $speed eq 'classical' ? 5000
     : 7000;
+  my $piece_count = _state_piece_count($state);
+  if (defined $piece_count && $speed ne 'bullet') {
+    if ($piece_count <= 14) {
+      $horizon = int($horizon * 0.85);
+      $horizon = 12 if $horizon < 12;
+      $max_share += 0.020;
+      $max_cap_ms = int($max_cap_ms * 1.45);
+    }
+    if ($piece_count <= 10) {
+      $horizon = int($horizon * 0.78);
+      $horizon = 10 if $horizon < 10;
+      $max_share += 0.030;
+      $max_cap_ms = int($max_cap_ms * 1.65);
+    }
+    if ($piece_count <= _syzygy_max_pieces() && _syzygy_ready()) {
+      $horizon = int($horizon * 0.72);
+      $horizon = 8 if $horizon < 8;
+      $max_share += 0.030;
+      $max_cap_ms = int($max_cap_ms * 1.40);
+    }
+    $max_share = 0.22 if $max_share > 0.22;
+  }
   my $effective_cap_ms = $max_cap_ms;
 
   my $reserve_pct =
@@ -1313,6 +1611,10 @@ sub _movetime_for_game_ms {
   }
 
   my $min_ms = $remaining_ms <= 10_000 ? 60 : ($remaining_ms <= 30_000 ? 100 : 140);
+  if (defined $piece_count && $piece_count <= 10 && $remaining_ms >= 90_000 && $speed ne 'bullet' && $speed ne 'blitz') {
+    my $endgame_floor = $speed eq 'classical' ? 4500 : 3500;
+    $budget_ms = $endgame_floor if $budget_ms < $endgame_floor && $usable_ms >= $endgame_floor;
+  }
   $budget_ms = $min_ms if $budget_ms < $min_ms;
   $budget_ms = $effective_cap_ms if $budget_ms > $effective_cap_ms;
   return $budget_ms;
@@ -1409,7 +1711,7 @@ sub _quote_log_field {
 }
 
 sub compute_bestmove {
-  my ($game, $engine_out, $engine_in) = @_;
+  my ($game, $engine_out, $engine_in, $state) = @_;
   my $started_at = time;
 
   my $moves = $game->{moves} // [];
@@ -1427,7 +1729,7 @@ sub compute_bestmove {
   if (defined $depth_override) {
     $go = "go depth $depth_override";
   } else {
-    my $movetime = _movetime_for_game_ms($game);
+    my $movetime = _movetime_for_game_ms($game, $state);
     $go = "go movetime $movetime";
   }
   print {$engine_in} "$go\n";
