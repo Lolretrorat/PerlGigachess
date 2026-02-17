@@ -23,8 +23,8 @@ use constant ASPIRATION_WINDOW => 24;                  # Higher => fewer re-sear
 use constant TT_FLAG_EXACT => 0;                       # TT exact-score entry type marker.
 use constant TT_FLAG_LOWER => 1;                       # TT lower-bound entry type marker (fail-high).
 use constant TT_FLAG_UPPER => 2;                       # TT upper-bound entry type marker (fail-low).
-use constant SCORE_STABILITY_DELTA => 2;               # Higher => engine treats score shifts as "stable" more easily.
-use constant EXTRA_DEPTH_ON_UNSTABLE => 6;             # Higher => search extends more when PV/score is volatile.
+use constant SCORE_STABILITY_DELTA => 1;               # Higher => engine treats score shifts as "stable" more easily.
+use constant EXTRA_DEPTH_ON_UNSTABLE => 7;             # Higher => search extends more when PV/score is volatile.
 use constant TIME_CHECK_INTERVAL_NODES => 2048;        # Lower => checks clock more often, with extra overhead.
 use constant TIME_DEFAULT_HORIZON => 34;               # Higher => spreads clock over more future moves (safer).
 use constant TIME_INC_WEIGHT => 0.75;                  # Higher => increment contributes more to per-move budget.
@@ -32,6 +32,8 @@ use constant TIME_RESERVE_MS => 800;                   # Higher => keeps more cl
 use constant TIME_MOVE_OVERHEAD_MS => 100;             # Higher => subtracts more fixed overhead from think time.
 use constant TIME_MIN_BUDGET_MS => 20;                 # Higher => guarantees longer minimum think per move.
 use constant TIME_HARD_SCALE => 1.5;                   # Higher => hard cutoff sits farther past soft deadline.
+use constant TIME_MOVETIME_HARD_SCALE => 1.25;         # Higher => allow more overrun headroom under explicit movetime.
+use constant TIME_MOVETIME_HARD_CAP_MS => 1200;        # Higher => absolute overrun cap beyond movetime.
 use constant TIME_MAX_SHARE => 0.60;                   # Higher => allowed to spend larger share of usable time.
 use constant MID_ENDGAME_TIME_MAX_SHARE => 0.70;       # Higher => more aggressive clock use in lighter middlegames.
 use constant DEEP_ENDGAME_TIME_MAX_SHARE => 0.76;      # Higher => more aggressive clock use in deep endgames.
@@ -86,11 +88,11 @@ use constant MIDDLEGAME_MAX_PIECE_COUNT => 28;         # Higher => pawn-candidat
 use constant PAWN_CANDIDATE_MIN_BUDGET_MS => 120;      # Lower => allow pawn-candidate extra think in tighter clocks.
 use constant PAWN_CANDIDATE_EXTRA_TIME_SHARE => 0.08;  # Higher => larger soft-deadline extension on pawn candidates.
 use constant PAWN_CANDIDATE_EXTRA_TIME_MAX_MS => 180;  # Higher => larger absolute cap for pawn-candidate extension.
-use constant ROOT_NEAR_TIE_DELTA => 6;                 # Lower => fewer positions treated as contested at the root.
-use constant ROOT_CLEAR_BEST_DELTA => 18;              # Higher => require larger lead before treating root as forced/easy.
-use constant CRITICAL_EXTRA_TIME_SHARE => 0.28;        # Higher => spend more budget in contested/volatile root positions.
-use constant CRITICAL_EXTRA_TIME_MAX_MS => 260;        # Higher => larger absolute cap for critical-position time boosts.
-use constant CRITICAL_EXTENSION_MAX_HITS => 2;         # Higher => allow more repeated critical extensions per move.
+use constant ROOT_NEAR_TIE_DELTA => 10;                # Lower => fewer positions treated as contested at the root.
+use constant ROOT_CLEAR_BEST_DELTA => 24;              # Higher => require larger lead before treating root as forced/easy.
+use constant CRITICAL_EXTRA_TIME_SHARE => 0.36;        # Higher => spend more budget in contested/volatile root positions.
+use constant CRITICAL_EXTRA_TIME_MAX_MS => 420;        # Higher => larger absolute cap for critical-position time boosts.
+use constant CRITICAL_EXTENSION_MAX_HITS => 3;         # Higher => allow more repeated critical extensions per move.
 use constant DEVELOPMENT_MINOR_PENALTY => 2;           # Higher => punishes undeveloped minors more.
 use constant EARLY_ROOK_MOVE_PENALTY => 3;             # Higher => discourages early rook moves before development.
 use constant EARLY_QUEEN_MOVE_PENALTY => 4;            # Higher => discourages early queen activity.
@@ -980,7 +982,10 @@ sub _configure_time_limits {
   if (defined $movetime_ms && $movetime_ms > 0) {
     my $mt = max(1, int($movetime_ms));
     $budget_ms = max(TIME_MIN_BUDGET_MS, $mt - $move_overhead_ms);
-    $hard_ms = max($budget_ms, $mt);
+    my $hard_target = int($mt * TIME_MOVETIME_HARD_SCALE);
+    my $hard_cap = $mt + TIME_MOVETIME_HARD_CAP_MS;
+    $hard_ms = min($hard_target, $hard_cap);
+    $hard_ms = max($budget_ms, $hard_ms);
     $has_clock = 1;
   } elsif (defined $opts->{remaining_ms} && $opts->{remaining_ms} > 0) {
     $remaining_ms = max(1, int($opts->{remaining_ms}));

@@ -102,6 +102,22 @@ $prod_opening_floor_plies = int($prod_opening_floor_plies);
 $prod_opening_floor_plies = 0 if $prod_opening_floor_plies < 0;
 $prod_opening_floor_plies = 80 if $prod_opening_floor_plies > 80;
 
+my $post_book_think_mult = $ENV{LICHESS_POST_BOOK_THINK_MULT};
+if (!defined $post_book_think_mult || $post_book_think_mult !~ /^\d+(?:\.\d+)?$/) {
+  $post_book_think_mult = 1.12;
+}
+$post_book_think_mult += 0;
+$post_book_think_mult = 1.0 if $post_book_think_mult < 1.0;
+$post_book_think_mult = 2.0 if $post_book_think_mult > 2.0;
+
+my $post_book_cap_mult = $ENV{LICHESS_POST_BOOK_CAP_MULT};
+if (!defined $post_book_cap_mult || $post_book_cap_mult !~ /^\d+(?:\.\d+)?$/) {
+  $post_book_cap_mult = 1.18;
+}
+$post_book_cap_mult += 0;
+$post_book_cap_mult = 1.0 if $post_book_cap_mult < 1.0;
+$post_book_cap_mult = 2.0 if $post_book_cap_mult > 2.0;
+
 STDOUT->autoflush(1);
 STDERR->autoflush(1);
 
@@ -167,6 +183,9 @@ sub main {
     my $cap_mult = sprintf('%.2f', $prod_opening_cap_mult);
     log_info("Production opening time boost enabled: mult=$mult plies=$prod_opening_boost_plies cap_mult=$cap_mult floor_ms=$prod_opening_floor_ms floor_plies=$prod_opening_floor_plies");
   }
+  my $post_book_mult = sprintf('%.2f', $post_book_think_mult);
+  my $post_book_cap = sprintf('%.2f', $post_book_cap_mult);
+  log_info("Post-book think profile: think_mult=$post_book_mult cap_mult=$post_book_cap");
   _log_syzygy_runtime_status();
 
   stream_events();
@@ -1543,6 +1562,7 @@ sub _movetime_for_game_ms {
   }
 
   my $plies = _opening_ply_count($game);
+  my $in_post_book_phase = $plies >= 8 ? 1 : 0;
   my $horizon = $speed_horizon_targets{$speed} // 60;
   my $inc_weight =
       $speed eq 'bullet' ? 0.20
@@ -1562,11 +1582,11 @@ sub _movetime_for_game_ms {
     : $speed eq 'rapid' ? 3000
     : $speed eq 'classical' ? 5000
     : 7000;
-  if ($plies >= 8 && $plies <= 40 && $speed ne 'bullet') {
+  if ($in_post_book_phase && $speed ne 'bullet') {
     $horizon = int($horizon * 0.86);
     $horizon = 12 if $horizon < 12;
     $max_share += 0.020;
-    $max_cap_ms = int($max_cap_ms * 1.20);
+    $max_cap_ms = int($max_cap_ms * $post_book_cap_mult);
   }
   my $piece_count = _state_piece_count($state);
   if (defined $piece_count && $speed ne 'bullet') {
@@ -1606,6 +1626,10 @@ sub _movetime_for_game_ms {
   my $share_cap_ms = int(($remaining_ms * $max_share) + $increment_ms);
   $share_cap_ms = 60 if $share_cap_ms < 60;
   $budget_ms = $share_cap_ms if $budget_ms > $share_cap_ms;
+  if ($in_post_book_phase && $speed ne 'bullet' && $post_book_think_mult > 1.0) {
+    my $boosted = int($budget_ms * $post_book_think_mult);
+    $budget_ms = $boosted if $boosted > $budget_ms;
+  }
 
   if ($is_production_profile
     && $prod_opening_boost_plies > 0
