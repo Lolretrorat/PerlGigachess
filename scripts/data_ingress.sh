@@ -20,6 +20,7 @@ ALLOW_DUPLICATE_SOURCE=0
 
 OWN_URL_LOG="$ROOT_DIR/data/lichess_game_urls.log"
 OWN_PGN_OUTPUT="$ROOT_DIR/data/lichess_games_export.pgn"
+OWN_EXPORT_QUERY="${PERLGIGACHESS_OWN_EXPORT_QUERY:-clocks=0&evals=0&moves=1&tags=1&opening=1}"
 OWN_APPEND=0
 CLEAR_OWN_URL_LOG=0
 
@@ -49,6 +50,8 @@ Options:
 
   --own-url-log <path>            URL log path for OWN-URLS (default: data/lichess_game_urls.log)
   --own-pgn-output <path>         PGN output path for OWN-URLS (default: data/lichess_games_export.pgn)
+  --own-export-query <query>      Query string for Lichess export URL
+                                  (default: clocks=0&evals=0&moves=1&tags=1&opening=1)
   --own-append                    Append OWN-URLS fetched games to existing own PGN output
   --clear-own-url-log             Truncate own URL log after successful OWN-URLS ingest
 
@@ -281,7 +284,15 @@ fetch_own_urls_to_pgn() {
     fi
     seen[$game_id]=1
 
-    local url="https://lichess.org/game/export/$game_id"
+    local base_url="https://lichess.org/game/export/$game_id"
+    local url="$base_url"
+    if [[ -n "$OWN_EXPORT_QUERY" ]]; then
+      if [[ "$OWN_EXPORT_QUERY" == \?* ]]; then
+        url="${base_url}${OWN_EXPORT_QUERY}"
+      else
+        url="${base_url}?${OWN_EXPORT_QUERY}"
+      fi
+    fi
     if [[ -n "$delta_pgn_output" ]]; then
       if curl -fsSL "$url" | tee -a "$OWN_PGN_OUTPUT" >> "$delta_pgn_output"; then
         printf '\n\n' >> "$OWN_PGN_OUTPUT"
@@ -501,6 +512,11 @@ while [[ $# -gt 0 ]]; do
     --own-pgn-output)
       require_value "--own-pgn-output" "${2:-}"
       OWN_PGN_OUTPUT="${2:-}"
+      shift 2
+      ;;
+    --own-export-query)
+      require_value "--own-export-query" "${2:-}"
+      OWN_EXPORT_QUERY="${2:-}"
       shift 2
       ;;
     --own-append)

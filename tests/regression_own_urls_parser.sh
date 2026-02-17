@@ -64,8 +64,8 @@ grep -q 'https://lichess.org/smLd7iLC' "$OWN_PGN"
 grep -q 'https://lichess.org/AbCd1234' "$OWN_PGN"
 
 test "$(wc -l < "$MOCK_CALLS" | tr -d '[:space:]')" = "2"
-grep -q '^https://lichess.org/game/export/smLd7iLC$' "$MOCK_CALLS"
-grep -q '^https://lichess.org/game/export/AbCd1234$' "$MOCK_CALLS"
+grep -Fxq 'https://lichess.org/game/export/smLd7iLC?clocks=0&evals=0&moves=1&tags=1&opening=1' "$MOCK_CALLS"
+grep -Fxq 'https://lichess.org/game/export/AbCd1234?clocks=0&evals=0&moves=1&tags=1&opening=1' "$MOCK_CALLS"
 
 test ! -s "$URL_LOG"
 

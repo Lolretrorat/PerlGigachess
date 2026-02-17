@@ -12,6 +12,7 @@ SKIP_PERFT=0
 SKIP_KG8=0
 SKIP_PROMO=0
 SKIP_OWN_URLS=0
+SKIP_BOOK_UNDERPROMO=0
 
 usage() {
   cat <<'USAGE'
@@ -28,6 +29,7 @@ Options:
   --skip-kg8               Skip hyhMjQD2 regression check
   --skip-promo             Skip promotion-mate regression check
   --skip-own-urls          Skip OWN-URL parser/ingest regression check
+  --skip-book-underpromo   Skip opening-book SAN underpromotion regression check
   -h, --help               Show help
 USAGE
 }
@@ -84,6 +86,10 @@ while [[ $# -gt 0 ]]; do
       SKIP_OWN_URLS=1
       shift
       ;;
+    --skip-book-underpromo)
+      SKIP_BOOK_UNDERPROMO=1
+      shift
+      ;;
     -h|--help)
       usage
       exit 0
@@ -117,6 +123,13 @@ if [[ "$SKIP_OWN_URLS" -eq 0 ]]; then
   (cd "$ROOT_DIR" && bash tests/regression_own_urls_parser.sh)
 else
   echo "==> Skipping OWN-URL parser guard"
+fi
+
+if [[ "$SKIP_BOOK_UNDERPROMO" -eq 0 ]]; then
+  echo "==> Opening-book underpromotion SAN guard"
+  (cd "$ROOT_DIR" && bash tests/regression_book_underpromotion.sh)
+else
+  echo "==> Skipping opening-book underpromotion SAN guard"
 fi
 
 if [[ "$SKIP_PERFT" -eq 0 ]]; then
