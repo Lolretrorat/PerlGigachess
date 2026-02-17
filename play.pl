@@ -23,6 +23,7 @@ use Chess::TableUtil qw(canonical_fen_key);
 my $uci_mode = 0;
 my $depth = 15;
 my $fen;
+my $workers = 1;
 my $engine_delay_ms = _normalize_delay_ms($ENV{PLAY_ENGINE_DELAY_MS} // 300);
 my $opening_king_guard_max_ply = 16;
 my %GO_NUMERIC_TOKEN = map { $_ => 1 } qw(
@@ -33,27 +34,29 @@ my %GO_FLAG_TOKEN = map { $_ => 1 } qw(ponder infinite);
 GetOptions(
   'uci'    => \$uci_mode,
   'depth=i' => \$depth,
+  'workers=i' => \$workers,
   'engine-delay-ms=i' => \$engine_delay_ms,
   'fen=s'   => \$fen,
-) or die "Usage: $0 [--depth N] [--fen FEN] [--engine-delay-ms MS] [--uci]\n";
+) or die "Usage: $0 [--depth N] [--workers N] [--fen FEN] [--engine-delay-ms MS] [--uci]\n";
 
 $depth = _normalize_depth($depth);
+$workers = _normalize_workers($workers);
 $engine_delay_ms = _normalize_delay_ms($engine_delay_ms);
 
 my $state = Chess::State->new($fen);
 
 if ($uci_mode) {
-  run_uci($state, $depth);
+  run_uci($state, $depth, $workers);
   exit 0;
 }
 
-run_interactive($state, $depth, $engine_delay_ms);
+run_interactive($state, $depth, $workers, $engine_delay_ms);
 exit 0;
 
 sub run_interactive {
-  my ($state, $depth, $engine_delay_ms) = @_;
+  my ($state, $depth, $workers, $engine_delay_ms) = @_;
 
-  my $engine = Chess::Engine->new(\$state, $depth);
+  my $engine = Chess::Engine->new(\$state, $depth, { workers => $workers });
   my %history;
   my $cached_moves_key;
   my @cached_moves;
@@ -114,7 +117,7 @@ sub run_interactive {
 }
 
 sub run_uci {
-  my ($state, $depth) = @_;
+  my ($state, $depth, $workers) = @_;
   my $debug = 0;
   my $move_overhead_ms = 100;
   my $own_book = 1;
@@ -128,6 +131,7 @@ sub run_uci {
       print "id name PerlGigachess\n";
       print "id author Lolretrorat\n";
       print "option name Depth type spin default $depth min 1 max 20\n";
+      print "option name Workers type spin default $workers min 1 max 64\n";
       print "option name MoveOverhead type spin default $move_overhead_ms min 0 max 1000\n";
       print "option name OwnBook type check default true\n";
       print "uciok\n";
@@ -140,6 +144,9 @@ sub run_uci {
       if ($name eq 'depth') {
         my $new_depth = $value =~ /(\d+)/ ? $1 : $depth;
         $depth = _normalize_depth($new_depth);
+      } elsif ($name eq 'workers') {
+        my $new_workers = $value =~ /(-?\d+)/ ? $1 : $workers;
+        $workers = _normalize_workers($new_workers);
       } elsif ($name eq 'moveoverhead') {
         my $new_overhead = $value =~ /(-?\d+)/ ? $1 : $move_overhead_ms;
         $new_overhead = int($new_overhead);
@@ -200,7 +207,7 @@ sub run_uci {
         print "info string Draw available: $status->{claim}\n";
       }
       my $go_depth = defined $go{depth} ? _normalize_depth($go{depth}) : $depth;
-      my $engine = Chess::Engine->new(\$state, $go_depth);
+      my $engine = Chess::Engine->new(\$state, $go_depth, { workers => $workers });
       my %time_args = (move_overhead_ms => $move_overhead_ms);
       if (defined $go{movetime}) {
         $time_args{movetime_ms} = $go{movetime};
@@ -234,7 +241,7 @@ sub run_uci {
       }
       if (_should_retry_opening_king_move($state, $move, $opening_king_guard_max_ply)) {
         my $second_depth = _normalize_depth($go_depth + 1);
-        my $second_engine = Chess::Engine->new(\$state, $second_depth);
+        my $second_engine = Chess::Engine->new(\$state, $second_depth, { workers => $workers });
         my %second_time_args = %time_args;
         if (defined $second_time_args{movetime_ms}) {
           $second_time_args{movetime_ms} = _bumped_movetime_ms($second_time_args{movetime_ms});
@@ -342,6 +349,15 @@ sub _normalize_delay_ms {
   $value = int($value);
   $value = 0 if $value < 0;
   $value = 5000 if $value > 5000;
+  return $value;
+}
+
+sub _normalize_workers {
+  my ($value) = @_;
+  $value = 1 unless defined $value && $value =~ /^-?\d+$/;
+  $value = int($value);
+  $value = 1 if $value < 1;
+  $value = 64 if $value > 64;
   return $value;
 }
 

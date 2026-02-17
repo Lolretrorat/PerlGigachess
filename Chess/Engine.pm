@@ -10,7 +10,9 @@ use Chess::TableUtil qw(canonical_fen_key idx_to_square board_indices);
 
 use Chess::Book;
 
+use IO::Select;
 use List::Util qw(max min);
+use POSIX qw(WNOHANG);
 use Time::HiRes qw(time);
 
 use constant LOCATION_WEIGHT => 0.22;                  # Higher => piece-square tables influence eval more.
@@ -116,6 +118,7 @@ use constant KING_DANGER_OPEN_FILE_PENALTY => 3;       # Higher => open king fil
 use constant KING_DANGER_ADJ_FILE_PENALTY => 2;        # Higher => adjacent open files near king hurt more.
 use constant KING_AGGRESSION_ENEMY_PIECE_START => 10;  # Higher => king aggression starts earlier as enemy material shrinks.
 use constant KING_AGGRESSION_RANK_BONUS => 6;          # Higher => reward for king penetration in late game.
+use constant MAX_ROOT_WORKERS => 64;                   # Higher => allows wider root split across child workers.
 
 my %history_scores;
 my $history_scale = 1.0;
@@ -139,9 +142,28 @@ sub new {
   my %self;
   $self{state} = shift || die "Cannot instantiate Chess::Engine without a Chess::State";
   $self{depth} = shift || 6; # bigger number more thinky
+  my $opts = shift;
+  my $workers = 1;
+  if (defined $opts) {
+    if (ref($opts) eq 'HASH') {
+      $workers = exists $opts->{workers} ? $opts->{workers} : 1;
+    } else {
+      $workers = $opts;
+    }
+  }
+  $self{workers} = _normalize_worker_count($workers);
 
   # hi ken
   return bless \%self, $class;
+}
+
+sub _normalize_worker_count {
+  my ($value) = @_;
+  $value = 1 unless defined $value && $value =~ /^-?\d+$/;
+  $value = int($value);
+  $value = 1 if $value < 1;
+  $value = MAX_ROOT_WORKERS if $value > MAX_ROOT_WORKERS;
+  return $value;
 }
 
 my %piece_values = (
@@ -1423,6 +1445,365 @@ sub _search {
   return ($best_value, $best_move);
 }
 
+sub _parse_worker_line {
+  my ($worker, $line) = @_;
+  return unless defined $line && length $line;
+
+  if ($line =~ /^R\t(\d+)\t(-?\d+)$/) {
+    $worker->{scores}{$1} = int($2);
+    return;
+  }
+  if ($line eq 'T') {
+    $worker->{timed_out} = 1;
+    return;
+  }
+  if ($line =~ /^E\t(.*)$/) {
+    $worker->{error} = $1 unless defined $worker->{error};
+  }
+}
+
+sub _consume_worker_chunk {
+  my ($worker, $chunk, $final) = @_;
+  $worker->{buffer} .= $chunk if defined $chunk && length $chunk;
+
+  while ($worker->{buffer} =~ s/^(.*?\n)//) {
+    my $line = $1;
+    $line =~ s/[\r\n]+$//;
+    _parse_worker_line($worker, $line);
+  }
+
+  if ($final && length $worker->{buffer}) {
+    my $line = $worker->{buffer};
+    $worker->{buffer} = '';
+    $line =~ s/[\r\n]+$//;
+    _parse_worker_line($worker, $line);
+  }
+}
+
+sub _terminate_worker_processes {
+  my ($workers) = @_;
+  return unless ref($workers) eq 'ARRAY' && @{$workers};
+
+  my %alive = map { $_->{pid} => 1 } grep { defined $_->{pid} } @{$workers};
+  return unless keys %alive;
+
+  kill 'TERM', keys %alive;
+
+  my $grace_deadline = time() + 0.2;
+  while (keys %alive && time() < $grace_deadline) {
+    for my $pid (keys %alive) {
+      my $done = waitpid($pid, WNOHANG);
+      delete $alive{$pid} if $done > 0 || $done == -1;
+    }
+    select undef, undef, undef, 0.01 if keys %alive;
+  }
+
+  if (keys %alive) {
+    kill 'KILL', keys %alive;
+    waitpid($_, 0) for keys %alive;
+  }
+}
+
+sub _search_root_with_workers {
+  my ($state, $depth, $alpha, $beta, $workers) = @_;
+
+  %root_search_stats = (
+    legal_moves => 0,
+    best_value => undef,
+    second_value => undef,
+    best_move_key => undef,
+  );
+
+  return _search($state, $depth, $alpha, $beta, 0, undef) if $workers <= 1;
+  return _search_parallel_root($state, $depth, $alpha, $beta, $workers);
+}
+
+sub _search_parallel_root {
+  my ($state, $depth, $alpha, $beta, $workers) = @_;
+
+  my $alpha_orig = $alpha;
+  my $beta_orig = $beta;
+  my $key = _state_key($state);
+  my $tt_entry = $transposition_table{$key};
+
+  if ($tt_entry && $tt_entry->{depth} >= $depth) {
+    my $tt_score = $tt_entry->{score};
+    if ($tt_entry->{flag} == TT_FLAG_EXACT) {
+      return ($tt_score, _find_move_by_key($state, $tt_entry->{best_move_key}));
+    }
+    if ($tt_entry->{flag} == TT_FLAG_LOWER) {
+      $alpha = max($alpha, $tt_score);
+    } elsif ($tt_entry->{flag} == TT_FLAG_UPPER) {
+      $beta = min($beta, $tt_score);
+    }
+    if ($alpha >= $beta) {
+      return ($tt_score, _find_move_by_key($state, $tt_entry->{best_move_key}));
+    }
+  }
+
+  my $tt_move_key = $tt_entry ? $tt_entry->{best_move_key} : undef;
+  my @root_jobs;
+  foreach my $entry (_ordered_moves($state, 0, $tt_move_key, undef)) {
+    my ($move, $child_prev_move_key, $is_capture) = @{$entry}[1, 2, 3];
+    my $new_state = $state->make_move($move);
+    next unless defined $new_state;
+    push @root_jobs, {
+      index => scalar(@root_jobs),
+      move => $move,
+      move_key => $child_prev_move_key,
+      is_capture => $is_capture ? 1 : 0,
+      new_state => $new_state,
+    };
+  }
+
+  if (!@root_jobs) {
+    my $mate_or_draw = $state->is_checked ? -MATE_SCORE : 0;
+    return ($mate_or_draw, undef);
+  }
+
+  my $worker_count = min($workers, scalar @root_jobs);
+  return _search($state, $depth, $alpha, $beta, 0, undef) if $worker_count <= 1;
+
+  my @assignments = map { [] } (1 .. $worker_count);
+  for my $job (@root_jobs) {
+    push @{$assignments[$job->{index} % $worker_count]}, $job;
+  }
+
+  my @workers;
+  my @fallback_jobs;
+  my $selector = IO::Select->new();
+  my %reader_to_worker;
+
+  for my $assignment (@assignments) {
+    next unless @{$assignment};
+    pipe(my $reader, my $writer) or do {
+      push @fallback_jobs, @{$assignment};
+      next;
+    };
+    my $pid = fork();
+    if (!defined $pid) {
+      close $reader;
+      close $writer;
+      push @fallback_jobs, @{$assignment};
+      next;
+    }
+
+    if ($pid == 0) {
+      close $reader;
+      my $old_fh = select($writer);
+      $| = 1;
+      select($old_fh);
+
+      my $ok = eval {
+        for my $job (@{$assignment}) {
+          my ($score) = _search($job->{new_state}, $depth - 1, -$beta, -$alpha, 1, $job->{move_key});
+          $score = -$score;
+          if (_is_quiet_hanging_move($job->{new_state}, $job->{move}, $job->{is_capture})) {
+            $score -= _hanging_move_penalty($job->{new_state}, $job->{move});
+          }
+          print {$writer} "R\t$job->{index}\t$score\n";
+        }
+        1;
+      };
+
+      if (! $ok) {
+        my $err = $@;
+        if (defined $err && $err =~ /\Q$search_time_abort\E/) {
+          print {$writer} "T\n";
+          close $writer;
+          exit 0;
+        }
+        $err = '' unless defined $err;
+        $err =~ s/[\r\n\t]+/ /g;
+        print {$writer} "E\t$err\n";
+        close $writer;
+        exit 1;
+      }
+
+      close $writer;
+      exit 0;
+    }
+
+    close $writer;
+    my $worker = {
+      pid => $pid,
+      fh => $reader,
+      assignment => [ @{$assignment} ],
+      buffer => '',
+      scores => {},
+      timed_out => 0,
+      error => undef,
+      wait_status => 0,
+    };
+    push @workers, $worker;
+    $reader_to_worker{fileno($reader)} = $worker;
+    $selector->add($reader);
+  }
+
+  my $timed_out = 0;
+  while ($selector->count) {
+    if ($search_has_deadline && time() >= $search_hard_deadline) {
+      $timed_out = 1;
+      last;
+    }
+
+    my @ready = $selector->can_read(0.05);
+    next unless @ready;
+
+    for my $fh (@ready) {
+      my $fileno = fileno($fh);
+      my $worker = $reader_to_worker{$fileno};
+      next unless $worker;
+
+      my $bytes = sysread($fh, my $chunk, 4096);
+      if (!defined $bytes) {
+        next;
+      }
+
+      if ($bytes == 0) {
+        _consume_worker_chunk($worker, '', 1);
+        $selector->remove($fh);
+        delete $reader_to_worker{$fileno};
+        close $fh;
+      } else {
+        _consume_worker_chunk($worker, $chunk, 0);
+      }
+
+      if ($worker->{timed_out}) {
+        $timed_out = 1;
+        last;
+      }
+    }
+
+    last if $timed_out;
+  }
+
+  if ($timed_out) {
+    _terminate_worker_processes(\@workers);
+    die $search_time_abort;
+  }
+
+  for my $worker (@workers) {
+    my $fh = $worker->{fh};
+    close $fh if defined $fh && defined fileno($fh);
+  }
+  for my $worker (@workers) {
+    my $waited = waitpid($worker->{pid}, 0);
+    $worker->{wait_status} = $waited > 0 ? $? : 0;
+  }
+
+  my %job_by_index = map { $_->{index} => $_ } @root_jobs;
+  my %score_by_index;
+  my %missing_by_index = map { $_->{index} => 1 } @fallback_jobs;
+
+  for my $worker (@workers) {
+    my $status = $worker->{wait_status} // 0;
+    my $exit_code = ($status >> 8) & 0xff;
+    my $signal = $status & 127;
+    my $failed = $signal || $exit_code != 0 || defined $worker->{error};
+
+    for my $idx (keys %{$worker->{scores}}) {
+      $score_by_index{$idx} = $worker->{scores}{$idx};
+      delete $missing_by_index{$idx};
+    }
+
+    if ($failed) {
+      for my $job (@{$worker->{assignment}}) {
+        next if exists $score_by_index{$job->{index}};
+        $missing_by_index{$job->{index}} = 1;
+      }
+    }
+  }
+
+  for my $job (@root_jobs) {
+    $missing_by_index{$job->{index}} = 1 unless exists $score_by_index{$job->{index}};
+  }
+
+  for my $idx (sort { $a <=> $b } keys %missing_by_index) {
+    my $job = $job_by_index{$idx} or next;
+    my ($score);
+    my $ok = eval {
+      ($score) = _search($job->{new_state}, $depth - 1, -$beta, -$alpha, 1, $job->{move_key});
+      $score = -$score;
+      if (_is_quiet_hanging_move($job->{new_state}, $job->{move}, $job->{is_capture})) {
+        $score -= _hanging_move_penalty($job->{new_state}, $job->{move});
+      }
+      1;
+    };
+    if (! $ok) {
+      my $err = $@;
+      if (defined $err && $err =~ /\Q$search_time_abort\E/) {
+        die $search_time_abort;
+      }
+      die $err;
+    }
+    $score_by_index{$idx} = $score;
+  }
+
+  my $best_value = -INF_SCORE;
+  my $best_move;
+  my $best_move_key;
+  my $root_best;
+  my $root_second;
+  for my $idx (sort { $a <=> $b } keys %score_by_index) {
+    my $job = $job_by_index{$idx};
+    next unless $job;
+    my $value = $score_by_index{$idx};
+
+    if (!defined $root_best || $value > $root_best) {
+      $root_second = $root_best if defined $root_best;
+      $root_best = $value;
+      $best_move_key = $job->{move_key};
+    } elsif (!defined $root_second || $value > $root_second) {
+      $root_second = $value;
+    }
+
+    if (!defined $best_move || $value > $best_value) {
+      $best_value = $value;
+      $best_move = $job->{move};
+    }
+  }
+
+  if (!defined $best_move) {
+    my @legal = $state->generate_moves;
+    $best_move = $legal[0] if @legal;
+    $best_value = _evaluate_board($state) unless @legal;
+    $best_move_key = defined $best_move ? _move_key($best_move) : undef;
+    $root_best = $best_value;
+  }
+
+  %root_search_stats = (
+    legal_moves => scalar(@root_jobs),
+    best_value => $root_best,
+    second_value => $root_second,
+    best_move_key => $best_move_key,
+  );
+
+  my $flag = TT_FLAG_EXACT;
+  if ($best_value <= $alpha_orig) {
+    $flag = TT_FLAG_UPPER;
+  } elsif ($best_value >= $beta_orig) {
+    $flag = TT_FLAG_LOWER;
+  }
+
+  my $existing = $transposition_table{$key};
+  if (!defined $existing || $depth >= ($existing->{depth} // -1) || ($existing->{gen} // 0) != $tt_generation) {
+    $tt_size++ unless defined $existing;
+    $transposition_table{$key} = {
+      depth => $depth,
+      score => $best_value,
+      flag => $flag,
+      gen => $tt_generation,
+      best_move_key => $best_move_key,
+    };
+    if ($tt_size > TT_MAX_ENTRIES + TT_TRIM_INSERT_SLACK) {
+      _trim_transposition_table();
+    }
+  }
+
+  return ($best_value, $best_move);
+}
+
 #  mainly a converience wrapper around rec_think.
 sub think {
   my $self = shift;
@@ -1451,6 +1832,9 @@ sub think {
   @killer_moves = ();
   $tt_generation++;
   _trim_transposition_table();
+  my $workers = exists $think_opts{workers}
+    ? _normalize_worker_count($think_opts{workers})
+    : _normalize_worker_count($self->{workers});
 
   my $target_depth = max(1, $self->{depth});
   $target_depth += MID_ENDGAME_DEPTH_BOOST if $piece_count <= MID_ENDGAME_PIECE_THRESHOLD;
@@ -1494,7 +1878,7 @@ sub think {
     while (1) {
       my ($score, $move);
       my $ok = eval {
-        ($score, $move) = _search($state, $depth, $alpha, $beta, 0, undef);
+        ($score, $move) = _search_root_with_workers($state, $depth, $alpha, $beta, $workers);
         1;
       };
       if (! $ok) {

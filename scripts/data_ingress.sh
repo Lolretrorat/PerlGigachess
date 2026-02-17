@@ -22,6 +22,7 @@ OWN_URL_LOG="$ROOT_DIR/data/lichess_game_urls.log"
 OWN_PGN_OUTPUT="$ROOT_DIR/data/lichess_games_export.pgn"
 OWN_APPEND=0
 CLEAR_OWN_URL_LOG=0
+OWN_URL_WORKERS="${OWN_URL_WORKERS:-1}"
 
 TMP_DIR="/tmp"
 KEEP_DOWNLOAD=0
@@ -51,6 +52,7 @@ Options:
   --own-pgn-output <path>         PGN output path for OWN-URLS (default: data/lichess_games_export.pgn)
   --own-append                    Append OWN-URLS fetched games to existing own PGN output
   --clear-own-url-log             Truncate own URL log after successful OWN-URLS ingest
+  --own-url-workers <n>           Concurrent OWN-URL fetch workers (default: 1; env: OWN_URL_WORKERS)
 
   --skip-book                     Skip opening book updates
   --book-output <path>            Opening book output (default: data/opening_book.json)
@@ -76,6 +78,8 @@ cleanup() {
   for path in "${tmp_files[@]:-}"; do
     if [[ -n "$path" && -f "$path" ]]; then
       rm -f "$path"
+    elif [[ -n "$path" && -d "$path" ]]; then
+      rm -rf "$path"
     fi
   done
 }
@@ -222,12 +226,57 @@ extract_game_id() {
   return 1
 }
 
+fetch_own_game_to_file() {
+  local url="$1"
+  local pgn_output="$2"
+  local status_output="$3"
+
+  if curl -fsSL "$url" > "$pgn_output"; then
+    printf 'ok\n' > "$status_output"
+  else
+    : > "$pgn_output"
+    printf 'fail\n' > "$status_output"
+  fi
+}
+
+wait_for_worker_slot() {
+  local max_workers="$1"
+  local -n active_pids_ref="$2"
+  local -a remaining=()
+  local pid=""
+
+  while (( ${#active_pids_ref[@]} >= max_workers )); do
+    if ! wait -n 2>/dev/null; then
+      wait "${active_pids_ref[0]}" 2>/dev/null || true
+    fi
+
+    remaining=()
+    for pid in "${active_pids_ref[@]}"; do
+      if kill -0 "$pid" 2>/dev/null; then
+        remaining+=("$pid")
+      fi
+    done
+    active_pids_ref=("${remaining[@]}")
+  done
+}
+
 fetch_own_urls_to_pgn() {
   local delta_pgn_output="${1:-}"
   local failed_url_output="${2:-}"
+  local worker_count="$OWN_URL_WORKERS"
 
   if [[ ! -f "$OWN_URL_LOG" ]]; then
     echo "List file not found: $OWN_URL_LOG" >&2
+    exit 1
+  fi
+
+  if ! [[ "$worker_count" =~ ^[1-9][0-9]*$ ]]; then
+    echo "Invalid OWN_URL_WORKERS value: '$worker_count' (expected integer >= 1)" >&2
+    exit 1
+  fi
+
+  if ! command -v curl >/dev/null 2>&1; then
+    echo "curl is required" >&2
     exit 1
   fi
 
@@ -245,10 +294,13 @@ fetch_own_urls_to_pgn() {
   fi
 
   declare -A seen=()
+  local -a game_ids=()
   local total=0
   local fetched=0
   local skipped=0
   local failed=0
+  local fetch_tmp_dir=""
+  local i=0
 
   while IFS= read -r line || [[ -n "$line" ]]; do
     total=$((total + 1))
@@ -271,12 +323,49 @@ fetch_own_urls_to_pgn() {
       continue
     fi
     seen[$game_id]=1
+    game_ids+=("$game_id")
+  done < "$OWN_URL_LOG"
 
-    local url="https://lichess.org/game/export/$game_id"
-    if [[ -n "$delta_pgn_output" ]]; then
-      if curl -fsSL "$url" | tee -a "$OWN_PGN_OUTPUT" >> "$delta_pgn_output"; then
+  if (( ${#game_ids[@]} > 0 )); then
+    local -a active_pids=()
+
+    fetch_tmp_dir="$(mktemp -d "$TMP_DIR/own_urls_fetch_XXXXXX")"
+    tmp_files+=("$fetch_tmp_dir")
+
+    for i in "${!game_ids[@]}"; do
+      local game_id="${game_ids[$i]}"
+      local url="https://lichess.org/game/export/$game_id"
+      local pgn_part="$fetch_tmp_dir/$i.pgn"
+      local status_part="$fetch_tmp_dir/$i.status"
+
+      wait_for_worker_slot "$worker_count" active_pids
+      fetch_own_game_to_file "$url" "$pgn_part" "$status_part" &
+      local pid="$!"
+      active_pids+=("$pid")
+    done
+
+    for pid in "${active_pids[@]}"; do
+      wait "$pid" 2>/dev/null || true
+    done
+
+    for i in "${!game_ids[@]}"; do
+      local game_id="${game_ids[$i]}"
+      local url="https://lichess.org/game/export/$game_id"
+      local pgn_part="$fetch_tmp_dir/$i.pgn"
+      local status_part="$fetch_tmp_dir/$i.status"
+      local status="fail"
+
+      if [[ -f "$status_part" ]]; then
+        status="$(<"$status_part")"
+      fi
+
+      if [[ "$status" == "ok" && -s "$pgn_part" ]]; then
+        cat "$pgn_part" >> "$OWN_PGN_OUTPUT"
         printf '\n\n' >> "$OWN_PGN_OUTPUT"
-        printf '\n\n' >> "$delta_pgn_output"
+        if [[ -n "$delta_pgn_output" ]]; then
+          cat "$pgn_part" >> "$delta_pgn_output"
+          printf '\n\n' >> "$delta_pgn_output"
+        fi
         fetched=$((fetched + 1))
         echo "Fetched $game_id" >&2
       else
@@ -286,18 +375,8 @@ fetch_own_urls_to_pgn() {
         fi
         echo "Failed $game_id ($url)" >&2
       fi
-    elif curl -fsSL "$url" >> "$OWN_PGN_OUTPUT"; then
-      printf '\n\n' >> "$OWN_PGN_OUTPUT"
-      fetched=$((fetched + 1))
-      echo "Fetched $game_id" >&2
-    else
-      failed=$((failed + 1))
-      if [[ -n "$failed_url_output" ]]; then
-        printf '%s\n' "$game_id" >> "$failed_url_output"
-      fi
-      echo "Failed $game_id ($url)" >&2
-    fi
-  done < "$OWN_URL_LOG"
+    done
+  fi
 
   echo "Done: total=$total fetched=$fetched skipped=$skipped failed=$failed out=$OWN_PGN_OUTPUT" >&2
 }
@@ -502,6 +581,11 @@ while [[ $# -gt 0 ]]; do
       CLEAR_OWN_URL_LOG=1
       shift
       ;;
+    --own-url-workers)
+      require_value "--own-url-workers" "${2:-}"
+      OWN_URL_WORKERS="${2:-}"
+      shift 2
+      ;;
     --skip-book)
       RUN_BOOK=0
       shift
@@ -570,6 +654,11 @@ fi
 
 if [[ "$RUN_LICHESS_DB" -eq 1 ]] && ! validate_year_month "$LICHESS_MONTH"; then
   echo "Invalid LICHESS-DB-PGNS value: '$LICHESS_MONTH' (expected YYYY-MM)" >&2
+  exit 1
+fi
+
+if [[ "$RUN_OWN_URLS" -eq 1 ]] && ! [[ "$OWN_URL_WORKERS" =~ ^[1-9][0-9]*$ ]]; then
+  echo "Invalid OWN_URL_WORKERS/--own-url-workers value: '$OWN_URL_WORKERS' (expected integer >= 1)" >&2
   exit 1
 fi
 
