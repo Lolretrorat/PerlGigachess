@@ -6,8 +6,11 @@ ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 BOOK_OUTPUT="$ROOT_DIR/data/opening_book.json"
 BOOK_MAX_PLIES=18
 BOOK_MAX_GAMES=200000
+BOOK_MAX_GAMES_SET=0
 BOOK_MIN_POSITION_GAMES=5
 BOOK_MIN_MOVE_GAMES=2
+BOOK_MAX_GAMES_LICHESS_DB_DEFAULT="${BOOK_MAX_GAMES_LICHESS_DB_DEFAULT:-60000}"
+BOOK_BUILD_RETRY_MIN_GAMES="${BOOK_BUILD_RETRY_MIN_GAMES:-10000}"
 RUN_BOOK=1
 
 LOCATION_OUTPUT="$ROOT_DIR/data/location_modifiers.json"
@@ -23,8 +26,10 @@ OWN_PGN_OUTPUT="$ROOT_DIR/data/lichess_games_export.pgn"
 OWN_EXPORT_QUERY="${PERLGIGACHESS_OWN_EXPORT_QUERY:-clocks=0&evals=0&moves=1&tags=1&opening=1}"
 OWN_APPEND=0
 CLEAR_OWN_URL_LOG=0
+OWN_URL_WORKERS="${OWN_URL_WORKERS:-1}"
 
-TMP_DIR="${PERLGIGACHESS_TMP_DIR:-/mnt/throughput/perlgigachess-tmp}"
+DEFAULT_TMP_DIR="${PERLGIGACHESS_TMP_DIR:-/mnt/throughput/perlgigachess-tmp}"
+TMP_DIR="$DEFAULT_TMP_DIR"
 KEEP_DOWNLOAD=0
 
 RUN_LICHESS_DB=0
@@ -43,7 +48,7 @@ Required source flags (at least one):
   OWN-URLS                        Read data/lichess_game_urls.log and run ingest pipeline
 
 Options:
-  --tmp-dir <dir>                 Temp directory (default: /mnt/throughput/perlgigachess-tmp)
+  --tmp-dir <dir>                 Temp directory (default: $PERLGIGACHESS_TMP_DIR or /mnt/throughput/perlgigachess-tmp)
   --keep-download                 Keep downloaded monthly archive
   --manifest <path>               Ingest manifest path (default: data/lichess_ingest_manifest.json)
   --allow-duplicate-source        Allow ingesting an already-tracked monthly source
@@ -54,11 +59,13 @@ Options:
                                   (default: clocks=0&evals=0&moves=1&tags=1&opening=1)
   --own-append                    Append OWN-URLS fetched games to existing own PGN output
   --clear-own-url-log             Truncate own URL log after successful OWN-URLS ingest
+  --own-url-workers <n>           Concurrent OWN-URL fetch workers (default: 1; env: OWN_URL_WORKERS)
 
   --skip-book                     Skip opening book updates
   --book-output <path>            Opening book output (default: data/opening_book.json)
   --book-max-plies <n>            Max plies per game (default: 18)
   --book-max-games <n>            Max games for book (default: 200000)
+                                  Lichess DB ingest uses a safer default cap of 60000 unless overridden
   --book-min-position-games <n>   Min games per position (default: 5)
   --book-min-move-games <n>       Min games per move (default: 2)
 
@@ -83,6 +90,8 @@ cleanup() {
   for path in "${tmp_files[@]:-}"; do
     if [[ -n "$path" && -f "$path" ]]; then
       rm -f "$path"
+    elif [[ -n "$path" && -d "$path" ]]; then
+      rm -rf "$path"
     fi
   done
 }
@@ -234,12 +243,57 @@ extract_game_id() {
   return 1
 }
 
+fetch_own_game_to_file() {
+  local url="$1"
+  local pgn_output="$2"
+  local status_output="$3"
+
+  if curl -fsSL "$url" > "$pgn_output"; then
+    printf 'ok\n' > "$status_output"
+  else
+    : > "$pgn_output"
+    printf 'fail\n' > "$status_output"
+  fi
+}
+
+wait_for_worker_slot() {
+  local max_workers="$1"
+  local -n active_pids_ref="$2"
+  local -a remaining=()
+  local pid=""
+
+  while (( ${#active_pids_ref[@]} >= max_workers )); do
+    if ! wait -n 2>/dev/null; then
+      wait "${active_pids_ref[0]}" 2>/dev/null || true
+    fi
+
+    remaining=()
+    for pid in "${active_pids_ref[@]}"; do
+      if kill -0 "$pid" 2>/dev/null; then
+        remaining+=("$pid")
+      fi
+    done
+    active_pids_ref=("${remaining[@]}")
+  done
+}
+
 fetch_own_urls_to_pgn() {
   local delta_pgn_output="${1:-}"
   local failed_url_output="${2:-}"
+  local worker_count="$OWN_URL_WORKERS"
 
   if [[ ! -f "$OWN_URL_LOG" ]]; then
     echo "List file not found: $OWN_URL_LOG" >&2
+    exit 1
+  fi
+
+  if ! [[ "$worker_count" =~ ^[1-9][0-9]*$ ]]; then
+    echo "Invalid OWN_URL_WORKERS value: '$worker_count' (expected integer >= 1)" >&2
+    exit 1
+  fi
+
+  if ! command -v curl >/dev/null 2>&1; then
+    echo "curl is required" >&2
     exit 1
   fi
 
@@ -257,10 +311,13 @@ fetch_own_urls_to_pgn() {
   fi
 
   declare -A seen=()
+  local -a game_ids=()
   local total=0
   local fetched=0
   local skipped=0
   local failed=0
+  local fetch_tmp_dir=""
+  local i=0
 
   while IFS= read -r line || [[ -n "$line" ]]; do
     total=$((total + 1))
@@ -283,20 +340,49 @@ fetch_own_urls_to_pgn() {
       continue
     fi
     seen[$game_id]=1
+    game_ids+=("$game_id")
+  done < "$OWN_URL_LOG"
 
-    local base_url="https://lichess.org/game/export/$game_id"
-    local url="$base_url"
-    if [[ -n "$OWN_EXPORT_QUERY" ]]; then
-      if [[ "$OWN_EXPORT_QUERY" == \?* ]]; then
-        url="${base_url}${OWN_EXPORT_QUERY}"
-      else
-        url="${base_url}?${OWN_EXPORT_QUERY}"
+  if (( ${#game_ids[@]} > 0 )); then
+    local -a active_pids=()
+
+    fetch_tmp_dir="$(mktemp -d "$TMP_DIR/own_urls_fetch_XXXXXX")"
+    tmp_files+=("$fetch_tmp_dir")
+
+    for i in "${!game_ids[@]}"; do
+      local game_id="${game_ids[$i]}"
+      local url="https://lichess.org/game/export/$game_id"
+      local pgn_part="$fetch_tmp_dir/$i.pgn"
+      local status_part="$fetch_tmp_dir/$i.status"
+
+      wait_for_worker_slot "$worker_count" active_pids
+      fetch_own_game_to_file "$url" "$pgn_part" "$status_part" &
+      local pid="$!"
+      active_pids+=("$pid")
+    done
+
+    for pid in "${active_pids[@]}"; do
+      wait "$pid" 2>/dev/null || true
+    done
+
+    for i in "${!game_ids[@]}"; do
+      local game_id="${game_ids[$i]}"
+      local url="https://lichess.org/game/export/$game_id"
+      local pgn_part="$fetch_tmp_dir/$i.pgn"
+      local status_part="$fetch_tmp_dir/$i.status"
+      local status="fail"
+
+      if [[ -f "$status_part" ]]; then
+        status="$(<"$status_part")"
       fi
-    fi
-    if [[ -n "$delta_pgn_output" ]]; then
-      if curl -fsSL "$url" | tee -a "$OWN_PGN_OUTPUT" >> "$delta_pgn_output"; then
+
+      if [[ "$status" == "ok" && -s "$pgn_part" ]]; then
+        cat "$pgn_part" >> "$OWN_PGN_OUTPUT"
         printf '\n\n' >> "$OWN_PGN_OUTPUT"
-        printf '\n\n' >> "$delta_pgn_output"
+        if [[ -n "$delta_pgn_output" ]]; then
+          cat "$pgn_part" >> "$delta_pgn_output"
+          printf '\n\n' >> "$delta_pgn_output"
+        fi
         fetched=$((fetched + 1))
         echo "Fetched $game_id" >&2
       else
@@ -306,18 +392,8 @@ fetch_own_urls_to_pgn() {
         fi
         echo "Failed $game_id ($url)" >&2
       fi
-    elif curl -fsSL "$url" >> "$OWN_PGN_OUTPUT"; then
-      printf '\n\n' >> "$OWN_PGN_OUTPUT"
-      fetched=$((fetched + 1))
-      echo "Fetched $game_id" >&2
-    else
-      failed=$((failed + 1))
-      if [[ -n "$failed_url_output" ]]; then
-        printf '%s\n' "$game_id" >> "$failed_url_output"
-      fi
-      echo "Failed $game_id ($url)" >&2
-    fi
-  done < "$OWN_URL_LOG"
+    done
+  fi
 
   echo "Done: total=$total fetched=$fetched skipped=$skipped failed=$failed out=$OWN_PGN_OUTPUT" >&2
 }
@@ -342,18 +418,54 @@ train_location_from_pgn() {
 
 build_book_delta_and_merge() {
   local pgn_input="$1"
+  local requested_max_games="${2:-$BOOK_MAX_GAMES}"
   local delta_book
+  local current_max_games="$requested_max_games"
 
   delta_book="$(mktemp "$TMP_DIR/opening_book_delta_XXXXXX.json")"
   tmp_files+=("$delta_book")
 
-  perl "$ROOT_DIR/scripts/build_opening_book.pl" \
-    --output "$delta_book" \
-    --max-plies "$BOOK_MAX_PLIES" \
-    --max-games "$BOOK_MAX_GAMES" \
-    --min-position-games "$BOOK_MIN_POSITION_GAMES" \
-    --min-move-games "$BOOK_MIN_MOVE_GAMES" \
-    "$pgn_input"
+  while :; do
+    if perl "$ROOT_DIR/scripts/build_opening_book.pl" \
+      --output "$delta_book" \
+      --max-plies "$BOOK_MAX_PLIES" \
+      --max-games "$current_max_games" \
+      --min-position-games "$BOOK_MIN_POSITION_GAMES" \
+      --min-move-games "$BOOK_MIN_MOVE_GAMES" \
+      "$pgn_input"
+    then
+      last
+    fi
+
+    local status="$?"
+    local oom_like=0
+    if [[ "$status" -eq 137 || "$status" -eq 9 ]]; then
+      oom_like=1
+    fi
+
+    if [[ "$oom_like" -eq 1 ]]; then
+      if ! [[ "$current_max_games" =~ ^[0-9]+$ ]] || [[ "$current_max_games" -le 1 ]]; then
+        echo "Opening-book build was killed (exit $status) and cannot auto-retry because --max-games is not reducible." >&2
+        return "$status"
+      fi
+      local next_max_games=$((current_max_games / 2))
+      if [[ "$next_max_games" -lt "$BOOK_BUILD_RETRY_MIN_GAMES" ]]; then
+        echo "Opening-book build was killed (exit $status) at --max-games $current_max_games." >&2
+        echo "Auto-retry would drop below BOOK_BUILD_RETRY_MIN_GAMES=$BOOK_BUILD_RETRY_MIN_GAMES; aborting." >&2
+        return "$status"
+      fi
+      echo "Opening-book build was killed (likely OOM) at --max-games $current_max_games; retrying with --max-games $next_max_games." >&2
+      current_max_games="$next_max_games"
+      continue
+    fi
+
+    echo "Opening-book build failed with exit $status at --max-games $current_max_games." >&2
+    return "$status"
+  done
+
+  if [[ "$current_max_games" != "$requested_max_games" ]]; then
+    echo "==> Opening-book build succeeded after reducing --max-games from $requested_max_games to $current_max_games"
+  fi
 
   perl "$ROOT_DIR/scripts/merge_opening_book.pl" \
     --base "$BOOK_OUTPUT" \
@@ -376,7 +488,7 @@ run_own_urls_ingress() {
     echo "==> No newly fetched games from OWN-URLS source; skipping local pipeline"
   else
     if [[ "$RUN_BOOK" -eq 1 ]]; then
-      build_book_delta_and_merge "$delta_pgn"
+      build_book_delta_and_merge "$delta_pgn" "$BOOK_MAX_GAMES"
     fi
 
     if [[ "$RUN_LOCATION" -eq 1 ]]; then
@@ -438,11 +550,35 @@ run_lichess_db_ingress() {
   echo "    URL: $url"
   echo "    Source ID: $source_id"
   echo "    Temp file: $archive_path"
-  curl -fL --retry 3 --retry-delay 2 "$url" -o "$archive_path"
+  if curl -fL --retry 3 --retry-delay 2 "$url" -o "$archive_path"; then
+    :
+  else
+    local curl_status="$?"
+    if [[ "$curl_status" -eq 23 ]]; then
+      local free_space_human="unknown"
+      if command -v df >/dev/null 2>&1; then
+        free_space_human="$(df -h "$TMP_DIR" 2>/dev/null | awk 'NR==2 {print $4}')"
+        free_space_human="${free_space_human:-unknown}"
+      fi
+      echo "Download failed while writing archive to TMP_DIR='$TMP_DIR' (curl exit 23)." >&2
+      echo "Likely insufficient free disk space in TMP_DIR (available: $free_space_human)." >&2
+      echo "Retry with a larger temp volume via --tmp-dir <path>, e.g. --tmp-dir \"$DEFAULT_TMP_DIR\"." >&2
+    fi
+    exit "$curl_status"
+  fi
 
   if [[ "$RUN_BOOK" -eq 1 ]]; then
+    local book_max_games="$BOOK_MAX_GAMES"
+    if [[ "$BOOK_MAX_GAMES_SET" -eq 0 ]] \
+      && [[ "$book_max_games" =~ ^[0-9]+$ ]] \
+      && [[ "$BOOK_MAX_GAMES_LICHESS_DB_DEFAULT" =~ ^[0-9]+$ ]] \
+      && [[ "$book_max_games" -gt "$BOOK_MAX_GAMES_LICHESS_DB_DEFAULT" ]]
+    then
+      book_max_games="$BOOK_MAX_GAMES_LICHESS_DB_DEFAULT"
+      echo "==> Using safer Lichess DB book cap: --max-games $book_max_games (default override; set --book-max-games to change)"
+    fi
     echo "==> Updating opening book: $BOOK_OUTPUT"
-    build_book_delta_and_merge "$archive_path"
+    build_book_delta_and_merge "$archive_path" "$book_max_games"
   fi
 
   if [[ "$RUN_LOCATION" -eq 1 ]]; then
@@ -527,6 +663,11 @@ while [[ $# -gt 0 ]]; do
       CLEAR_OWN_URL_LOG=1
       shift
       ;;
+    --own-url-workers)
+      require_value "--own-url-workers" "${2:-}"
+      OWN_URL_WORKERS="${2:-}"
+      shift 2
+      ;;
     --skip-book)
       RUN_BOOK=0
       shift
@@ -544,6 +685,7 @@ while [[ $# -gt 0 ]]; do
     --book-max-games)
       require_value "--book-max-games" "${2:-}"
       BOOK_MAX_GAMES="${2:-}"
+      BOOK_MAX_GAMES_SET=1
       shift 2
       ;;
     --book-min-position-games)
@@ -595,6 +737,11 @@ fi
 
 if [[ "$RUN_LICHESS_DB" -eq 1 ]] && ! validate_year_month "$LICHESS_MONTH"; then
   echo "Invalid LICHESS-DB-PGNS value: '$LICHESS_MONTH' (expected YYYY-MM)" >&2
+  exit 1
+fi
+
+if [[ "$RUN_OWN_URLS" -eq 1 ]] && ! [[ "$OWN_URL_WORKERS" =~ ^[1-9][0-9]*$ ]]; then
+  echo "Invalid OWN_URL_WORKERS/--own-url-workers value: '$OWN_URL_WORKERS' (expected integer >= 1)" >&2
   exit 1
 fi
 
