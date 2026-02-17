@@ -69,6 +69,8 @@ STDERR->autoflush(1);
 
 my $debug = $ENV{LICHESS_DEBUG} // 0;
 my %handled_challenges;
+my %game_pid_by_id;
+my %game_id_by_pid;
 
 my $auth_header = '';
 my $ssl_ca_file = Mozilla::CA::SSL_ca_file();
@@ -84,10 +86,18 @@ my %socket_read_buffers;
 my $http_request_sock;
 my $http_request_sock_pid = $$;
 my %speed_depth_targets = (
-  blitz     => 16,
-  rapid     => 17,
-  classical => 18,
-  unlimited => 18,
+  bullet    => 8,
+  blitz     => 10,
+  rapid     => 12,
+  classical => 14,
+  unlimited => 14,
+);
+my %speed_horizon_targets = (
+  bullet    => 90,
+  blitz     => 72,
+  rapid     => 50,
+  classical => 38,
+  unlimited => 34,
 );
 
 unless (caller) {
@@ -143,6 +153,9 @@ sub reap_children {
   while (1) {
     my $kid = waitpid(-1, WNOHANG);
     last if !defined $kid || $kid <= 0;
+    if (my $game_id = delete $game_id_by_pid{$kid}) {
+      delete $game_pid_by_id{$game_id};
+    }
     log_debug("Reaped child pid $kid");
   }
 }
@@ -299,9 +312,23 @@ sub handle_event {
     my $game = (ref $event->{game} eq 'HASH') ? $event->{game} : $event;
     my $game_id = (ref $game eq 'HASH' && defined $game->{id}) ? $game->{id} : 'unknown';
     log_info("Game $game_id finished");
+    stop_game_handler($game_id) if $game_id ne 'unknown';
     log_finished_game_url($game);
   } else {
     log_info("Unhandled event type '$type'");
+  }
+}
+
+sub stop_game_handler {
+  my ($game_id) = @_;
+  return unless defined $game_id && length $game_id;
+  my $pid = delete $game_pid_by_id{$game_id};
+  return unless defined $pid;
+  delete $game_id_by_pid{$pid};
+  if (kill 'TERM', $pid) {
+    log_info("Stopped handler pid $pid for finished game $game_id");
+  } else {
+    log_debug("Handler pid $pid for $game_id already exited");
   }
 }
 
@@ -622,6 +649,10 @@ sub decline_challenge {
 sub start_game {
   my ($game) = @_;
   my $game_id = $game->{id};
+  if (my $existing = $game_pid_by_id{$game_id}) {
+    log_debug("Game $game_id already has handler pid $existing");
+    return;
+  }
   my $pid = fork();
   if (!defined $pid) {
     log_warn("Unable to fork for game $game_id: $!");
@@ -632,6 +663,8 @@ sub start_game {
     play_game($game);
     exit 0;
   }
+  $game_pid_by_id{$game_id} = $pid;
+  $game_id_by_pid{$pid} = $game_id;
   log_info("Spawned handler pid $pid for game $game_id");
 }
 
@@ -720,7 +753,6 @@ sub handle_game_event {
     $game->{state_move_count} = 0;
     $game->{state_initial_fen} = undef;
     update_turn_from_event($game, $event);
-    _set_game_time_control($game, $event);
     _set_game_time_control($game, $event);
     print {$engine_in} "ucinewgame\n";
     maybe_apply_speed_depth($game, $engine_out, $engine_in);
@@ -859,7 +891,16 @@ sub maybe_move {
     && $threshold_ms > 0
     && $analysis->{elapsed_ms} > $threshold_ms)
   {
-    log_warn("You're not saying anything, Tony.");
+    my $base_ms = $game->{time_control_base_ms} // 0;
+    log_warn(
+      sprintf(
+        'Think exceeded 10%% of time control in %s: %dms > %dms (base=%dms)',
+        $game->{id},
+        $analysis->{elapsed_ms},
+        $threshold_ms,
+        $base_ms,
+      )
+    );
   }
   if (ref $analysis eq 'HASH' && defined $analysis->{elapsed_ms}
     && $analysis->{elapsed_ms} >= $think_slow_ms)
@@ -1050,7 +1091,11 @@ sub _set_game_time_control {
   my ($game, $event) = @_;
   return unless ref $game eq 'HASH';
   return unless ref $event eq 'HASH';
-  my $raw = $event->{timeControl} // $event->{state}{timeControl} // $event->{timecontrol};
+  my $raw = $event->{timeControl}
+    // $event->{state}{timeControl}
+    // $event->{timecontrol}
+    // $event->{clock}
+    // $event->{state}{clock};
   my $ms = _parse_time_control_ms($raw);
   return unless defined $ms && $ms > 0;
   $game->{time_control_base_ms} = $ms;
@@ -1068,13 +1113,17 @@ sub _parse_time_control_ms {
     }
   }
   if (ref $raw eq 'HASH') {
-    for my $key (qw(initialTime initialTimeMs base initial initial_millis)) {
-      if (defined $raw->{$key} && $raw->{$key} =~ /^\d+$/) {
-        return $raw->{$key} + 0;
-      }
+    for my $key (qw(initialTimeMs initial_millis)) {
+      next unless defined $raw->{$key} && $raw->{$key} =~ /^\d+$/;
+      return $raw->{$key} + 0;
     }
-    if (defined $raw->{seconds} && $raw->{seconds} =~ /^\d+$/) {
-      return $raw->{seconds} * 1000;
+    for my $key (qw(initialTime base initial seconds limit)) {
+      next unless defined $raw->{$key} && $raw->{$key} =~ /^\d+$/;
+      my $val = $raw->{$key} + 0;
+      return ($val >= 10_000) ? $val : ($val * 1000);
+    }
+    if (defined $raw->{totalTime} && $raw->{totalTime} =~ /^\d+$/) {
+      return $raw->{totalTime} + 0;
     }
   }
   return;
@@ -1084,9 +1133,83 @@ sub _time_control_threshold_ms {
   my ($game) = @_;
   return unless ref $game eq 'HASH';
   my $base = $game->{time_control_base_ms};
+  if (!defined $base || $base <= 0) {
+    my $w = $game->{wtime};
+    my $b = $game->{btime};
+    $w = undef unless defined $w && $w =~ /^\d+$/;
+    $b = undef unless defined $b && $b =~ /^\d+$/;
+    my $fallback = 0;
+    $fallback = $w if defined $w && $w > $fallback;
+    $fallback = $b if defined $b && $b > $fallback;
+    $base = $fallback if $fallback > 0;
+  }
   return unless defined $base && $base > 0;
   my $threshold = int($base * 0.10);
   return $threshold > 0 ? $threshold : 1;
+}
+
+sub _clock_for_side_ms {
+  my ($game) = @_;
+  return unless ref $game eq 'HASH';
+  my $color = normalize_color($game->{my_color});
+  return unless defined $color;
+  my $remaining = $color eq 'white' ? $game->{wtime} : $game->{btime};
+  my $increment = $color eq 'white' ? $game->{winc} : $game->{binc};
+  return unless defined $remaining && $remaining =~ /^\d+$/;
+  $increment = 0 unless defined $increment && $increment =~ /^\d+$/;
+  return ($remaining + 0, $increment + 0);
+}
+
+sub _movetime_for_game_ms {
+  my ($game) = @_;
+  if (defined $ENV{LICHESS_MOVETIME_MS} && $ENV{LICHESS_MOVETIME_MS} =~ /^\d+$/) {
+    my $forced = int($ENV{LICHESS_MOVETIME_MS});
+    return $forced if $forced > 0;
+  }
+
+  my ($remaining_ms, $increment_ms) = _clock_for_side_ms($game);
+  return 800 unless defined $remaining_ms;
+
+  my $speed = normalize_speed($game->{speed}) // '';
+  my $horizon = $speed_horizon_targets{$speed} // 60;
+  my $inc_weight =
+      $speed eq 'bullet' ? 0.20
+    : $speed eq 'blitz' ? 0.28
+    : $speed eq 'rapid' ? 0.35
+    : $speed eq 'classical' ? 0.45
+    : 0.50;
+  my $max_share =
+      $speed eq 'bullet' ? 0.035
+    : $speed eq 'blitz' ? 0.055
+    : $speed eq 'rapid' ? 0.080
+    : $speed eq 'classical' ? 0.100
+    : 0.120;
+  my $max_cap_ms =
+      $speed eq 'bullet' ? 900
+    : $speed eq 'blitz' ? 1600
+    : $speed eq 'rapid' ? 3000
+    : $speed eq 'classical' ? 5000
+    : 7000;
+
+  my $reserve_pct =
+      $remaining_ms <= 10_000 ? 0.35
+    : $remaining_ms <= 30_000 ? 0.25
+    : $remaining_ms <= 60_000 ? 0.18
+    : 0.12;
+  my $reserve_ms = int($remaining_ms * $reserve_pct);
+  $reserve_ms = 300 if $reserve_ms < 300;
+  my $usable_ms = $remaining_ms - $reserve_ms;
+  $usable_ms = 0 if $usable_ms < 0;
+
+  my $budget_ms = int(($usable_ms / $horizon) + ($increment_ms * $inc_weight));
+  my $share_cap_ms = int(($remaining_ms * $max_share) + $increment_ms);
+  $share_cap_ms = 60 if $share_cap_ms < 60;
+  $budget_ms = $share_cap_ms if $budget_ms > $share_cap_ms;
+
+  my $min_ms = $remaining_ms <= 10_000 ? 60 : ($remaining_ms <= 30_000 ? 100 : 140);
+  $budget_ms = $min_ms if $budget_ms < $min_ms;
+  $budget_ms = $max_cap_ms if $budget_ms > $max_cap_ms;
+  return $budget_ms;
 }
 
 sub _set_engine_depth {
@@ -1135,7 +1258,7 @@ sub maybe_apply_speed_depth {
   return unless defined $target;
   my $current_depth = $game->{engine_depth};
   $current_depth = $game->{engine_depth_default} if !defined $current_depth;
-  return if defined $current_depth && $current_depth >= $target;
+  return if defined $current_depth && $current_depth == $target;
 
   return _set_engine_depth($game, $engine_out, $engine_in, $target, $speed);
 }
@@ -1173,13 +1296,8 @@ sub compute_bestmove {
   my $go;
   if (defined $depth_override) {
     $go = "go depth $depth_override";
-  } elsif (defined $game->{wtime} && defined $game->{btime}) {
-    $go = sprintf 'go wtime %d btime %d', $game->{wtime}, $game->{btime};
-    if (defined $game->{winc} && defined $game->{binc}) {
-      $go .= sprintf ' winc %d binc %d', $game->{winc}, $game->{binc};
-    }
   } else {
-    my $movetime = $ENV{LICHESS_MOVETIME_MS} // 800;
+    my $movetime = _movetime_for_game_ms($game);
     $go = "go movetime $movetime";
   }
   print {$engine_in} "$go\n";
