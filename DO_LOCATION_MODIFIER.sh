@@ -14,7 +14,8 @@ OWN_URL_LOG="$ROOT_DIR/data/lichess_game_urls.log"
 OWN_PGN_OUTPUT="$ROOT_DIR/data/lichess_games_export.pgn"
 CLEAR_OWN_URL_LOG=1
 
-TMP_DIR="/tmp"
+DEFAULT_TMP_DIR="${PERLGIGACHESS_TMP_DIR:-/mnt/throughput/perlgigachess-tmp}"
+TMP_DIR="$DEFAULT_TMP_DIR"
 KEEP_DOWNLOAD=0
 ALLOW_DUPLICATE_SOURCE=0
 
@@ -41,7 +42,7 @@ Options:
   --own-url-log <path>            URL log path (default: data/lichess_game_urls.log)
   --own-pgn-output <path>         OWN-URLS PGN output path
   --keep-url-log                  Do not clear URL log after OWN-URLS ingest
-  --tmp-dir <dir>                 Temp directory for ingest (default: /tmp)
+  --tmp-dir <dir>                 Temp directory for ingest (default: $PERLGIGACHESS_TMP_DIR or /mnt/throughput/perlgigachess-tmp)
   --keep-download                 Keep monthly archive download
   --allow-duplicate-source        Allow duplicate monthly ingest source
   --location-output <path>        Location output path (default: data/location_modifiers.json)
@@ -153,6 +154,7 @@ if [[ ! -f "$UPDATE_LOCATION_SCRIPT" ]]; then
   echo "Missing script: $UPDATE_LOCATION_SCRIPT" >&2
   exit 1
 fi
+mkdir -p "$TMP_DIR"
 
 if [[ "$RUN_INGRESS" -eq 1 ]]; then
   ingress_args=(

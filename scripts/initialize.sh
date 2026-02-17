@@ -16,7 +16,8 @@ RUN_OWN_URLS=0
 AUTO_OWN_URLS=1
 
 SYZYGY_TOOLS_DIR="/tmp/perlgigachess-syzygy"
-TMP_DIR="/tmp"
+DEFAULT_TMP_DIR="${PERLGIGACHESS_TMP_DIR:-/mnt/throughput/perlgigachess-tmp}"
+TMP_DIR="$DEFAULT_TMP_DIR"
 KEEP_DOWNLOAD=0
 ALLOW_DUPLICATE_SOURCE=0
 
@@ -36,7 +37,7 @@ Options:
   --skip-endgame-table            Skip endgame table creation/validation
   --no-own-urls                   Disable default OWN-URLS ingestion when no ingress flag is set
   --syzygy-tools-dir <dir>        Target directory for Syzygy tooling (default: /tmp/perlgigachess-syzygy)
-  --tmp-dir <dir>                 Temp directory for ingest stages (default: /tmp)
+  --tmp-dir <dir>                 Temp directory for ingest stages (default: $PERLGIGACHESS_TMP_DIR or /mnt/throughput/perlgigachess-tmp)
   --keep-download                 Keep downloaded monthly archive
   --allow-duplicate-source        Allow duplicate monthly source ingest
   -h, --help                      Show this message
