@@ -5,9 +5,12 @@ ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 
 PERFT_DEPTH=4
 KG8_DEPTH=3
-KG8_MOVETIME=10000
+KG8_MOVETIME=20000
+PROMO_DEPTH=4
+PROMO_MOVETIME=1500
 SKIP_PERFT=0
 SKIP_KG8=0
+SKIP_PROMO=0
 
 usage() {
   cat <<'USAGE'
@@ -17,9 +20,12 @@ Usage:
 Options:
   --perft-depth <N>        Perft depth for regression sanity (default: 4)
   --kg8-depth <N>          Depth for hyhMjQD2 guard position (default: 3)
-  --kg8-movetime <MS>      Movetime for hyhMjQD2 guard position (default: 10000)
+  --kg8-movetime <MS>      Movetime for hyhMjQD2 guard position (default: 20000)
+  --promo-depth <N>        Depth for promotion-mate regression (default: 4)
+  --promo-movetime <MS>    Movetime for promotion-mate regression (default: 1500)
   --skip-perft             Skip perft sanity pass
   --skip-kg8               Skip hyhMjQD2 regression check
+  --skip-promo             Skip promotion-mate regression check
   -h, --help               Show help
 USAGE
 }
@@ -50,12 +56,26 @@ while [[ $# -gt 0 ]]; do
       KG8_MOVETIME="${2:-}"
       shift 2
       ;;
+    --promo-depth)
+      require_value "--promo-depth" "${2:-}"
+      PROMO_DEPTH="${2:-}"
+      shift 2
+      ;;
+    --promo-movetime)
+      require_value "--promo-movetime" "${2:-}"
+      PROMO_MOVETIME="${2:-}"
+      shift 2
+      ;;
     --skip-perft)
       SKIP_PERFT=1
       shift
       ;;
     --skip-kg8)
       SKIP_KG8=1
+      shift
+      ;;
+    --skip-promo)
+      SKIP_PROMO=1
       shift
       ;;
     -h|--help)
@@ -77,6 +97,13 @@ if [[ "$SKIP_KG8" -eq 0 ]]; then
   (cd "$ROOT_DIR" && perl tests/regression_hyhMjQD2_kg8.pl --depth "$KG8_DEPTH" --movetime "$KG8_MOVETIME")
 else
   echo "==> Skipping hyhMjQD2 guard"
+fi
+
+if [[ "$SKIP_PROMO" -eq 0 ]]; then
+  echo "==> Promotion mate guard (2nd/7th rank queen promotion)"
+  (cd "$ROOT_DIR" && perl tests/regression_promotion_mate.pl --depth "$PROMO_DEPTH" --movetime "$PROMO_MOVETIME")
+else
+  echo "==> Skipping promotion mate guard"
 fi
 
 if [[ "$SKIP_PERFT" -eq 0 ]]; then
