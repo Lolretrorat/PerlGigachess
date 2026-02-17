@@ -23,6 +23,7 @@ ALLOW_DUPLICATE_SOURCE=0
 
 OWN_URL_LOG="$ROOT_DIR/data/lichess_game_urls.log"
 OWN_PGN_OUTPUT="$ROOT_DIR/data/lichess_games_export.pgn"
+OWN_EXPORT_QUERY="${PERLGIGACHESS_OWN_EXPORT_QUERY:-clocks=0&evals=0&moves=1&tags=1&opening=1}"
 OWN_APPEND=0
 CLEAR_OWN_URL_LOG=0
 OWN_URL_WORKERS="${OWN_URL_WORKERS:-1}"
@@ -54,6 +55,8 @@ Options:
 
   --own-url-log <path>            URL log path for OWN-URLS (default: data/lichess_game_urls.log)
   --own-pgn-output <path>         PGN output path for OWN-URLS (default: data/lichess_games_export.pgn)
+  --own-export-query <query>      Query string for Lichess export URL
+                                  (default: clocks=0&evals=0&moves=1&tags=1&opening=1)
   --own-append                    Append OWN-URLS fetched games to existing own PGN output
   --clear-own-url-log             Truncate own URL log after successful OWN-URLS ingest
   --own-url-workers <n>           Concurrent OWN-URL fetch workers (default: 1; env: OWN_URL_WORKERS)
@@ -70,6 +73,10 @@ Options:
   --location-output <path>        Location table output (default: data/location_modifiers.json)
   --location-games <n>            Max games for location training (default: 5000)
   --location-scale <n>            Scale passed to ./init train-location
+
+Notes:
+  - For OWN-URLS, you can run fetch-only mode with both --skip-book and --skip-location.
+  - LICHESS-DB-PGNS still requires at least one processing stage (book or location).
 
 Examples:
   scripts/data_ingress.sh LICHESS-DB-PGNS 2025-01
@@ -213,17 +220,22 @@ extract_game_id() {
   [[ -z "$line" ]] && return 1
   [[ "$line" =~ ^# ]] && return 1
 
-  if [[ "$line" =~ ^([A-Za-z0-9]{8})$ ]]; then
+  if [[ "$line" =~ ^([A-Za-z0-9]{8})([A-Za-z0-9]{4})?$ ]]; then
     printf '%s\n' "${BASH_REMATCH[1]}"
     return 0
   fi
 
-  if [[ "$line" =~ ^https?://lichess\.org/([A-Za-z0-9]{8})([/#?].*)?$ ]]; then
+  if [[ "$line" =~ ^https?://lichess\.org/([A-Za-z0-9]{8})([A-Za-z0-9]{4})?([/#?].*)?$ ]]; then
     printf '%s\n' "${BASH_REMATCH[1]}"
     return 0
   fi
 
-  if [[ "$line" =~ ^/?([A-Za-z0-9]{8})([/#?].*)?$ ]]; then
+  if [[ "$line" =~ ^https?://lichess\.org/game/export/([A-Za-z0-9]{8})([A-Za-z0-9]{4})?([/#?].*)?$ ]]; then
+    printf '%s\n' "${BASH_REMATCH[1]}"
+    return 0
+  fi
+
+  if [[ "$line" =~ ^/?([A-Za-z0-9]{8})([A-Za-z0-9]{4})?([/#?].*)?$ ]]; then
     printf '%s\n' "${BASH_REMATCH[1]}"
     return 0
   fi
@@ -638,6 +650,11 @@ while [[ $# -gt 0 ]]; do
       OWN_PGN_OUTPUT="${2:-}"
       shift 2
       ;;
+    --own-export-query)
+      require_value "--own-export-query" "${2:-}"
+      OWN_EXPORT_QUERY="${2:-}"
+      shift 2
+      ;;
     --own-append)
       OWN_APPEND=1
       shift
@@ -729,8 +746,13 @@ if [[ "$RUN_OWN_URLS" -eq 1 ]] && ! [[ "$OWN_URL_WORKERS" =~ ^[1-9][0-9]*$ ]]; t
 fi
 
 if [[ "$RUN_BOOK" -eq 0 && "$RUN_LOCATION" -eq 0 ]]; then
-  echo "Nothing to do: both --skip-book and --skip-location are set" >&2
-  exit 1
+  if [[ "$RUN_OWN_URLS" -eq 1 && "$RUN_LICHESS_DB" -eq 0 ]]; then
+    echo "==> Running OWN-URLS in fetch-only mode (--skip-book --skip-location)"
+  else
+    echo "Nothing to do: both --skip-book and --skip-location are set" >&2
+    echo "Lichess DB ingestion requires at least one processing stage." >&2
+    exit 1
+  fi
 fi
 
 mkdir -p "$TMP_DIR"

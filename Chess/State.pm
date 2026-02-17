@@ -491,7 +491,7 @@ sub generate_pseudo_moves
       # Pawn
       #  Attempt a one-space-forward move
       if (! $self->[BOARD][$idx + 10]) {
-        if ($idx > 90) {
+        if ($idx > 80) {
           #  Promote.
           push @m,
               [ $idx, $idx + 10, BISHOP ],
@@ -514,7 +514,7 @@ sub generate_pseudo_moves
       {
         # check ownership by opponent.
         if ($self->[BOARD][$idx + $_] < 0) {
-          if ($idx > 90) {
+          if ($idx > 80) {
             # end of board for white!  Promote.
             push @m,
                 [ $idx, $idx + $_, BISHOP ],

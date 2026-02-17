@@ -143,6 +143,22 @@ $post_book_cap_mult += 0;
 $post_book_cap_mult = 1.0 if $post_book_cap_mult < 1.0;
 $post_book_cap_mult = 2.0 if $post_book_cap_mult > 2.0;
 
+my $repetition_avoid_cp = $ENV{LICHESS_REPETITION_AVOID_CP};
+if (!defined $repetition_avoid_cp || $repetition_avoid_cp !~ /^-?\d+$/) {
+  $repetition_avoid_cp = 30;
+}
+$repetition_avoid_cp = int($repetition_avoid_cp);
+$repetition_avoid_cp = 0 if $repetition_avoid_cp < 0;
+$repetition_avoid_cp = 1000 if $repetition_avoid_cp > 1000;
+
+my $repetition_seek_cp = $ENV{LICHESS_REPETITION_SEEK_CP};
+if (!defined $repetition_seek_cp || $repetition_seek_cp !~ /^-?\d+$/) {
+  $repetition_seek_cp = -30;
+}
+$repetition_seek_cp = int($repetition_seek_cp);
+$repetition_seek_cp = -$repetition_seek_cp if $repetition_seek_cp > 0;
+$repetition_seek_cp = -1000 if $repetition_seek_cp < -1000;
+
 STDOUT->autoflush(1);
 STDERR->autoflush(1);
 
@@ -165,11 +181,11 @@ my %socket_read_buffers;
 my $http_request_sock;
 my $http_request_sock_pid = $$;
 my %speed_depth_targets = (
-  bullet    => 8,
-  blitz     => 10,
-  rapid     => 12,
-  classical => 14,
-  unlimited => 14,
+  bullet    => 10,
+  blitz     => 12,
+  rapid     => 14,
+  classical => 16,
+  unlimited => 17,
 );
 my %speed_horizon_targets = (
   bullet    => 90,
@@ -1422,7 +1438,8 @@ sub _candidate_moves {
 sub _reorder_candidates_for_repetition {
   my ($game, $state, $candidates_ref, $analysis) = @_;
   return @$candidates_ref unless ref $candidates_ref eq 'ARRAY' && @$candidates_ref;
-  return @$candidates_ref unless _should_apply_repetition_guard($game, $state, $analysis);
+  my $policy = _repetition_policy($analysis);
+  return @$candidates_ref unless _should_apply_repetition_guard($game, $state, $analysis, $policy);
 
   my $visits = _position_visit_counts_from_game($game);
   return @$candidates_ref unless ref $visits eq 'HASH' && %$visits;
@@ -1446,23 +1463,33 @@ sub _reorder_candidates_for_repetition {
 
     my $next_key = canonical_fen_key($next);
     my $visits_after = ($visits->{$next_key} // 0) + 1;
-    my $penalty = 0;
-    $penalty -= 10_000 if $visits_after >= 3;
-    $penalty -= 3_500 if $visits_after == 2;
+    my $score = 0;
+    if ($policy eq 'seek') {
+      $score += 10_000 if $visits_after >= 3;
+      $score += 3_500 if $visits_after == 2;
+    } else {
+      $score -= 10_000 if $visits_after >= 3;
+      $score -= 3_500 if $visits_after == 2;
+    }
 
     my $target = $board->[$encoded->[1]] // 0;
-    $penalty += 900 if $target < 0; # prefer converting material when ahead
-    $penalty += 450 if _is_pawn_advance_move($state, $encoded);
+    if ($policy eq 'seek') {
+      $score -= 900 if $target < 0;
+      $score -= 450 if _is_pawn_advance_move($state, $encoded);
+    } else {
+      $score += 900 if $target < 0; # prefer converting material when ahead
+      $score += 450 if _is_pawn_advance_move($state, $encoded);
+    }
 
     if ($last_move && _is_simple_backtrack($uci, $last_move)) {
-      $penalty -= 2_000;
+      $score += ($policy eq 'seek') ? 2_000 : -2_000;
     }
 
     if ($next->is_checked) {
-      $penalty += 350;
+      $score += 350;
     }
 
-    push @scored, [ $idx, $penalty, $uci ];
+    push @scored, [ $idx, $score, $uci ];
   }
 
   my @ordered = map { $_->[2] } sort {
@@ -1470,28 +1497,36 @@ sub _reorder_candidates_for_repetition {
   } @scored;
 
   if ($ordered[0] ne $candidates_ref->[0]) {
-    log_info("Repetition guard reordered move candidates for $game->{id}: $candidates_ref->[0] -> $ordered[0]");
+    my $cp = (ref($analysis) eq 'HASH' && defined $analysis->{cp}) ? $analysis->{cp} : 'n/a';
+    log_info("Repetition guard ($policy, cp=$cp) reordered move candidates for $game->{id}: $candidates_ref->[0] -> $ordered[0]");
   }
   return @ordered;
 }
 
+sub _repetition_policy {
+  my ($analysis) = @_;
+  return unless ref($analysis) eq 'HASH';
+
+  if (defined($analysis->{mate}) && ($analysis->{mate} // 0) > 0) {
+    return 'avoid';
+  }
+  if (defined($analysis->{mate}) && ($analysis->{mate} // 0) < 0) {
+    return 'seek';
+  }
+
+  return unless defined($analysis->{cp});
+  my $cp = $analysis->{cp} // 0;
+  return 'avoid' if $cp >= $repetition_avoid_cp;
+  return 'seek' if $cp <= $repetition_seek_cp;
+  return;
+}
+
 sub _should_apply_repetition_guard {
-  my ($game, $state, $analysis) = @_;
+  my ($game, $state, $analysis, $policy) = @_;
   return 0 unless ref $game eq 'HASH' && ref $state;
   return 0 if ref($analysis) eq 'HASH' && (($analysis->{source} // '') eq 'tablebase');
-
-  my ($remaining_ms, $increment_ms) = _clock_for_side_ms($game);
-  return 0 unless defined $remaining_ms;
-  return 0 if $remaining_ms < 18_000;
-  return 0 if defined $increment_ms && $increment_ms < 500 && $remaining_ms < 35_000;
-
-  my $piece_count = _state_piece_count($state);
-  my $is_endgame = defined $piece_count && $piece_count <= 14;
-
-  return 1 if $is_endgame && ref($analysis) eq 'HASH' && defined($analysis->{mate}) && ($analysis->{mate} // 0) > 0;
-  return 1 if $is_endgame && ref($analysis) eq 'HASH' && defined($analysis->{cp}) && ($analysis->{cp} // 0) >= 45;
-  return 1 if ref($analysis) eq 'HASH' && defined($analysis->{cp}) && ($analysis->{cp} // 0) >= 90;
-  return 0;
+  $policy = _repetition_policy($analysis) unless defined $policy;
+  return defined $policy ? 1 : 0;
 }
 
 sub _position_visit_counts_from_game {

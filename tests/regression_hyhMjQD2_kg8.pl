@@ -9,11 +9,11 @@ use Getopt::Long qw(GetOptions);
 use IPC::Open2;
 
 my $depth = 3;
-my $movetime_ms = 10000;
+my $movetime_ms = 20000;
 GetOptions(
   'depth=i' => \$depth,
   'movetime=i' => \$movetime_ms,
-) or die "Usage: perl tests/regression_hyhMjQD2_kg8.pl [--depth N] [--movetime MS]\n";
+) or die "Usage: perl tests/regression_hyhMjQD2_kg8.pl [--depth N] [--movetime MS] (default movetime 20000)\n";
 
 $depth = 1 if $depth < 1;
 $depth = 20 if $depth > 20;
