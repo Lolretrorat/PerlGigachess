@@ -820,9 +820,18 @@ sub handle_game_event {
 
 sub parse_moves {
   my ($moves) = @_;
-  return [] unless defined $moves && length $moves;
-  my @moves = split / /, $moves;
-  return \@moves;
+  return [] unless defined $moves;
+  if (ref $moves eq 'ARRAY') {
+    my @list = grep { defined $_ && length $_ } @$moves;
+    return \@list;
+  }
+  return [] if ref $moves;
+
+  $moves =~ s/^\s+//;
+  $moves =~ s/\s+$//;
+  return [] unless length $moves;
+  my @list = grep { length $_ } split /\s+/, $moves;
+  return \@list;
 }
 
 sub normalize_color {
@@ -920,6 +929,11 @@ sub maybe_move {
   return unless $my_turn;
 
   my $state = _sync_state_from_game($game);
+  if (!$state && _resync_game_from_lichess($game, 'state rebuild failed')) {
+    $state = _sync_state_from_game($game);
+    log_info("Recovered local state for $game->{id} after Lichess resync")
+      if $state;
+  }
   unless ($state) {
     log_warn("Unable to rebuild local state for $game->{id}; skipping move");
     return;
@@ -995,6 +1009,154 @@ sub maybe_move {
     last unless _is_retryable_illegal_reject($res);
     log_warn("Retrying with alternate legal move for $game->{id} after HTTP 400");
   }
+}
+
+sub _resync_game_from_lichess {
+  my ($game, $reason) = @_;
+  return 0 unless ref $game eq 'HASH';
+  my $game_id = $game->{id};
+  return 0 unless defined $game_id && length $game_id;
+
+  my $moves = $game->{moves};
+  $moves = [] unless ref $moves eq 'ARRAY';
+  my $move_count = scalar(@$moves);
+  my $last_move = $move_count ? ($moves->[-1] // '') : '';
+  my $marker = "$move_count:$last_move";
+  if (defined $game->{last_resync_marker}
+    && $game->{last_resync_marker} eq $marker)
+  {
+    log_debug("Skipping duplicate Lichess resync attempt for $game_id marker=$marker");
+    return 0;
+  }
+  $game->{last_resync_marker} = $marker;
+
+  my $suffix = defined $reason && length $reason ? " ($reason)" : '';
+  log_warn("State desync in $game_id$suffix; polling Lichess for snapshot");
+  my $snapshot = _fetch_game_snapshot_once($game_id);
+  unless (ref $snapshot eq 'HASH') {
+    log_warn("Failed to poll Lichess snapshot for $game_id");
+    return 0;
+  }
+
+  my $snapshot_type = $snapshot->{type} // '';
+  my $state_payload = ref $snapshot->{state} eq 'HASH' ? $snapshot->{state} : {};
+  my $moves_payload = exists $state_payload->{moves}
+    ? $state_payload->{moves}
+    : $snapshot->{moves};
+  unless (defined $moves_payload) {
+    log_warn("Lichess snapshot for $game_id is missing moves payload");
+    return 0;
+  }
+  my $remote_moves = parse_moves($moves_payload);
+  my $remote_initial_fen = normalize_fen(
+    $snapshot->{initialFen} // $snapshot->{fen} // $game->{initial_fen}
+  );
+
+  $game->{initial_fen} = $remote_initial_fen;
+  $game->{moves} = $remote_moves;
+  $game->{status} = $state_payload->{status}
+    if defined $state_payload->{status};
+  $game->{status} = $snapshot->{status}
+    if !defined($state_payload->{status}) && defined($snapshot->{status});
+  $game->{wtime} = $state_payload->{wtime} if defined $state_payload->{wtime};
+  $game->{btime} = $state_payload->{btime} if defined $state_payload->{btime};
+  $game->{winc}  = $state_payload->{winc}  if defined $state_payload->{winc};
+  $game->{binc}  = $state_payload->{binc}  if defined $state_payload->{binc};
+  update_turn_from_event($game, $snapshot);
+  update_turn_from_event($game, $state_payload);
+  $game->{pending_move} = undef;
+
+  $game->{state_obj} = undef;
+  $game->{state_move_count} = 0;
+  $game->{state_initial_fen} = undef;
+
+  my $count = scalar(@{$game->{moves}});
+  log_info("Applied Lichess snapshot for $game_id (type=$snapshot_type moves=$count)");
+  return 1;
+}
+
+sub _fetch_game_snapshot_once {
+  my ($game_id) = @_;
+  return unless defined $game_id && length $game_id;
+
+  my $path = "/bot/game/stream/$game_id";
+  my $sock = _open_lichess_socket();
+  unless ($sock) {
+    my $err = $last_tls_error || IO::Socket::SSL::errstr() || 'unknown';
+    log_warn("Unable to open TLS socket for $path: $err");
+    return;
+  }
+
+  my %headers = (
+    'Host'          => 'lichess.org',
+    'Authorization' => "Bearer $token",
+    'Accept'        => 'application/x-ndjson',
+    'User-Agent'    => $user_agent,
+    'Connection'    => 'close',
+  );
+  unless (_write_http_request($sock, 'GET', "/api$path", \%headers, '')) {
+    my $err = $! ? "$!" : 'unable to write request';
+    log_warn("Snapshot request write failed for $path: $err");
+    _clear_socket_buffer($sock);
+    close $sock;
+    return;
+  }
+
+  my $resp_headers = _read_http_headers($sock);
+  if (!$resp_headers->{status} || $resp_headers->{status} !~ /^2/) {
+    my $status_line = $resp_headers->{status_line} // 'unknown';
+    my $body = _read_all($sock);
+    $body =~ s/\s+/ /g if defined $body;
+    $body = substr($body // '', 0, 180);
+    log_warn("Snapshot request for $path failed: $status_line body='$body'");
+    _clear_socket_buffer($sock);
+    close $sock;
+    return;
+  }
+
+  my $snapshot;
+  my $buffer = '';
+  my $capture = sub {
+    my ($payload) = @_;
+    return unless ref $payload eq 'HASH';
+    $snapshot = $payload unless $snapshot;
+  };
+
+  my $te = $resp_headers->{'transfer-encoding'} // '';
+  if ($te =~ /chunked/i) {
+    while (!$snapshot) {
+      my $len_line = _read_line($sock);
+      last unless defined $len_line;
+      $len_line =~ s/\r?\n$//;
+      $len_line =~ s/;.*$//;
+      next if $len_line eq '';
+      my $len = eval { hex($len_line) };
+      last unless defined $len;
+      last if $len == 0;
+      my $chunk = _read_exact($sock, $len);
+      last unless defined $chunk;
+      _read_exact($sock, 2);
+      $buffer .= $chunk;
+      _drain_ndjson($path, \$buffer, $capture);
+    }
+  } else {
+    while (!$snapshot) {
+      my $chunk = '';
+      my $rv = sysread($sock, $chunk, 4096);
+      last unless defined $rv && $rv > 0;
+      $buffer .= $chunk;
+      _drain_ndjson($path, \$buffer, $capture);
+    }
+  }
+
+  _clear_socket_buffer($sock);
+  close $sock;
+
+  if (!$snapshot) {
+    log_warn("Snapshot stream for $path closed before payload arrived");
+    return;
+  }
+  return $snapshot;
 }
 
 sub _sync_state_from_game {
