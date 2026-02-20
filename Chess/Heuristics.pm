@@ -74,6 +74,11 @@ use constant MIDDLEGAME_MAX_PIECE_COUNT => 28; # Upper piece-count bound for mid
 use constant PAWN_CANDIDATE_MIN_BUDGET_MS => 120; # Minimum budget for pawn-candidate time extension; [FIXED VALUE].
 use constant PAWN_CANDIDATE_EXTRA_TIME_SHARE => 0.08; # Budget share used for pawn-candidate extension; [FIXED VALUE].
 use constant PAWN_CANDIDATE_EXTRA_TIME_MAX_MS => 180; # Max milliseconds added for pawn-candidate extension; [FIXED VALUE].
+use constant SAC_MOVE_ORDER_PENALTY => 42; # Move-order penalty for speculative piece-for-pawn sac candidates; min=0 max=220.
+use constant SAC_SCORE_DROP_CP => 259; # Score-drop threshold used to scrutinize sac candidates; [FIXED VALUE].
+use constant SAC_CANDIDATE_MIN_BUDGET_MS => 140; # Minimum budget before extending time on sac candidates; [FIXED VALUE].
+use constant SAC_EXTRA_TIME_SHARE => 0.10; # Budget share used for sac-candidate extension; [FIXED VALUE].
+use constant SAC_EXTRA_TIME_MAX_MS => 260; # Max milliseconds added for sac-candidate extension; [FIXED VALUE].
 use constant ROOT_NEAR_TIE_DELTA => 10; # Root score gap considered a near tie; [FIXED VALUE].
 use constant ROOT_CLEAR_BEST_DELTA => 24; # Root score gap considered a clear best; [FIXED VALUE].
 use constant DEVELOPMENT_MINOR_PENALTY => 4; # Opening penalty per undeveloped minor piece; min=1 max=10.
@@ -194,6 +199,11 @@ our @ENGINE_EXPORTS = qw(
   PAWN_CANDIDATE_MIN_BUDGET_MS
   PAWN_CANDIDATE_EXTRA_TIME_SHARE
   PAWN_CANDIDATE_EXTRA_TIME_MAX_MS
+  SAC_MOVE_ORDER_PENALTY
+  SAC_SCORE_DROP_CP
+  SAC_CANDIDATE_MIN_BUDGET_MS
+  SAC_EXTRA_TIME_SHARE
+  SAC_EXTRA_TIME_MAX_MS
   ROOT_NEAR_TIE_DELTA
   ROOT_CLEAR_BEST_DELTA
   DEVELOPMENT_MINOR_PENALTY

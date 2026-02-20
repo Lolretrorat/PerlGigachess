@@ -847,6 +847,8 @@ sub _move_order_score {
     $score += _history_bonus($move_key);
     $score += _killer_bonus($move_key, $ply);
     $score += _countermove_bonus($move_key, $prev_move_key);
+  } elsif (_is_sac_candidate_move_in_state($state, $move)) {
+    $score -= SAC_MOVE_ORDER_PENALTY;
   }
 
   if (abs($from_piece) == KING
@@ -978,6 +980,42 @@ sub _is_pawn_move_in_state {
   return 0 unless ref($board) eq 'ARRAY';
   my $from_piece = $board->[$move->[0]] // 0;
   return abs($from_piece) == PAWN ? 1 : 0;
+}
+
+sub _is_sac_candidate_move_in_state {
+  my ($state, $move) = @_;
+  return 0 unless $state && ref($move) eq 'ARRAY';
+  return 0 if defined $move->[2]; # promotion is not a simple piece-for-pawn sac.
+  my $board = $state->[Chess::State::BOARD];
+  return 0 unless ref($board) eq 'ARRAY';
+  my $from_piece = $board->[$move->[0]] // 0;
+  my $to_piece = $board->[$move->[1]] // 0;
+  return 0 unless $to_piece == OPP_PAWN;
+  my $attacker = abs($from_piece);
+  return 0 if $attacker <= PAWN;
+  return 0 if $attacker == KING;
+  return 1;
+}
+
+sub _has_sac_candidate_with_score_drop {
+  my ($state, $drop_cp) = @_;
+  return 0 unless ref($state);
+  my $candidates = $root_search_stats{root_candidates};
+  return 0 unless ref($candidates) eq 'ARRAY' && @{$candidates};
+  my $best_value = $root_search_stats{best_value};
+  $drop_cp = SAC_SCORE_DROP_CP unless defined $drop_cp;
+  $drop_cp = int($drop_cp);
+  $drop_cp = 0 if $drop_cp < 0;
+
+  foreach my $candidate (@{$candidates}) {
+    next unless ref($candidate) eq 'HASH';
+    my $move = $candidate->{move};
+    next unless _is_sac_candidate_move_in_state($state, $move);
+    return 1 unless defined $best_value && defined $candidate->{score};
+    my $drop = int($best_value) - int($candidate->{score});
+    return 1 if $drop >= $drop_cp;
+  }
+  return 0;
 }
 
 sub _has_non_pawn_material {
@@ -1906,6 +1944,7 @@ sub think {
   my $prev_best_move_key;
   my $had_prev_score = 0;
   my $pawn_candidate_extension_used = 0;
+  my $sac_candidate_extension_used = 0;
 
   DEPTH_LOOP:
   for my $depth (1 .. $max_depth) {
@@ -1978,6 +2017,7 @@ sub think {
     }
 
     my $score_delta = $had_prev_score ? abs($iteration_score - $prev_score) : 0;
+    my $score_drop_from_prev = $had_prev_score ? ($iteration_score - $prev_score) : 0;
     my $volatile = $pv_changed || $score_delta > (SCORE_STABILITY_DELTA * 4) || $aspiration_expansions >= 2;
     my $root_legal_moves = $root_search_stats{legal_moves} // 0;
     my $root_gap;
@@ -2035,6 +2075,25 @@ sub think {
       if ($extra_ms > 0) {
         _extend_soft_deadline($extra_ms);
         $pawn_candidate_extension_used = 1;
+      }
+    }
+
+    if ($time_policy->{has_clock}
+      && !$time_policy->{panic_level}
+      && !$sac_candidate_extension_used
+      && $depth >= 4
+      && ($time_policy->{budget_ms} || 0) >= SAC_CANDIDATE_MIN_BUDGET_MS)
+    {
+      my $best_is_sac = defined $iteration_move && _is_sac_candidate_move_in_state($state, $iteration_move);
+      my $sac_drop_risk = $score_drop_from_prev <= -SAC_SCORE_DROP_CP ? 1 : 0;
+      my $sac_candidate_seen = _has_sac_candidate_with_score_drop($state, SAC_SCORE_DROP_CP);
+      if ($best_is_sac || $sac_drop_risk || $sac_candidate_seen) {
+        my $extra_ms = int(($time_policy->{budget_ms} || 0) * SAC_EXTRA_TIME_SHARE);
+        $extra_ms = min(SAC_EXTRA_TIME_MAX_MS, $extra_ms);
+        if ($extra_ms > 0) {
+          _extend_soft_deadline($extra_ms);
+          $sac_candidate_extension_used = 1;
+        }
       }
     }
 

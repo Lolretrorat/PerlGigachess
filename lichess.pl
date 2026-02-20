@@ -185,6 +185,30 @@ $repetition_rethink_mult += 0;
 $repetition_rethink_mult = 1.0 if $repetition_rethink_mult < 1.0;
 $repetition_rethink_mult = 3.0 if $repetition_rethink_mult > 3.0;
 
+my $repetition_guard_disable_below_ms = $ENV{LICHESS_REPETITION_GUARD_DISABLE_BELOW_MS};
+if (!defined $repetition_guard_disable_below_ms || $repetition_guard_disable_below_ms !~ /^\d+$/) {
+  $repetition_guard_disable_below_ms = 8_000;
+}
+$repetition_guard_disable_below_ms = int($repetition_guard_disable_below_ms);
+$repetition_guard_disable_below_ms = 0 if $repetition_guard_disable_below_ms < 0;
+$repetition_guard_disable_below_ms = 60_000 if $repetition_guard_disable_below_ms > 60_000;
+
+my $repetition_rethink_min_clock_ms = $ENV{LICHESS_REPETITION_RETHINK_MIN_CLOCK_MS};
+if (!defined $repetition_rethink_min_clock_ms || $repetition_rethink_min_clock_ms !~ /^\d+$/) {
+  $repetition_rethink_min_clock_ms = 25_000;
+}
+$repetition_rethink_min_clock_ms = int($repetition_rethink_min_clock_ms);
+$repetition_rethink_min_clock_ms = 0 if $repetition_rethink_min_clock_ms < 0;
+$repetition_rethink_min_clock_ms = 120_000 if $repetition_rethink_min_clock_ms > 120_000;
+
+my $repetition_rethink_min_budget_multiple = $ENV{LICHESS_REPETITION_RETHINK_MIN_BUDGET_MULT};
+if (!defined $repetition_rethink_min_budget_multiple || $repetition_rethink_min_budget_multiple !~ /^\d+(?:\.\d+)?$/) {
+  $repetition_rethink_min_budget_multiple = 8.0;
+}
+$repetition_rethink_min_budget_multiple += 0;
+$repetition_rethink_min_budget_multiple = 1.0 if $repetition_rethink_min_budget_multiple < 1.0;
+$repetition_rethink_min_budget_multiple = 20.0 if $repetition_rethink_min_budget_multiple > 20.0;
+
 my $eval_drop_extra_think_cp = $ENV{LICHESS_EVAL_DROP_EXTRA_THINK_CP};
 if (!defined $eval_drop_extra_think_cp || $eval_drop_extra_think_cp !~ /^\d+$/) {
   $eval_drop_extra_think_cp = 40;
@@ -1227,21 +1251,25 @@ sub maybe_move {
     && $game->{repetition_guard_meta}{blocked}
     && !(ref($analysis) eq 'HASH' && (($analysis->{source} // '') eq 'tablebase')))
   {
-    my $rethink = _rethink_with_multiplier(
-      $game,
-      $engine_out,
-      $engine_in,
-      $state,
-      $analysis,
-      $repetition_rethink_mult,
-      'repetition-guard',
-    );
-    if (_analysis_prefers($rethink, $analysis)) {
-      $analysis = $rethink;
-      $best = (ref $analysis eq 'HASH') ? $analysis->{move} : undef;
-      @candidates = _candidate_moves($state, $best);
-      @candidates = _reorder_candidates_for_mate($state, \@candidates, $analysis);
-      @candidates = _reorder_candidates_for_repetition($game, $state, \@candidates, $analysis);
+    if (_allow_repetition_rethink($game, $state)) {
+      my $rethink = _rethink_with_multiplier(
+        $game,
+        $engine_out,
+        $engine_in,
+        $state,
+        $analysis,
+        $repetition_rethink_mult,
+        'repetition-guard',
+      );
+      if (_analysis_prefers($rethink, $analysis)) {
+        $analysis = $rethink;
+        $best = (ref $analysis eq 'HASH') ? $analysis->{move} : undef;
+        @candidates = _candidate_moves($state, $best);
+        @candidates = _reorder_candidates_for_mate($state, \@candidates, $analysis);
+        @candidates = _reorder_candidates_for_repetition($game, $state, \@candidates, $analysis);
+      }
+    } else {
+      log_info("Skipping repetition-guard re-think in $game->{id}: low clock");
     }
   }
   _log_critical_position_decision($game, $analysis, $candidates[0]) if @candidates;
@@ -1866,10 +1894,27 @@ sub _repetition_policy {
   return;
 }
 
+sub _allow_repetition_rethink {
+  my ($game, $state) = @_;
+  my ($remaining_ms) = _clock_for_side_ms($game);
+  return 1 unless defined $remaining_ms;
+  my $required_ms = $repetition_rethink_min_clock_ms;
+  my $planned_ms = _movetime_for_game_ms($game, $state);
+  if (defined $planned_ms && $planned_ms > 0) {
+    my $budget_floor = int($planned_ms * $repetition_rethink_min_budget_multiple);
+    $required_ms = $budget_floor if $budget_floor > $required_ms;
+  }
+  return $remaining_ms >= $required_ms ? 1 : 0;
+}
+
 sub _should_apply_repetition_guard {
   my ($game, $state, $analysis, $policy) = @_;
   return 0 unless ref $game eq 'HASH' && ref $state;
   return 0 if ref($analysis) eq 'HASH' && (($analysis->{source} // '') eq 'tablebase');
+  if ($repetition_guard_disable_below_ms > 0) {
+    my ($remaining_ms) = _clock_for_side_ms($game);
+    return 0 if defined $remaining_ms && $remaining_ms <= $repetition_guard_disable_below_ms;
+  }
   if (ref($analysis) eq 'HASH' && defined $analysis->{mate}) {
     my $mate = int($analysis->{mate});
     return 0 if abs($mate) <= 2;
