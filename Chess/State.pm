@@ -3,6 +3,15 @@ use strict;
 use warnings;
 
 use Chess::Constant;
+use Chess::MoveGen ();
+use Chess::Zobrist qw(
+  zobrist_empty_key
+  zobrist_is_key
+  zobrist_turn_token
+  zobrist_piece_token
+  zobrist_castle_token
+  zobrist_ep_token
+);
 
 # Named array keys, saves a bit of time over hash-based object
 use constant 1.03 {
@@ -16,6 +25,7 @@ use constant 1.03 {
   OPP_KING_IDX => 7,
   PIECE_COUNT => 8,
   STATE_KEY => 9,
+  FEN_KEY => 10,
 };
 #use constant KINGS => 6;
 
@@ -118,7 +128,8 @@ sub set_fen {
   $self->[KING_IDX] = $king_idx;
   $self->[OPP_KING_IDX] = $opp_king_idx;
   $self->[PIECE_COUNT] = $piece_count;
-  $self->[STATE_KEY] = undef;
+  $self->[STATE_KEY] = _compute_zobrist_key($self);
+  $self->[FEN_KEY] = undef;
 }
 
 # Return a FEN string representing the current game state
@@ -282,6 +293,68 @@ sub _flip_idx {
   return 110 - $rank_base + $file;
 }
 
+sub _internal_idx_to_abs_square {
+  my ($idx, $turn) = @_;
+  my $mapped = $turn ? _flip_idx($idx) : $idx;
+  my $file = ($mapped % 10) - 1;
+  return unless $file >= 0 && $file < 8;
+  my $rank = int($mapped / 10) - 2;
+  return unless $rank >= 0 && $rank < 8;
+  return (8 * $rank) + $file;
+}
+
+sub _internal_piece_to_zobrist_piece {
+  my ($piece, $turn) = @_;
+  return unless defined $piece;
+  return if $piece == EMPTY || abs($piece) > KING;
+  my $absolute_piece = $turn ? -$piece : $piece;
+  my $offset = $absolute_piece < 0 ? 6 : 0;
+  return $offset + abs($absolute_piece) - 1;
+}
+
+sub _absolute_castle_flags {
+  my ($turn, $castle) = @_;
+  my ($white_ref, $black_ref) = $turn
+    ? ($castle->[1], $castle->[0])
+    : ($castle->[0], $castle->[1]);
+  return (
+    $white_ref->[CASTLE_KING] ? 1 : 0,
+    $white_ref->[CASTLE_QUEEN] ? 1 : 0,
+    $black_ref->[CASTLE_KING] ? 1 : 0,
+    $black_ref->[CASTLE_QUEEN] ? 1 : 0,
+  );
+}
+
+sub _compute_zobrist_key {
+  my ($self) = @_;
+  my $turn = $self->[TURN] ? 1 : 0;
+  my $key = zobrist_empty_key();
+
+  for my $idx (21 .. 28, 31 .. 38, 41 .. 48, 51 .. 58, 61 .. 68, 71 .. 78, 81 .. 88, 91 .. 98) {
+    my $piece = $self->[BOARD][$idx] // EMPTY;
+    next if $piece == EMPTY || abs($piece) > KING;
+    my $piece_idx = _internal_piece_to_zobrist_piece($piece, $turn);
+    my $square = _internal_idx_to_abs_square($idx, $turn);
+    next unless defined $piece_idx && defined $square;
+    $key ^= zobrist_piece_token($piece_idx, $square);
+  }
+
+  $key ^= zobrist_turn_token() if $turn;
+
+  my ($white_king, $white_queen, $black_king, $black_queen) = _absolute_castle_flags($turn, $self->[CASTLE]);
+  $key ^= zobrist_castle_token(0, CASTLE_KING) if $white_king;
+  $key ^= zobrist_castle_token(0, CASTLE_QUEEN) if $white_queen;
+  $key ^= zobrist_castle_token(1, CASTLE_KING) if $black_king;
+  $key ^= zobrist_castle_token(1, CASTLE_QUEEN) if $black_queen;
+
+  if (defined $self->[EP]) {
+    my $ep_square = _internal_idx_to_abs_square($self->[EP], $turn);
+    $key ^= zobrist_ep_token($ep_square) if defined $ep_square;
+  }
+
+  return $key;
+}
+
 
 sub make_move {
   my ($self, $move) = @_;
@@ -304,6 +377,16 @@ sub make_move {
   }
   my $own_king_idx = $self->[KING_IDX];
   my $opp_king_idx = $self->[OPP_KING_IDX];
+  my $turn = $self->[TURN] ? 1 : 0;
+  my $old_state_key = $self->[STATE_KEY];
+  $old_state_key = _compute_zobrist_key($self) unless zobrist_is_key($old_state_key);
+  my ($white_king_old, $white_queen_old, $black_king_old, $black_queen_old)
+    = _absolute_castle_flags($turn, $self->[CASTLE]);
+  my $from_square = _internal_idx_to_abs_square($move->[0], $turn);
+  my $to_square = _internal_idx_to_abs_square($move->[1], $turn);
+  my $moving_piece_idx = _internal_piece_to_zobrist_piece($from_piece, $turn);
+  my $captured_piece = $to_piece;
+  my $captured_idx = $move->[1];
 
   # En-passant capture moves to an empty target square.
   if ($from_piece == PAWN
@@ -315,6 +398,8 @@ sub make_move {
   {
     $is_en_passant = 1;
     $is_capture = 1;
+    $captured_piece = $board[$move->[1] - 10];
+    $captured_idx = $move->[1] - 10;
     $board[$move->[1] - 10] = EMPTY;
     $piece_count--;
   }
@@ -377,17 +462,77 @@ sub make_move {
 
   my $new_king_idx = defined $opp_king_idx ? _flip_idx($opp_king_idx) : undef;
   my $new_opp_king_idx = defined $own_king_idx ? _flip_idx($own_king_idx) : undef;
+  my @new_castle = ( \@next_to_move_castle, \@next_opponent_castle );
+  my ($white_king_new, $white_queen_new, $black_king_new, $black_queen_new)
+    = _absolute_castle_flags(! $turn, \@new_castle);
+
+  my $new_state_key = $old_state_key;
+  $new_state_key ^= zobrist_turn_token();
+
+  if (defined $self->[EP]) {
+    my $old_ep_square = _internal_idx_to_abs_square($self->[EP], $turn);
+    $new_state_key ^= zobrist_ep_token($old_ep_square) if defined $old_ep_square;
+  }
+
+  $new_state_key ^= zobrist_castle_token(0, CASTLE_KING) if $white_king_old;
+  $new_state_key ^= zobrist_castle_token(0, CASTLE_QUEEN) if $white_queen_old;
+  $new_state_key ^= zobrist_castle_token(1, CASTLE_KING) if $black_king_old;
+  $new_state_key ^= zobrist_castle_token(1, CASTLE_QUEEN) if $black_queen_old;
+
+  if (defined $moving_piece_idx && defined $from_square) {
+    $new_state_key ^= zobrist_piece_token($moving_piece_idx, $from_square);
+  }
+  if ($is_capture && defined $captured_piece && $captured_piece != EMPTY) {
+    my $captured_piece_idx = _internal_piece_to_zobrist_piece($captured_piece, $turn);
+    my $captured_square = _internal_idx_to_abs_square($captured_idx, $turn);
+    if (defined $captured_piece_idx && defined $captured_square) {
+      $new_state_key ^= zobrist_piece_token($captured_piece_idx, $captured_square);
+    }
+  }
+  my $placed_piece = defined $move->[2] ? $move->[2] : $from_piece;
+  my $placed_piece_idx = _internal_piece_to_zobrist_piece($placed_piece, $turn);
+  if (defined $placed_piece_idx && defined $to_square) {
+    $new_state_key ^= zobrist_piece_token($placed_piece_idx, $to_square);
+  }
+
+  if (defined $move->[3]) {
+    my $rook_piece_idx = _internal_piece_to_zobrist_piece(ROOK, $turn);
+    if (defined $rook_piece_idx) {
+      if ($move->[3] == CASTLE_KING) {
+        my $rook_from_square = _internal_idx_to_abs_square(28, $turn);
+        my $rook_to_square = _internal_idx_to_abs_square(26, $turn);
+        $new_state_key ^= zobrist_piece_token($rook_piece_idx, $rook_from_square) if defined $rook_from_square;
+        $new_state_key ^= zobrist_piece_token($rook_piece_idx, $rook_to_square) if defined $rook_to_square;
+      } elsif ($move->[3] == CASTLE_QUEEN) {
+        my $rook_from_square = _internal_idx_to_abs_square(21, $turn);
+        my $rook_to_square = _internal_idx_to_abs_square(24, $turn);
+        $new_state_key ^= zobrist_piece_token($rook_piece_idx, $rook_from_square) if defined $rook_from_square;
+        $new_state_key ^= zobrist_piece_token($rook_piece_idx, $rook_to_square) if defined $rook_to_square;
+      }
+    }
+  }
+
+  $new_state_key ^= zobrist_castle_token(0, CASTLE_KING) if $white_king_new;
+  $new_state_key ^= zobrist_castle_token(0, CASTLE_QUEEN) if $white_queen_new;
+  $new_state_key ^= zobrist_castle_token(1, CASTLE_KING) if $black_king_new;
+  $new_state_key ^= zobrist_castle_token(1, CASTLE_QUEEN) if $black_queen_new;
+
+  if (defined $new_ep) {
+    my $new_ep_square = _internal_idx_to_abs_square($new_ep, ! $turn);
+    $new_state_key ^= zobrist_ep_token($new_ep_square) if defined $new_ep_square;
+  }
 
   return bless [
     \@board,
     ! $self->[TURN],
-    [ \@next_to_move_castle, \@next_opponent_castle ],
+    \@new_castle,
     $new_ep,
     (($from_piece == PAWN || defined $move->[2] || $is_capture || $is_en_passant) ? 0 : $self->[HALFMOVE] + 1),
     ($self->[TURN] ? $self->[MOVE] + 1 : $self->[MOVE]),
     $new_king_idx,
     $new_opp_king_idx,
     $piece_count,
+    $new_state_key,
     undef,
     #[ $self->[KINGS][1], $self->[KINGS][0] ]
   ];
@@ -404,6 +549,26 @@ sub generate_moves
   return grep {
     defined make_move($self, $_);
   } @{generate_pseudo_moves($self)};
+}
+
+sub generate_moves_by_type {
+  my ($self, $type) = @_;
+  return Chess::MoveGen::generate_moves($self, $type);
+}
+
+# Immutable-state compatibility helpers for do/undo style callers.
+sub do_move {
+  my ($self, $move, $stack) = @_;
+  my $next = make_move($self, $move);
+  return unless defined $next;
+  push @{$stack}, $self if ref($stack) eq 'ARRAY';
+  return $next;
+}
+
+sub undo_move {
+  my ($self, $stack) = @_;
+  return unless ref($stack) eq 'ARRAY' && @{$stack};
+  return pop @{$stack};
 }
 
 sub is_checked {

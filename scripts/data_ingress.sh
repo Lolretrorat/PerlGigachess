@@ -16,6 +16,8 @@ RUN_BOOK=1
 LOCATION_OUTPUT="$ROOT_DIR/data/location_modifiers.json"
 LOCATION_GAMES=5000
 LOCATION_SCALE=""
+LOCATION_ADAPTIVE_MIN_GAMES=120
+LOCATION_ADAPTIVE_MIN_SCALE=16
 RUN_LOCATION=1
 
 MANIFEST_PATH="$ROOT_DIR/data/lichess_ingest_manifest.json"
@@ -73,6 +75,8 @@ Options:
   --location-output <path>        Location table output (default: data/location_modifiers.json)
   --location-games <n>            Max games for location training (default: 5000)
   --location-scale <n>            Scale passed to ./init train-location
+  --location-adaptive-min-games <n>  Game-count target for full location scale (default: 120)
+  --location-adaptive-min-scale <n>  Minimum auto-scale for tiny OWN-URL samples (default: 16)
 
 Notes:
   - For OWN-URLS, you can run fetch-only mode with both --skip-book and --skip-location.
@@ -417,6 +421,33 @@ fetch_own_urls_to_pgn() {
 train_location_from_pgn() {
   local pgn_file="$1"
   local -a train_cmd
+  local effective_scale="$LOCATION_SCALE"
+  local pgn_games=0
+
+  if command -v rg >/dev/null 2>&1; then
+    pgn_games="$(rg -c '^\[Event ' "$pgn_file" || true)"
+  else
+    pgn_games="$(grep -c '^\[Event ' "$pgn_file" || true)"
+  fi
+  pgn_games="${pgn_games//[[:space:]]/}"
+  if [[ -z "$pgn_games" || ! "$pgn_games" =~ ^[0-9]+$ ]]; then
+    pgn_games=0
+  fi
+
+  if [[ -z "$effective_scale" && "$pgn_games" -gt 0 && "$LOCATION_ADAPTIVE_MIN_GAMES" =~ ^[0-9]+$ && "$LOCATION_ADAPTIVE_MIN_GAMES" -gt 0 ]]; then
+    if [[ "$pgn_games" -lt "$LOCATION_ADAPTIVE_MIN_GAMES" ]]; then
+      local scale_top=$((60 * pgn_games))
+      local auto_scale=$((scale_top / LOCATION_ADAPTIVE_MIN_GAMES))
+      if [[ "$auto_scale" -lt "$LOCATION_ADAPTIVE_MIN_SCALE" ]]; then
+        auto_scale="$LOCATION_ADAPTIVE_MIN_SCALE"
+      fi
+      if [[ "$auto_scale" -gt 60 ]]; then
+        auto_scale=60
+      fi
+      effective_scale="$auto_scale"
+      echo "==> Auto-scaled location training for small sample ($pgn_games games): --scale $effective_scale" >&2
+    fi
+  fi
 
   train_cmd=(
     "$ROOT_DIR/init"
@@ -425,8 +456,8 @@ train_location_from_pgn() {
     --games "$LOCATION_GAMES"
     --accumulate
   )
-  if [[ -n "$LOCATION_SCALE" ]]; then
-    train_cmd+=(--scale "$LOCATION_SCALE")
+  if [[ -n "$effective_scale" ]]; then
+    train_cmd+=(--scale "$effective_scale")
   fi
 
   "${train_cmd[@]}" < "$pgn_file"
@@ -731,6 +762,16 @@ while [[ $# -gt 0 ]]; do
     --location-scale)
       require_value "--location-scale" "${2:-}"
       LOCATION_SCALE="${2:-}"
+      shift 2
+      ;;
+    --location-adaptive-min-games)
+      require_value "--location-adaptive-min-games" "${2:-}"
+      LOCATION_ADAPTIVE_MIN_GAMES="${2:-}"
+      shift 2
+      ;;
+    --location-adaptive-min-scale)
+      require_value "--location-adaptive-min-scale" "${2:-}"
+      LOCATION_ADAPTIVE_MIN_SCALE="${2:-}"
       shift 2
       ;;
     -h|--help)

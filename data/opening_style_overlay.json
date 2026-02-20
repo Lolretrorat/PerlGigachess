@@ -1,0 +1,62 @@
+[
+  {
+    "key": "rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq e6",
+    "moves": [
+      { "uci": "g1f3", "played": 220000, "weight": 220000, "white": 188000, "draw": 22000, "black": 10000 }
+    ]
+  },
+  {
+    "key": "r1bqkbnr/pppp1ppp/2n5/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq -",
+    "moves": [
+      { "uci": "d2d4", "played": 220000, "weight": 220000, "white": 188000, "draw": 22000, "black": 10000 }
+    ]
+  },
+  {
+    "key": "r1bqkbnr/pppp1ppp/2n5/4p3/3PP3/5N2/PPP2PPP/RNBQKB1R b KQkq d3",
+    "moves": [
+      { "uci": "e5d4", "played": 180000, "weight": 180000, "white": 10000, "draw": 22000, "black": 148000 }
+    ]
+  },
+  {
+    "key": "r1bqkbnr/pppp1ppp/2n5/8/3pP3/5N2/PPP2PPP/RNBQKB1R w KQkq -",
+    "moves": [
+      { "uci": "f3d4", "played": 220000, "weight": 220000, "white": 188000, "draw": 22000, "black": 10000 }
+    ]
+  },
+  {
+    "key": "r1bqkbnr/pppp1ppp/2n5/8/3NP3/8/PPP2PPP/RNBQKB1R b KQkq -",
+    "moves": [
+      { "uci": "g8f6", "played": 180000, "weight": 180000, "white": 10000, "draw": 22000, "black": 148000 }
+    ]
+  },
+  {
+    "key": "r1bqkb1r/pppp1ppp/2n2n2/8/3NP3/8/PPP2PPP/RNBQKB1R w KQkq -",
+    "moves": [
+      { "uci": "d4c6", "played": 170000, "weight": 170000, "white": 144000, "draw": 16000, "black": 10000 }
+    ]
+  },
+  {
+    "key": "r1bqkb1r/pppp1ppp/2N2n2/8/4P3/8/PPP2PPP/RNBQKB1R b KQkq -",
+    "moves": [
+      { "uci": "b7c6", "played": 170000, "weight": 170000, "white": 10000, "draw": 16000, "black": 144000 }
+    ]
+  },
+  {
+    "key": "rnbqkbnr/pppppppp/8/8/3P4/8/PPP1PPPP/RNBQKBNR b KQkq d3",
+    "moves": [
+      { "uci": "f7f5", "played": 240000, "weight": 240000, "white": 10000, "draw": 24000, "black": 206000 }
+    ]
+  },
+  {
+    "key": "rnbqkbnr/pppppppp/8/8/2P5/8/PP1PPPPP/RNBQKBNR b KQkq c3",
+    "moves": [
+      { "uci": "f7f5", "played": 180000, "weight": 180000, "white": 9000, "draw": 18000, "black": 153000 }
+    ]
+  },
+  {
+    "key": "rnbqkbnr/pppppppp/8/8/8/5N2/PPPPPPPP/RNBQKB1R b KQkq -",
+    "moves": [
+      { "uci": "f7f5", "played": 180000, "weight": 180000, "white": 9000, "draw": 18000, "black": 153000 }
+    ]
+  }
+]

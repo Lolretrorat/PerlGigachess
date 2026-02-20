@@ -42,6 +42,7 @@ eval {
   1;
 } or die "Install IO::Socket::SSL and Mozilla::CA to use lichess.pl: $@";
 
+my $loaded_as_library = caller ? 1 : 0;
 load_env("$RealBin/.env");
 
 my $dry_run = $ENV{LICHESS_DRY_RUN} ? 1 : 0;
@@ -184,6 +185,62 @@ $repetition_rethink_mult += 0;
 $repetition_rethink_mult = 1.0 if $repetition_rethink_mult < 1.0;
 $repetition_rethink_mult = 3.0 if $repetition_rethink_mult > 3.0;
 
+my $repetition_guard_disable_below_ms = $ENV{LICHESS_REPETITION_GUARD_DISABLE_BELOW_MS};
+if (!defined $repetition_guard_disable_below_ms || $repetition_guard_disable_below_ms !~ /^\d+$/) {
+  $repetition_guard_disable_below_ms = 8_000;
+}
+$repetition_guard_disable_below_ms = int($repetition_guard_disable_below_ms);
+$repetition_guard_disable_below_ms = 0 if $repetition_guard_disable_below_ms < 0;
+$repetition_guard_disable_below_ms = 60_000 if $repetition_guard_disable_below_ms > 60_000;
+
+my $repetition_rethink_min_clock_ms = $ENV{LICHESS_REPETITION_RETHINK_MIN_CLOCK_MS};
+if (!defined $repetition_rethink_min_clock_ms || $repetition_rethink_min_clock_ms !~ /^\d+$/) {
+  $repetition_rethink_min_clock_ms = 25_000;
+}
+$repetition_rethink_min_clock_ms = int($repetition_rethink_min_clock_ms);
+$repetition_rethink_min_clock_ms = 0 if $repetition_rethink_min_clock_ms < 0;
+$repetition_rethink_min_clock_ms = 120_000 if $repetition_rethink_min_clock_ms > 120_000;
+
+my $repetition_rethink_min_budget_multiple = $ENV{LICHESS_REPETITION_RETHINK_MIN_BUDGET_MULT};
+if (!defined $repetition_rethink_min_budget_multiple || $repetition_rethink_min_budget_multiple !~ /^\d+(?:\.\d+)?$/) {
+  $repetition_rethink_min_budget_multiple = 8.0;
+}
+$repetition_rethink_min_budget_multiple += 0;
+$repetition_rethink_min_budget_multiple = 1.0 if $repetition_rethink_min_budget_multiple < 1.0;
+$repetition_rethink_min_budget_multiple = 20.0 if $repetition_rethink_min_budget_multiple > 20.0;
+
+my $panic_30s_ms = $ENV{LICHESS_PANIC_30S_MS};
+if (!defined $panic_30s_ms || $panic_30s_ms !~ /^\d+$/) {
+  $panic_30s_ms = 30_000;
+}
+$panic_30s_ms = int($panic_30s_ms);
+$panic_30s_ms = 1_000 if $panic_30s_ms < 1_000;
+$panic_30s_ms = 180_000 if $panic_30s_ms > 180_000;
+
+my $panic_10s_ms = $ENV{LICHESS_PANIC_10S_MS};
+if (!defined $panic_10s_ms || $panic_10s_ms !~ /^\d+$/) {
+  $panic_10s_ms = 10_000;
+}
+$panic_10s_ms = int($panic_10s_ms);
+$panic_10s_ms = 500 if $panic_10s_ms < 500;
+$panic_10s_ms = $panic_30s_ms if $panic_10s_ms > $panic_30s_ms;
+
+my $panic_30s_cap_ms = $ENV{LICHESS_PANIC_30S_CAP_MS};
+if (!defined $panic_30s_cap_ms || $panic_30s_cap_ms !~ /^\d+$/) {
+  $panic_30s_cap_ms = 2_200;
+}
+$panic_30s_cap_ms = int($panic_30s_cap_ms);
+$panic_30s_cap_ms = 200 if $panic_30s_cap_ms < 200;
+$panic_30s_cap_ms = 8_000 if $panic_30s_cap_ms > 8_000;
+
+my $panic_10s_cap_ms = $ENV{LICHESS_PANIC_10S_CAP_MS};
+if (!defined $panic_10s_cap_ms || $panic_10s_cap_ms !~ /^\d+$/) {
+  $panic_10s_cap_ms = 900;
+}
+$panic_10s_cap_ms = int($panic_10s_cap_ms);
+$panic_10s_cap_ms = 80 if $panic_10s_cap_ms < 80;
+$panic_10s_cap_ms = $panic_30s_cap_ms if $panic_10s_cap_ms > $panic_30s_cap_ms;
+
 my $eval_drop_extra_think_cp = $ENV{LICHESS_EVAL_DROP_EXTRA_THINK_CP};
 if (!defined $eval_drop_extra_think_cp || $eval_drop_extra_think_cp !~ /^\d+$/) {
   $eval_drop_extra_think_cp = 40;
@@ -248,7 +305,7 @@ my $http_request_sock_pid = $$;
 my %speed_depth_targets = (
   bullet    => 11,
   blitz     => 13,
-  rapid     => 15,
+  rapid     => 5,
   classical => 17,
   unlimited => 18,
 );
@@ -1178,14 +1235,7 @@ sub maybe_move {
     && $threshold_ms > 0
     && $analysis->{elapsed_ms} > $threshold_ms)
   {
-    log_warn(
-      sprintf(
-        'Engine think exceeded time threshold in %s: elapsed=%dms threshold=%dms',
-        ($game->{id} // 'unknown'),
-        $analysis->{elapsed_ms},
-        $threshold_ms,
-      )
-    );
+    log_info("You're not saying anything, Tony.");
   }
   if (ref $analysis eq 'HASH' && defined $analysis->{elapsed_ms}
     && $analysis->{elapsed_ms} >= $think_tank_ms)
@@ -1233,21 +1283,25 @@ sub maybe_move {
     && $game->{repetition_guard_meta}{blocked}
     && !(ref($analysis) eq 'HASH' && (($analysis->{source} // '') eq 'tablebase')))
   {
-    my $rethink = _rethink_with_multiplier(
-      $game,
-      $engine_out,
-      $engine_in,
-      $state,
-      $analysis,
-      $repetition_rethink_mult,
-      'repetition-guard',
-    );
-    if (_analysis_prefers($rethink, $analysis)) {
-      $analysis = $rethink;
-      $best = (ref $analysis eq 'HASH') ? $analysis->{move} : undef;
-      @candidates = _candidate_moves($state, $best);
-      @candidates = _reorder_candidates_for_mate($state, \@candidates, $analysis);
-      @candidates = _reorder_candidates_for_repetition($game, $state, \@candidates, $analysis);
+    if (_allow_repetition_rethink($game, $state)) {
+      my $rethink = _rethink_with_multiplier(
+        $game,
+        $engine_out,
+        $engine_in,
+        $state,
+        $analysis,
+        $repetition_rethink_mult,
+        'repetition-guard',
+      );
+      if (_analysis_prefers($rethink, $analysis)) {
+        $analysis = $rethink;
+        $best = (ref $analysis eq 'HASH') ? $analysis->{move} : undef;
+        @candidates = _candidate_moves($state, $best);
+        @candidates = _reorder_candidates_for_mate($state, \@candidates, $analysis);
+        @candidates = _reorder_candidates_for_repetition($game, $state, \@candidates, $analysis);
+      }
+    } else {
+      log_info("Skipping repetition-guard re-think in $game->{id}: low clock");
     }
   }
   _log_critical_position_decision($game, $analysis, $candidates[0]) if @candidates;
@@ -1794,21 +1848,31 @@ sub _reorder_candidates_for_repetition {
     my $from_score = $score_for{$from} // 0;
     my $to_score = $score_for{$to} // 0;
     my $score_drop = $from_score - $to_score;
+    my $from_visits_after = $visits_after_for{$from} // 0;
     my $visits_after = $visits_after_for{$to} // 0;
     my $to_is_capture = $capture_for{$to} ? 1 : 0;
     my $to_is_check = $check_for{$to} ? 1 : 0;
     my $to_is_promo = $promo_for{$to} ? 1 : 0;
     my $blocked = 0;
     my $blocked_reason = '';
+    if ($policy eq 'avoid') {
+      if ($from_visits_after <= 1 && $visits_after <= 1) {
+        $blocked = 1;
+        $blocked_reason = 'no-repetition-pressure';
+      } elsif ($visits_after >= $from_visits_after) {
+        $blocked = 1;
+        $blocked_reason = 'no-repetition-improvement';
+      }
+    }
     if ($policy eq 'avoid'
       && defined $cp
       && $cp >= $repetition_keep_best_cp)
     {
       my $quiet_non_forcing = !$to_is_capture && !$to_is_check && !$to_is_promo;
-      if ($quiet_non_forcing && $visits_after <= 1) {
+      if (!$blocked && $quiet_non_forcing && $visits_after <= 1) {
         $blocked = 1;
         $blocked_reason = 'quiet-nonforcing';
-      } elsif ($score_drop > $repetition_max_reorder_drop) {
+      } elsif (!$blocked && $score_drop > $repetition_max_reorder_drop) {
         $blocked = 1;
         $blocked_reason = 'score-drop';
       }
@@ -1821,6 +1885,7 @@ sub _reorder_candidates_for_repetition {
         to => $to,
         from_score => $from_score,
         to_score => $to_score,
+        from_visits_after => $from_visits_after,
         score_drop => $score_drop,
         visits_after => $visits_after,
         blocked => $blocked ? 1 : 0,
@@ -1861,10 +1926,27 @@ sub _repetition_policy {
   return;
 }
 
+sub _allow_repetition_rethink {
+  my ($game, $state) = @_;
+  my ($remaining_ms) = _clock_for_side_ms($game);
+  return 1 unless defined $remaining_ms;
+  my $required_ms = $repetition_rethink_min_clock_ms;
+  my $planned_ms = _movetime_for_game_ms($game, $state);
+  if (defined $planned_ms && $planned_ms > 0) {
+    my $budget_floor = int($planned_ms * $repetition_rethink_min_budget_multiple);
+    $required_ms = $budget_floor if $budget_floor > $required_ms;
+  }
+  return $remaining_ms >= $required_ms ? 1 : 0;
+}
+
 sub _should_apply_repetition_guard {
   my ($game, $state, $analysis, $policy) = @_;
   return 0 unless ref $game eq 'HASH' && ref $state;
   return 0 if ref($analysis) eq 'HASH' && (($analysis->{source} // '') eq 'tablebase');
+  if ($repetition_guard_disable_below_ms > 0) {
+    my ($remaining_ms) = _clock_for_side_ms($game);
+    return 0 if defined $remaining_ms && $remaining_ms <= $repetition_guard_disable_below_ms;
+  }
   if (ref($analysis) eq 'HASH' && defined $analysis->{mate}) {
     my $mate = int($analysis->{mate});
     return 0 if abs($mate) <= 2;
@@ -2151,18 +2233,29 @@ sub _syzygy_ready {
 
 sub _movetime_for_game_ms {
   my ($game, $state) = @_;
-  if (defined $ENV{LICHESS_MOVETIME_MS} && $ENV{LICHESS_MOVETIME_MS} =~ /^\d+$/) {
+  my $allow_forced_movetime = !$loaded_as_library || $ENV{LICHESS_ALLOW_FORCED_MOVETIME_IN_LIBRARY};
+  if ($allow_forced_movetime
+    && defined $ENV{LICHESS_MOVETIME_MS}
+    && $ENV{LICHESS_MOVETIME_MS} =~ /^\d+$/)
+  {
     my $forced = int($ENV{LICHESS_MOVETIME_MS});
     return $forced if $forced > 0;
   }
 
   my ($remaining_ms, $increment_ms) = _clock_for_side_ms($game);
   return 800 unless defined $remaining_ms;
+  my $panic_level =
+      $remaining_ms <= $panic_10s_ms ? 2
+    : $remaining_ms <= $panic_30s_ms ? 1
+    : 0;
 
   my $speed = normalize_speed($game->{speed}) // '';
   if ($state && _state_has_book_move($state)) {
     my $book_ms = _book_fast_movetime_ms_for_speed($speed);
-    if (defined $ENV{LICHESS_BOOK_MOVETIME_MS} && $ENV{LICHESS_BOOK_MOVETIME_MS} =~ /^\d+$/) {
+    if ($allow_forced_movetime
+      && defined $ENV{LICHESS_BOOK_MOVETIME_MS}
+      && $ENV{LICHESS_BOOK_MOVETIME_MS} =~ /^\d+$/)
+    {
       my $forced_book_ms = int($ENV{LICHESS_BOOK_MOVETIME_MS});
       $book_ms = $forced_book_ms if $forced_book_ms > 0;
     }
@@ -2242,7 +2335,8 @@ sub _movetime_for_game_ms {
     $budget_ms = $boosted if $boosted > $budget_ms;
   }
 
-  if ($is_production_profile
+  if (!$panic_level
+    && $is_production_profile
     && $prod_opening_boost_plies > 0
     && $prod_opening_boost_mult > 1.0)
   {
@@ -2260,7 +2354,8 @@ sub _movetime_for_game_ms {
     }
   }
 
-  if ($is_production_profile
+  if (!$panic_level
+    && $is_production_profile
     && $prod_opening_floor_plies > 0
     && $prod_opening_floor_ms > 0
     && $plies < $prod_opening_floor_plies
@@ -2281,7 +2376,7 @@ sub _movetime_for_game_ms {
     }
   }
 
-  if ($is_production_profile && $speed ne 'bullet') {
+  if (!$panic_level && $is_production_profile && $speed ne 'bullet') {
     if ($prod_cap_mult > 1.0) {
       my $prod_cap_ms = int($effective_cap_ms * $prod_cap_mult);
       $prod_cap_ms = $effective_cap_ms if $prod_cap_ms < $effective_cap_ms;
@@ -2301,7 +2396,7 @@ sub _movetime_for_game_ms {
       $budget_ms = $speed_floor if $speed_floor > 0 && $budget_ms < $speed_floor && $usable_ms >= $speed_floor;
     }
   }
-  if ($is_develop_branch && $speed ne 'bullet') {
+  if (!$panic_level && $is_develop_branch && $speed ne 'bullet') {
     if ($develop_cap_mult > 1.0) {
       my $dev_cap_ms = int($effective_cap_ms * $develop_cap_mult);
       $dev_cap_ms = $effective_cap_ms if $dev_cap_ms < $effective_cap_ms;
@@ -2324,6 +2419,22 @@ sub _movetime_for_game_ms {
     $budget_ms = $endgame_floor if $budget_ms < $endgame_floor && $usable_ms >= $endgame_floor;
   }
   $budget_ms = $min_ms if $budget_ms < $min_ms;
+  if ($panic_level) {
+    my $panic_cap_ms;
+    if ($panic_level >= 2) {
+      $panic_cap_ms = $panic_10s_cap_ms + int($increment_ms * 0.30);
+      my $remaining_cap = int($remaining_ms * 0.16);
+      $remaining_cap = 80 if $remaining_cap < 80;
+      $panic_cap_ms = $remaining_cap if $panic_cap_ms > $remaining_cap;
+    } else {
+      $panic_cap_ms = $panic_30s_cap_ms + int($increment_ms * 0.45);
+      my $remaining_cap = int($remaining_ms * 0.12);
+      $remaining_cap = 160 if $remaining_cap < 160;
+      $panic_cap_ms = $remaining_cap if $panic_cap_ms > $remaining_cap;
+    }
+    $panic_cap_ms = 80 if $panic_cap_ms < 80;
+    $budget_ms = $panic_cap_ms if $budget_ms > $panic_cap_ms;
+  }
   $budget_ms = $effective_cap_ms if $budget_ms > $effective_cap_ms;
   return $budget_ms;
 }
@@ -2356,6 +2467,55 @@ sub _set_engine_depth {
   my $suffix = defined $reason && length $reason ? " ($reason)" : '';
   log_warn("Depth update failed for $game->{id}$suffix");
   return;
+}
+
+sub _effective_engine_depth_for_game {
+  my ($game) = @_;
+  return unless ref $game eq 'HASH';
+
+  my $depth = $game->{engine_depth};
+  $depth = $game->{engine_depth_default} if !defined $depth;
+  return unless defined $depth && $depth =~ /^-?\d+$/;
+
+  my $min_depth = defined $game->{engine_depth_min} ? int($game->{engine_depth_min}) : 1;
+  my $max_depth = defined $game->{engine_depth_max} ? int($game->{engine_depth_max}) : 20;
+  $depth = int($depth);
+  $depth = $min_depth if $depth < $min_depth;
+  $depth = $max_depth if $depth > $max_depth;
+  return $depth;
+}
+
+sub _bumped_engine_depth_for_game {
+  my ($game, $bump) = @_;
+  return unless defined $bump && $bump =~ /^-?\d+$/;
+
+  my $depth = _effective_engine_depth_for_game($game);
+  return unless defined $depth;
+  $depth += int($bump);
+
+  my $min_depth = defined $game->{engine_depth_min} ? int($game->{engine_depth_min}) : 1;
+  my $max_depth = defined $game->{engine_depth_max} ? int($game->{engine_depth_max}) : 20;
+  $depth = $min_depth if $depth < $min_depth;
+  $depth = $max_depth if $depth > $max_depth;
+  return $depth;
+}
+
+sub _speed_target_depth_for_game {
+  my ($game) = @_;
+  return unless ref $game eq 'HASH';
+  my $speed = normalize_speed($game->{speed});
+  return unless defined $speed && exists $speed_depth_targets{$speed};
+  my $target = $speed_depth_targets{$speed};
+  return unless defined $target && $target =~ /^-?\d+$/;
+  $target = int($target);
+  if ($is_develop_branch && $develop_depth_bump > 0) {
+    $target += $develop_depth_bump;
+  }
+  my $min_depth = defined $game->{engine_depth_min} ? int($game->{engine_depth_min}) : 1;
+  my $max_depth = defined $game->{engine_depth_max} ? int($game->{engine_depth_max}) : 20;
+  $target = $min_depth if $target < $min_depth;
+  $target = $max_depth if $target > $max_depth;
+  return $target;
 }
 
 sub maybe_apply_speed_depth {
@@ -2458,10 +2618,14 @@ sub compute_bestmove {
   print {$engine_in} "\n";
 
   my $go;
+  my $bumped_depth;
+  if (defined $opts->{depth_bump} && $opts->{depth_bump} =~ /^-?\d+$/) {
+    $bumped_depth = int($opts->{depth_bump});
+  }
   if (defined $depth_override) {
     my $depth = int($depth_override);
-    if (defined $opts->{depth_bump} && $opts->{depth_bump} =~ /^-?\d+$/) {
-      $depth += int($opts->{depth_bump});
+    if (defined $bumped_depth) {
+      $depth += $bumped_depth;
     }
     $depth = 1 if $depth < 1;
     $depth = 20 if $depth > 20;
@@ -2486,7 +2650,22 @@ sub compute_bestmove {
       my $floor = int($opts->{movetime_floor_ms});
       $movetime = $floor if $floor > $movetime;
     }
-    $go = "go movetime $movetime";
+    my $go_depth = _bumped_engine_depth_for_game($game, $bumped_depth);
+    if (!defined $go_depth) {
+      $go_depth = _speed_target_depth_for_game($game);
+      if (defined $go_depth && defined $bumped_depth) {
+        $go_depth += $bumped_depth;
+        my $min_depth = defined $game->{engine_depth_min} ? int($game->{engine_depth_min}) : 1;
+        my $max_depth = defined $game->{engine_depth_max} ? int($game->{engine_depth_max}) : 20;
+        $go_depth = $min_depth if $go_depth < $min_depth;
+        $go_depth = $max_depth if $go_depth > $max_depth;
+      }
+    }
+    if (defined $go_depth) {
+      $go = "go depth $go_depth movetime $movetime";
+    } else {
+      $go = "go movetime $movetime";
+    }
   }
   print {$engine_in} "$go\n";
   if (defined $opts->{reason} && length $opts->{reason}) {
@@ -2503,7 +2682,7 @@ sub compute_bestmove {
       if ($line =~ /^info string\s*(.*)$/) {
         my $msg = $1 // '';
         $msg =~ s/\s+$//;
-        log_info("Engine search note for $game->{id}: $msg") if length $msg;
+        log_info("Thinking... $msg in $game->{id}") if length $msg;
         next;
       }
       if ($line =~ /\bdepth\s+(\d+)/) {

@@ -13,12 +13,15 @@ SKIP_KG8=0
 SKIP_PROMO=0
 SKIP_OWN_URLS=0
 SKIP_BOOK_UNDERPROMO=0
+SKIP_BOOK_POLICY=0
 SKIP_LICHESS_TIME=0
 SKIP_PDP_QUEEN=0
 SKIP_REP_GUARD=0
 SKIP_UNGUARDED_PLAN=0
 SKIP_PROMO_CHECK=0
 SKIP_XXGZ_REBUILD=0
+SKIP_PROTOCOL=0
+SKIP_IMMEDIATE_STOP=0
 
 usage() {
   cat <<'USAGE'
@@ -36,12 +39,15 @@ Options:
   --skip-promo             Skip promotion-mate regression check
   --skip-own-urls          Skip OWN-URL parser/ingest regression check
   --skip-book-underpromo   Skip opening-book SAN underpromotion regression check
+  --skip-book-policy       Skip opening-book policy/depth/overlay regression check
   --skip-lichess-time      Skip lichess bot time/depth profile regression check
   --skip-pdp-queen         Skip PDPgjgTd random queen-capture regression check
   --skip-rep-guard         Skip repetition guard quiet-move regression check
   --skip-unguarded-plan    Skip unguarded-material capture-plan regression check
   --skip-promo-check       Skip promotion-with-check regression check
   --skip-xxgz-rebuild      Skip xXgzD7zW state-rebuild regression check
+  --skip-protocol          Skip UCI protocol contract regression check
+  --skip-immediate-stop    Skip immediate go/stop legal-bestmove regression check
   -h, --help               Show help
 USAGE
 }
@@ -102,6 +108,10 @@ while [[ $# -gt 0 ]]; do
       SKIP_BOOK_UNDERPROMO=1
       shift
       ;;
+    --skip-book-policy)
+      SKIP_BOOK_POLICY=1
+      shift
+      ;;
     --skip-lichess-time)
       SKIP_LICHESS_TIME=1
       shift
@@ -124,6 +134,14 @@ while [[ $# -gt 0 ]]; do
       ;;
     --skip-xxgz-rebuild)
       SKIP_XXGZ_REBUILD=1
+      shift
+      ;;
+    --skip-protocol)
+      SKIP_PROTOCOL=1
+      shift
+      ;;
+    --skip-immediate-stop)
+      SKIP_IMMEDIATE_STOP=1
       shift
       ;;
     -h|--help)
@@ -168,6 +186,13 @@ else
   echo "==> Skipping opening-book underpromotion SAN guard"
 fi
 
+if [[ "$SKIP_BOOK_POLICY" -eq 0 ]]; then
+  echo "==> Opening-book policy/depth/overlay guard"
+  (cd "$ROOT_DIR" && bash tests/regression_book_policy_depth_overlay.sh)
+else
+  echo "==> Skipping opening-book policy/depth/overlay guard"
+fi
+
 if [[ "$SKIP_LICHESS_TIME" -eq 0 ]]; then
   echo "==> Lichess time/depth profile guard"
   (cd "$ROOT_DIR" && bash tests/regression_lichess_time_profile.sh)
@@ -185,6 +210,8 @@ fi
 if [[ "$SKIP_REP_GUARD" -eq 0 ]]; then
   echo "==> Repetition guard quiet-move check"
   (cd "$ROOT_DIR" && perl tests/regression_repetition_guard_quiet_move.pl)
+  echo "==> Repetition guard jlPas6bb bishop-sac override check"
+  (cd "$ROOT_DIR" && perl tests/regression_repetition_guard_jlpas6bb.pl)
 else
   echo "==> Skipping repetition guard quiet-move check"
 fi
@@ -208,6 +235,20 @@ if [[ "$SKIP_XXGZ_REBUILD" -eq 0 ]]; then
   (cd "$ROOT_DIR" && perl tests/regression_xxgzd7zw_state_rebuild.pl)
 else
   echo "==> Skipping xXgzD7zW state-rebuild guard"
+fi
+
+if [[ "$SKIP_PROTOCOL" -eq 0 ]]; then
+  echo "==> UCI protocol contract guard"
+  (cd "$ROOT_DIR" && perl tests/regression_uci_protocol.pl)
+else
+  echo "==> Skipping UCI protocol contract guard"
+fi
+
+if [[ "$SKIP_IMMEDIATE_STOP" -eq 0 ]]; then
+  echo "==> UCI immediate-stop legal-bestmove guard"
+  (cd "$ROOT_DIR" && perl tests/regression_uci_immediate_stop_legal.pl)
+else
+  echo "==> Skipping UCI immediate-stop legal-bestmove guard"
 fi
 
 if [[ "$SKIP_PERFT" -eq 0 ]]; then
