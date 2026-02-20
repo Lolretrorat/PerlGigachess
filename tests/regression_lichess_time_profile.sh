@@ -5,7 +5,7 @@ ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 
 grep -Eq 'bullet\s*=>\s*11\b' "$ROOT_DIR/lichess.pl"
 grep -Eq 'blitz\s*=>\s*13\b' "$ROOT_DIR/lichess.pl"
-grep -Eq 'rapid\s*=>\s*15\b' "$ROOT_DIR/lichess.pl"
+grep -Eq 'rapid\s*=>\s*5\b' "$ROOT_DIR/lichess.pl"
 grep -Eq 'classical\s*=>\s*17\b' "$ROOT_DIR/lichess.pl"
 grep -Eq 'unlimited\s*=>\s*18\b' "$ROOT_DIR/lichess.pl"
 

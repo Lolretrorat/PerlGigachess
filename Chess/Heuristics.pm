@@ -74,7 +74,7 @@ use constant MIDDLEGAME_MAX_PIECE_COUNT => 28; # Upper piece-count bound for mid
 use constant PAWN_CANDIDATE_MIN_BUDGET_MS => 120; # Minimum budget for pawn-candidate time extension; [FIXED VALUE].
 use constant PAWN_CANDIDATE_EXTRA_TIME_SHARE => 0.08; # Budget share used for pawn-candidate extension; [FIXED VALUE].
 use constant PAWN_CANDIDATE_EXTRA_TIME_MAX_MS => 180; # Max milliseconds added for pawn-candidate extension; [FIXED VALUE].
-use constant SAC_MOVE_ORDER_PENALTY => 42; # Move-order penalty for speculative piece-for-pawn sac candidates; min=0 max=220.
+use constant SAC_MOVE_ORDER_PENALTY => 68; # Move-order penalty for speculative piece-for-pawn sac candidates; min=0 max=220.
 use constant SAC_SCORE_DROP_CP => 259; # Score-drop threshold used to scrutinize sac candidates; [FIXED VALUE].
 use constant SAC_CANDIDATE_MIN_BUDGET_MS => 140; # Minimum budget before extending time on sac candidates; [FIXED VALUE].
 use constant SAC_EXTRA_TIME_SHARE => 0.10; # Budget share used for sac-candidate extension; [FIXED VALUE].
@@ -90,24 +90,24 @@ use constant EARLY_KING_WALK_HOME_PENALTY => 3; # Penalty for early king movemen
 use constant EARLY_KING_WALK_EXPOSED_FILE_PENALTY => 1; # Extra penalty for early king on exposed files; [FIXED VALUE].
 use constant EARLY_KING_WALK_CENTRAL_FILE_PENALTY => 2; # Extra penalty for early king on central files; [FIXED VALUE].
 use constant EARLY_KING_WALK_ADVANCED_RANK_PENALTY => 2; # Extra penalty for early king on advanced ranks; [FIXED VALUE].
-use constant HANGING_DEFENDED_SCALE => 0.4; # Retained hanging penalty multiplier when defended; min=0.1 max=0.85.
+use constant HANGING_DEFENDED_SCALE => 0.5; # Retained hanging penalty multiplier when defended; min=0.1 max=0.85.
 use constant HANGING_MOVE_GUARD_BONUS => 26; # Extra penalty for quiet moves leaving loose material; min=6 max=40.
 use constant LMR_KING_DANGER_THRESHOLD => 4; # Disable/reduce LMR when king danger reaches this level; min=4 max=24.
 use constant NULL_MOVE_MIN_DEPTH => 3; # Minimum depth required for null-move pruning; [FIXED VALUE].
 use constant NULL_MOVE_REDUCTION => 2; # Base depth reduction for null-move pruning; [FIXED VALUE].
 use constant NULL_MOVE_DEEP_DEPTH => 7; # Depth where null-move applies extra reduction; [FIXED VALUE].
 use constant NULL_MOVE_MATE_GUARD => 1500; # Guard band preventing null-move near mate scores; [FIXED VALUE].
-use constant UNSAFE_CAPTURE_HANGING_BONUS => 61; # Capture-risk penalty for exposing hanging pieces; min=8 max=96.
-use constant UNSAFE_CAPTURE_DEFENDED_SCALE => 0.55; # Capture-risk retention when target square is defended; min=0.2 max=0.9.
-use constant UNSAFE_CAPTURE_KING_EXPOSURE_WEIGHT => 7; # Extra capture-risk weight for king exposure; min=1 max=14.
-use constant KING_DANGER_RING_ATTACK_PENALTY => 6; # Penalty per attacked king-ring square; min=1 max=12.
-use constant KING_DANGER_RING_UNDEFENDED_PENALTY => 3; # Extra ring penalty for attacked but undefended king-ring squares; min=1 max=10.
-use constant KING_DANGER_CHECK_PENALTY => 28; # Penalty for check/forcing-check danger; min=4 max=36.
+use constant UNSAFE_CAPTURE_HANGING_BONUS => 74; # Capture-risk penalty for exposing hanging pieces; min=8 max=96.
+use constant UNSAFE_CAPTURE_DEFENDED_SCALE => 0.68; # Capture-risk retention when target square is defended; min=0.2 max=0.9.
+use constant UNSAFE_CAPTURE_KING_EXPOSURE_WEIGHT => 10; # Extra capture-risk weight for king exposure; min=1 max=14.
+use constant KING_DANGER_RING_ATTACK_PENALTY => 5; # Penalty per attacked king-ring square; min=1 max=12.
+use constant KING_DANGER_RING_UNDEFENDED_PENALTY => 2; # Extra ring penalty for attacked but undefended king-ring squares; min=1 max=10.
+use constant KING_DANGER_CHECK_PENALTY => 22; # Penalty for check/forcing-check danger; min=4 max=36.
 use constant KING_DANGER_SHIELD_MISSING_PENALTY => 3; # Penalty for missing pawn shield near king; min=1 max=10.
 use constant KING_DANGER_OPEN_FILE_PENALTY => 3; # Penalty for open file in front of king; min=1 max=8.
 use constant KING_DANGER_ADJ_FILE_PENALTY => 2; # Penalty for open adjacent king files; min=1 max=6.
 use constant KING_AGGRESSION_ENEMY_PIECE_START => 10; # Enemy material threshold to enable king aggression scoring; [FIXED VALUE].
-use constant KING_AGGRESSION_RANK_BONUS => 6; # Rank-scaling factor for active king bonus; [FIXED VALUE].
+use constant KING_AGGRESSION_RANK_BONUS => 4; # Rank-scaling factor for active king bonus; [FIXED VALUE].
 use constant UNGUARDED_TARGET_VALUE_MARGIN => 8; # Capture-ordering viability margin for loose targets; [FIXED VALUE].
 use constant UNGUARDED_CAPTURE_ORDER_BONUS => 85; # Move-order bonus for captures on loose targets; [FIXED VALUE].
 use constant UNGUARDED_CAPTURE_VIABLE_ORDER_BONUS => 45; # Extra move-order bonus when exchange looks favorable; [FIXED VALUE].

@@ -273,7 +273,7 @@ my $http_request_sock_pid = $$;
 my %speed_depth_targets = (
   bullet    => 11,
   blitz     => 13,
-  rapid     => 15,
+  rapid     => 5,
   classical => 17,
   unlimited => 18,
 );
@@ -2446,6 +2446,24 @@ sub _bumped_engine_depth_for_game {
   return $depth;
 }
 
+sub _speed_target_depth_for_game {
+  my ($game) = @_;
+  return unless ref $game eq 'HASH';
+  my $speed = normalize_speed($game->{speed});
+  return unless defined $speed && exists $speed_depth_targets{$speed};
+  my $target = $speed_depth_targets{$speed};
+  return unless defined $target && $target =~ /^-?\d+$/;
+  $target = int($target);
+  if ($is_develop_branch && $develop_depth_bump > 0) {
+    $target += $develop_depth_bump;
+  }
+  my $min_depth = defined $game->{engine_depth_min} ? int($game->{engine_depth_min}) : 1;
+  my $max_depth = defined $game->{engine_depth_max} ? int($game->{engine_depth_max}) : 20;
+  $target = $min_depth if $target < $min_depth;
+  $target = $max_depth if $target > $max_depth;
+  return $target;
+}
+
 sub maybe_apply_speed_depth {
   my ($game, $engine_out, $engine_in) = @_;
   return unless ref $game eq 'HASH';
@@ -2579,6 +2597,16 @@ sub compute_bestmove {
       $movetime = $floor if $floor > $movetime;
     }
     my $go_depth = _bumped_engine_depth_for_game($game, $bumped_depth);
+    if (!defined $go_depth) {
+      $go_depth = _speed_target_depth_for_game($game);
+      if (defined $go_depth && defined $bumped_depth) {
+        $go_depth += $bumped_depth;
+        my $min_depth = defined $game->{engine_depth_min} ? int($game->{engine_depth_min}) : 1;
+        my $max_depth = defined $game->{engine_depth_max} ? int($game->{engine_depth_max}) : 20;
+        $go_depth = $min_depth if $go_depth < $min_depth;
+        $go_depth = $max_depth if $go_depth > $max_depth;
+      }
+    }
     if (defined $go_depth) {
       $go = "go depth $go_depth movetime $movetime";
     } else {
