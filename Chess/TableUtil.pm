@@ -19,8 +19,10 @@ my @BOARD_INDICES = _build_board_indices();
 sub canonical_fen_key {
   my ($state) = @_;
   if (ref($state) eq 'Chess::State') {
-    my $cached = $state->[Chess::State::STATE_KEY];
+    my $cached = $state->[Chess::State::FEN_KEY];
     return $cached if defined $cached;
+    my $legacy = $state->[Chess::State::STATE_KEY];
+    return $legacy if _looks_like_fen_key($legacy);
   }
   my $fen = $state->get_fen;
   my $pos = -1;
@@ -30,9 +32,17 @@ sub canonical_fen_key {
   }
   my $key = $pos > 0 ? substr($fen, 0, $pos) : $fen;
   if (ref($state) eq 'Chess::State') {
-    $state->[Chess::State::STATE_KEY] = $key;
+    $state->[Chess::State::FEN_KEY] = $key;
   }
   return $key;
+}
+
+sub _looks_like_fen_key {
+  my ($value) = @_;
+  return unless defined $value && !ref($value);
+  return if $value !~ /^[\x20-\x7e]+$/;
+  my $spaces = ($value =~ tr/ //);
+  return $spaces >= 3 ? 1 : 0;
 }
 
 sub relaxed_fen_key {

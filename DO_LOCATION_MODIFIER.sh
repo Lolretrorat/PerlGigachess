@@ -14,13 +14,16 @@ OWN_URL_LOG="$ROOT_DIR/data/lichess_game_urls.log"
 OWN_PGN_OUTPUT="$ROOT_DIR/data/lichess_games_export.pgn"
 CLEAR_OWN_URL_LOG=1
 
-TMP_DIR="/tmp"
+DEFAULT_TMP_DIR="${PERLGIGACHESS_TMP_DIR:-/mnt/throughput/perlgigachess-tmp}"
+TMP_DIR="$DEFAULT_TMP_DIR"
 KEEP_DOWNLOAD=0
 ALLOW_DUPLICATE_SOURCE=0
 
 LOCATION_OUTPUT="$ROOT_DIR/data/location_modifiers.json"
 LOCATION_GAMES=5000
 LOCATION_SCALE=""
+LOCATION_ADAPTIVE_MIN_GAMES=120
+LOCATION_ADAPTIVE_MIN_SCALE=16
 RUN_VALIDATION=1
 
 usage() {
@@ -41,12 +44,14 @@ Options:
   --own-url-log <path>            URL log path (default: data/lichess_game_urls.log)
   --own-pgn-output <path>         OWN-URLS PGN output path
   --keep-url-log                  Do not clear URL log after OWN-URLS ingest
-  --tmp-dir <dir>                 Temp directory for ingest (default: /tmp)
+  --tmp-dir <dir>                 Temp directory for ingest (default: $PERLGIGACHESS_TMP_DIR or /mnt/throughput/perlgigachess-tmp)
   --keep-download                 Keep monthly archive download
   --allow-duplicate-source        Allow duplicate monthly ingest source
   --location-output <path>        Location output path (default: data/location_modifiers.json)
   --location-games <int>          Max games for location training (default: 5000)
   --location-scale <num>          Scale passed to ./init train-location
+  --location-adaptive-min-games <int>  Game-count target for full auto scale (default: 120)
+  --location-adaptive-min-scale <int>  Minimum auto scale on tiny OWN-URL batches (default: 16)
   --skip-validation               Skip update_location_modifiers.pl validation pass
   -h, --help                      Show this message
 USAGE
@@ -124,6 +129,16 @@ while [[ $# -gt 0 ]]; do
       LOCATION_SCALE="${2:-}"
       shift 2
       ;;
+    --location-adaptive-min-games)
+      require_value "--location-adaptive-min-games" "${2:-}"
+      LOCATION_ADAPTIVE_MIN_GAMES="${2:-}"
+      shift 2
+      ;;
+    --location-adaptive-min-scale)
+      require_value "--location-adaptive-min-scale" "${2:-}"
+      LOCATION_ADAPTIVE_MIN_SCALE="${2:-}"
+      shift 2
+      ;;
     --skip-validation)
       RUN_VALIDATION=0
       shift
@@ -153,6 +168,7 @@ if [[ ! -f "$UPDATE_LOCATION_SCRIPT" ]]; then
   echo "Missing script: $UPDATE_LOCATION_SCRIPT" >&2
   exit 1
 fi
+mkdir -p "$TMP_DIR"
 
 if [[ "$RUN_INGRESS" -eq 1 ]]; then
   ingress_args=(
@@ -160,6 +176,8 @@ if [[ "$RUN_INGRESS" -eq 1 ]]; then
     --skip-book
     --location-output "$LOCATION_OUTPUT"
     --location-games "$LOCATION_GAMES"
+    --location-adaptive-min-games "$LOCATION_ADAPTIVE_MIN_GAMES"
+    --location-adaptive-min-scale "$LOCATION_ADAPTIVE_MIN_SCALE"
   )
 
   if [[ -n "$LOCATION_SCALE" ]]; then

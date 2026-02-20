@@ -147,6 +147,31 @@ Book entries now include per-move outcome stats (`white`, `draw`, `black`)
 alongside `played`/`weight`, and the Perl selector ranks legal book moves by
 confidence + result quality (with deterministic top choice by default).
 
+Book behavior is tunable via environment variables:
+
+- `CHESS_BOOK_PATH` — primary JSON opening book path (default:
+  `data/opening_book.json`).
+- `CHESS_BOOK_EXTRA_PATHS` — additional JSON book files to merge (colon
+  separated on Linux/macOS, semicolon on Windows).
+- `CHESS_BOOK_POLICY` — move selection policy: `best`, `weighted_random`,
+  `uniform_random` (default: `best`).
+- `CHESS_BOOK_TOP_N` — for random policies, cap candidate pool to top N
+  near-best moves (default: `3`).
+- `CHESS_BOOK_MAX_PLIES` — stop using book after this ply count (`0` disables;
+  default: `0`).
+- `CHESS_BOOK_MAX_FULLMOVE` — stop using book after this fullmove number (`0`
+  disables; default: `0`).
+
+Example (keep deterministic repertoire to move 12 while layering a private
+prep book on top of the global one):
+
+```bash
+CHESS_BOOK_EXTRA_PATHS=data/my_repertoire.json \
+CHESS_BOOK_MAX_FULLMOVE=12 \
+CHESS_BOOK_POLICY=best \
+perl play.pl --uci
+```
+
 ## Local Tablebases
 
 Endgame probing is local-first via Syzygy files on disk.

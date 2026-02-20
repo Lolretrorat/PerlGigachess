@@ -16,13 +16,18 @@ PGN_PATH="$ROOT_DIR/data/lichess_games_export.pgn"
 CLEAR_OWN_URL_LOG=1
 SKIP_LOCATION_INGRESS=1
 
-TMP_DIR="/tmp"
+DEFAULT_TMP_DIR="${PERLGIGACHESS_TMP_DIR:-/mnt/throughput/perlgigachess-tmp}"
+TMP_DIR="$DEFAULT_TMP_DIR"
 KEEP_DOWNLOAD=0
 ALLOW_DUPLICATE_SOURCE=0
 
 PYTHON_BIN="${PYTHON_BIN:-$ROOT_DIR/.venv/bin/python}"
 MIN_PARAM_SCORE=""
 TRAINING_REFERENCE_GAMES=""
+TRAINING_VOLUME_EXPONENT=""
+LOW_VOLUME_RELAX_FACTOR=""
+MIN_HOLDOUT_GROUP_PRESSURE=""
+MIN_HOLDOUT_ALIGNMENT=""
 MAX_GAMES=""
 MIGRATION_SUFFIX="engine_training_recommendations"
 MIGRATION_TIMESTAMP=""
@@ -49,12 +54,16 @@ Options:
   --pgn <path>                    Training PGN path (default: data/lichess_games_export.pgn)
   --keep-url-log                  Do not clear URL log after OWN-URLS ingest
   --include-location-ingress      Keep location training enabled during ingest
-  --tmp-dir <dir>                 Temp directory for ingest (default: /tmp)
+  --tmp-dir <dir>                 Temp directory for ingest (default: $PERLGIGACHESS_TMP_DIR or /mnt/throughput/perlgigachess-tmp)
   --keep-download                 Keep monthly archive download
   --allow-duplicate-source        Allow duplicate monthly ingest source
   --python <path>                 Python executable (default: .venv/bin/python)
   --min-param-score <float>       ENGINE_TRAINING_MIN_PARAM_SCORE override
   --reference-games <int>         ENGINE_TRAINING_REFERENCE_GAMES override
+  --training-volume-exponent <f>  ENGINE_TRAINING_VOLUME_EXPONENT override
+  --low-volume-relax-factor <f>   ENGINE_TRAINING_LOW_VOLUME_RELAX_FACTOR override
+  --min-holdout-group-pressure <f> ENGINE_TRAINING_MIN_HOLDOUT_GROUP_PRESSURE override
+  --min-holdout-alignment <f>     ENGINE_TRAINING_MIN_HOLDOUT_ALIGNMENT override
   --max-games <int>               ENGINE_TRAINING_MAX_GAMES override
   --migration-suffix <name>       ENGINE_TRAINING_MIGRATION_SUFFIX override
   --migration-timestamp <ts>      ENGINE_TRAINING_MIGRATION_TIMESTAMP override
@@ -141,6 +150,26 @@ while [[ $# -gt 0 ]]; do
       TRAINING_REFERENCE_GAMES="${2:-}"
       shift 2
       ;;
+    --training-volume-exponent)
+      require_value "--training-volume-exponent" "${2:-}"
+      TRAINING_VOLUME_EXPONENT="${2:-}"
+      shift 2
+      ;;
+    --low-volume-relax-factor)
+      require_value "--low-volume-relax-factor" "${2:-}"
+      LOW_VOLUME_RELAX_FACTOR="${2:-}"
+      shift 2
+      ;;
+    --min-holdout-group-pressure)
+      require_value "--min-holdout-group-pressure" "${2:-}"
+      MIN_HOLDOUT_GROUP_PRESSURE="${2:-}"
+      shift 2
+      ;;
+    --min-holdout-alignment)
+      require_value "--min-holdout-alignment" "${2:-}"
+      MIN_HOLDOUT_ALIGNMENT="${2:-}"
+      shift 2
+      ;;
     --max-games)
       require_value "--max-games" "${2:-}"
       MAX_GAMES="${2:-}"
@@ -202,6 +231,7 @@ if [[ ! -x "$MIGRATION_HELPER" ]]; then
   echo "Missing executable: $MIGRATION_HELPER" >&2
   exit 1
 fi
+mkdir -p "$TMP_DIR"
 if [[ "$PYTHON_BIN" == */* ]]; then
   if [[ ! -x "$PYTHON_BIN" ]]; then
     echo "Python executable not found: $PYTHON_BIN" >&2
@@ -292,6 +322,18 @@ if [[ -n "$MIN_PARAM_SCORE" ]]; then
 fi
 if [[ -n "$TRAINING_REFERENCE_GAMES" ]]; then
   nb_env+=(ENGINE_TRAINING_REFERENCE_GAMES="$TRAINING_REFERENCE_GAMES")
+fi
+if [[ -n "$TRAINING_VOLUME_EXPONENT" ]]; then
+  nb_env+=(ENGINE_TRAINING_VOLUME_EXPONENT="$TRAINING_VOLUME_EXPONENT")
+fi
+if [[ -n "$LOW_VOLUME_RELAX_FACTOR" ]]; then
+  nb_env+=(ENGINE_TRAINING_LOW_VOLUME_RELAX_FACTOR="$LOW_VOLUME_RELAX_FACTOR")
+fi
+if [[ -n "$MIN_HOLDOUT_GROUP_PRESSURE" ]]; then
+  nb_env+=(ENGINE_TRAINING_MIN_HOLDOUT_GROUP_PRESSURE="$MIN_HOLDOUT_GROUP_PRESSURE")
+fi
+if [[ -n "$MIN_HOLDOUT_ALIGNMENT" ]]; then
+  nb_env+=(ENGINE_TRAINING_MIN_HOLDOUT_ALIGNMENT="$MIN_HOLDOUT_ALIGNMENT")
 fi
 if [[ -n "$MAX_GAMES" ]]; then
   nb_env+=(ENGINE_TRAINING_MAX_GAMES="$MAX_GAMES")
