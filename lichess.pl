@@ -1788,26 +1788,35 @@ sub _reorder_candidates_for_repetition {
     my $from_score = $score_for{$from} // 0;
     my $to_score = $score_for{$to} // 0;
     my $score_drop = $from_score - $to_score;
+    my $from_visits_after = $visits_after_for{$from} // 0;
     my $visits_after = $visits_after_for{$to} // 0;
     my $to_is_capture = $capture_for{$to} ? 1 : 0;
     my $to_is_check = $check_for{$to} ? 1 : 0;
     my $to_is_promo = $promo_for{$to} ? 1 : 0;
     my $blocked = 0;
     my $blocked_reason = '';
+    if ($policy eq 'avoid') {
+      if ($from_visits_after <= 1 && $visits_after <= 1) {
+        $blocked = 1;
+        $blocked_reason = 'no-repetition-pressure';
+      } elsif ($visits_after >= $from_visits_after) {
+        $blocked = 1;
+        $blocked_reason = 'no-repetition-improvement';
+      }
+    }
     if ($policy eq 'avoid'
       && defined $cp
       && $cp >= $repetition_keep_best_cp)
     {
       my $quiet_non_forcing = !$to_is_capture && !$to_is_check && !$to_is_promo;
-      if ($quiet_non_forcing && $visits_after <= 1) {
+      if (!$blocked && $quiet_non_forcing && $visits_after <= 1) {
         $blocked = 1;
         $blocked_reason = 'quiet-nonforcing';
-      } elsif ($score_drop > $repetition_max_reorder_drop) {
+      } elsif (!$blocked && $score_drop > $repetition_max_reorder_drop) {
         $blocked = 1;
         $blocked_reason = 'score-drop';
       }
     }
-    #TODO: this is broken and needs to be fixed 
     if (ref $game eq 'HASH') {
       $game->{repetition_guard_meta} = {
         policy => $policy,
@@ -1816,6 +1825,7 @@ sub _reorder_candidates_for_repetition {
         to => $to,
         from_score => $from_score,
         to_score => $to_score,
+        from_visits_after => $from_visits_after,
         score_drop => $score_drop,
         visits_after => $visits_after,
         blocked => $blocked ? 1 : 0,

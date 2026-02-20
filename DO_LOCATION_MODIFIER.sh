@@ -22,6 +22,8 @@ ALLOW_DUPLICATE_SOURCE=0
 LOCATION_OUTPUT="$ROOT_DIR/data/location_modifiers.json"
 LOCATION_GAMES=5000
 LOCATION_SCALE=""
+LOCATION_ADAPTIVE_MIN_GAMES=120
+LOCATION_ADAPTIVE_MIN_SCALE=16
 RUN_VALIDATION=1
 
 usage() {
@@ -48,6 +50,8 @@ Options:
   --location-output <path>        Location output path (default: data/location_modifiers.json)
   --location-games <int>          Max games for location training (default: 5000)
   --location-scale <num>          Scale passed to ./init train-location
+  --location-adaptive-min-games <int>  Game-count target for full auto scale (default: 120)
+  --location-adaptive-min-scale <int>  Minimum auto scale on tiny OWN-URL batches (default: 16)
   --skip-validation               Skip update_location_modifiers.pl validation pass
   -h, --help                      Show this message
 USAGE
@@ -125,6 +129,16 @@ while [[ $# -gt 0 ]]; do
       LOCATION_SCALE="${2:-}"
       shift 2
       ;;
+    --location-adaptive-min-games)
+      require_value "--location-adaptive-min-games" "${2:-}"
+      LOCATION_ADAPTIVE_MIN_GAMES="${2:-}"
+      shift 2
+      ;;
+    --location-adaptive-min-scale)
+      require_value "--location-adaptive-min-scale" "${2:-}"
+      LOCATION_ADAPTIVE_MIN_SCALE="${2:-}"
+      shift 2
+      ;;
     --skip-validation)
       RUN_VALIDATION=0
       shift
@@ -162,6 +176,8 @@ if [[ "$RUN_INGRESS" -eq 1 ]]; then
     --skip-book
     --location-output "$LOCATION_OUTPUT"
     --location-games "$LOCATION_GAMES"
+    --location-adaptive-min-games "$LOCATION_ADAPTIVE_MIN_GAMES"
+    --location-adaptive-min-scale "$LOCATION_ADAPTIVE_MIN_SCALE"
   )
 
   if [[ -n "$LOCATION_SCALE" ]]; then

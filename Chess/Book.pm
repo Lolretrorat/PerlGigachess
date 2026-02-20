@@ -36,13 +36,27 @@ my %ranked_legal_entries_cache;
 my $LEGAL_MOVE_MAP_CACHE_MAX = 20_000;
 my $RANKED_LEGAL_CACHE_MAX = 20_000;
 my $book_path_cache;
+my $book_extra_paths_cache;
 my $BOOK_MIN_PLAYED   = _env_int('CHESS_BOOK_MIN_PLAYED', 3, 1);
 my $BOOK_MIN_RELATIVE = _env_num('CHESS_BOOK_MIN_RELATIVE', 0.12, 0.0, 1.0);
 my $BOOK_VARIETY      = _env_num('CHESS_BOOK_VARIETY', 0.0, 0.0, 1.0);
 my $BOOK_BAYES_GAMES  = _env_num('CHESS_BOOK_BAYES_GAMES', 8.0, 0.0, 1000.0);
 my $BOOK_QUALITY_WEIGHT = _env_num('CHESS_BOOK_QUALITY_WEIGHT', 0.82, 0.0, 1.0);
+my $BOOK_POLICY = _env_choice(
+  'CHESS_BOOK_POLICY',
+  'best',
+  {
+    best => 1,
+    weighted_random => 1,
+    uniform_random => 1,
+  },
+);
+my $BOOK_TOP_N = _env_int('CHESS_BOOK_TOP_N', 3, 1);
+my $BOOK_MAX_PLIES = _env_int('CHESS_BOOK_MAX_PLIES', 0, 0);
+my $BOOK_MAX_FULLMOVE = _env_int('CHESS_BOOK_MAX_FULLMOVE', 0, 0);
 
 sub _book_path {
+  return $ENV{CHESS_BOOK_PATH} if defined $ENV{CHESS_BOOK_PATH} && length $ENV{CHESS_BOOK_PATH};
   return $book_path_cache if defined $book_path_cache;
   my $module_dir = dirname(__FILE__);
   my $root = File::Spec->catdir($module_dir, '..');
@@ -50,12 +64,59 @@ sub _book_path {
   return $book_path_cache;
 }
 
+sub _book_extra_paths {
+  return $book_extra_paths_cache if defined $book_extra_paths_cache;
+  my $raw = $ENV{CHESS_BOOK_EXTRA_PATHS};
+  return $book_extra_paths_cache = [] unless defined $raw && length $raw;
+
+  my $path_list_sep = _path_list_sep();
+  my @paths = grep { defined $_ && length $_ } split /\Q$path_list_sep\E/, $raw;
+  $book_extra_paths_cache = \@paths;
+  return $book_extra_paths_cache;
+}
+
+sub _path_list_sep {
+  return ($^O eq 'MSWin32') ? ';' : ':';
+}
+
+sub _book_paths {
+  my @paths;
+  my %seen;
+  my $primary = _book_path();
+  if (defined $primary && length $primary) {
+    push @paths, $primary;
+    $seen{$primary} = 1;
+  }
+  foreach my $extra (@{_book_extra_paths()}) {
+    next unless defined $extra && length $extra;
+    next if $seen{$extra};
+    push @paths, $extra;
+    $seen{$extra} = 1;
+  }
+  return @paths;
+}
+
+sub reload {
+  $book_path_cache = undef;
+  $book_extra_paths_cache = undef;
+  _load_json_book();
+  return scalar(keys %fen_book);
+}
+
 sub _load_json_book {
   %fen_book = ();
   %relaxed_fen_book = ();
   %ranked_legal_entries_cache = ();
 
-  my $path = _book_path();
+  my @paths = _book_paths();
+  return unless @paths;
+  foreach my $path (@paths) {
+    _merge_json_book_path($path);
+  }
+}
+
+sub _merge_json_book_path {
+  my ($path) = @_;
   return unless defined $path && -e $path;
 
   my $json_text = do {
@@ -93,7 +154,32 @@ sub _load_json_book {
 
 sub choose_move {
   my ($state) = @_;
+  return unless _book_depth_allowed($state);
   return _lookup_fen_move($state) || _legacy_lookup($state);
+}
+
+sub _book_depth_allowed {
+  my ($state) = @_;
+  return 1 unless defined $state && ref($state) eq 'Chess::State';
+
+  if ($BOOK_MAX_PLIES > 0) {
+    my $ply = _state_ply($state);
+    return 0 if $ply > $BOOK_MAX_PLIES;
+  }
+  if ($BOOK_MAX_FULLMOVE > 0) {
+    my $fullmove = $state->[Chess::State::MOVE];
+    $fullmove = 1 unless defined $fullmove && $fullmove =~ /^\d+$/;
+    return 0 if $fullmove > $BOOK_MAX_FULLMOVE;
+  }
+  return 1;
+}
+
+sub _state_ply {
+  my ($state) = @_;
+  my $fullmove = $state->[Chess::State::MOVE];
+  $fullmove = 1 unless defined $fullmove && $fullmove =~ /^\d+$/;
+  my $turn = $state->[Chess::State::TURN] ? 1 : 0;
+  return (($fullmove - 1) * 2) + $turn;
 }
 
 sub _lookup_fen_move {
@@ -395,18 +481,34 @@ sub _select_ranked_entry {
   my ($entries) = @_;
   return unless ref $entries eq 'ARRAY' && @$entries;
 
-  my $top = $entries->[0];
-  return $top unless $BOOK_VARIETY > 0 && @$entries > 1;
+  return $entries->[0] if $BOOK_POLICY eq 'best';
+  my @pool = _selection_pool($entries);
+  return $entries->[0] unless @pool > 1;
 
-  my $floor = $top->{_book_score} - 0.02;
-  my @pool = grep { ($_->{_book_score} // 0) >= $floor } @$entries;
-  return $top unless @pool > 1;
+  if ($BOOK_POLICY eq 'uniform_random') {
+    return $pool[int(rand(@pool))];
+  }
+
   return _pick_weighted(\@pool, sub {
     my ($entry) = @_;
     my $score = ($entry->{_book_score} // 0);
     my $played = ($entry->{_book_played} // 1);
-    return (1 + 20 * $score) * (1 + $played * $BOOK_VARIETY);
+    my $variety = $BOOK_VARIETY >= 0.05 ? $BOOK_VARIETY : 0.05;
+    my $base = (1 + 20 * $score) * (1 + $played * $variety);
+    return $base > 0 ? $base : 1;
   });
+}
+
+sub _selection_pool {
+  my ($entries) = @_;
+  return unless ref $entries eq 'ARRAY' && @$entries;
+  my $top = $entries->[0];
+  my $floor = ($top->{_book_score} // 0) - 0.02;
+  my @near_top = grep { ($_->{_book_score} // 0) >= $floor } @$entries;
+  my $take = $BOOK_TOP_N;
+  $take = 1 if !defined $take || $take < 1;
+  $take = @near_top if $take > @near_top;
+  return @near_top[0 .. ($take - 1)];
 }
 
 sub _entry_played {
@@ -503,6 +605,15 @@ sub _env_num {
   $value += 0;
   $value = $min if defined $min && $value < $min;
   $value = $max if defined $max && $value > $max;
+  return $value;
+}
+
+sub _env_choice {
+  my ($name, $default, $allowed) = @_;
+  my $value = $ENV{$name};
+  return $default unless defined $value;
+  $value = lc($value);
+  return $default unless ref($allowed) eq 'HASH' && $allowed->{$value};
   return $value;
 }
 
