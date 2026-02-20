@@ -209,6 +209,38 @@ $repetition_rethink_min_budget_multiple += 0;
 $repetition_rethink_min_budget_multiple = 1.0 if $repetition_rethink_min_budget_multiple < 1.0;
 $repetition_rethink_min_budget_multiple = 20.0 if $repetition_rethink_min_budget_multiple > 20.0;
 
+my $panic_30s_ms = $ENV{LICHESS_PANIC_30S_MS};
+if (!defined $panic_30s_ms || $panic_30s_ms !~ /^\d+$/) {
+  $panic_30s_ms = 30_000;
+}
+$panic_30s_ms = int($panic_30s_ms);
+$panic_30s_ms = 1_000 if $panic_30s_ms < 1_000;
+$panic_30s_ms = 180_000 if $panic_30s_ms > 180_000;
+
+my $panic_10s_ms = $ENV{LICHESS_PANIC_10S_MS};
+if (!defined $panic_10s_ms || $panic_10s_ms !~ /^\d+$/) {
+  $panic_10s_ms = 10_000;
+}
+$panic_10s_ms = int($panic_10s_ms);
+$panic_10s_ms = 500 if $panic_10s_ms < 500;
+$panic_10s_ms = $panic_30s_ms if $panic_10s_ms > $panic_30s_ms;
+
+my $panic_30s_cap_ms = $ENV{LICHESS_PANIC_30S_CAP_MS};
+if (!defined $panic_30s_cap_ms || $panic_30s_cap_ms !~ /^\d+$/) {
+  $panic_30s_cap_ms = 2_200;
+}
+$panic_30s_cap_ms = int($panic_30s_cap_ms);
+$panic_30s_cap_ms = 200 if $panic_30s_cap_ms < 200;
+$panic_30s_cap_ms = 8_000 if $panic_30s_cap_ms > 8_000;
+
+my $panic_10s_cap_ms = $ENV{LICHESS_PANIC_10S_CAP_MS};
+if (!defined $panic_10s_cap_ms || $panic_10s_cap_ms !~ /^\d+$/) {
+  $panic_10s_cap_ms = 900;
+}
+$panic_10s_cap_ms = int($panic_10s_cap_ms);
+$panic_10s_cap_ms = 80 if $panic_10s_cap_ms < 80;
+$panic_10s_cap_ms = $panic_30s_cap_ms if $panic_10s_cap_ms > $panic_30s_cap_ms;
+
 my $eval_drop_extra_think_cp = $ENV{LICHESS_EVAL_DROP_EXTRA_THINK_CP};
 if (!defined $eval_drop_extra_think_cp || $eval_drop_extra_think_cp !~ /^\d+$/) {
   $eval_drop_extra_think_cp = 40;
@@ -2212,6 +2244,10 @@ sub _movetime_for_game_ms {
 
   my ($remaining_ms, $increment_ms) = _clock_for_side_ms($game);
   return 800 unless defined $remaining_ms;
+  my $panic_level =
+      $remaining_ms <= $panic_10s_ms ? 2
+    : $remaining_ms <= $panic_30s_ms ? 1
+    : 0;
 
   my $speed = normalize_speed($game->{speed}) // '';
   if ($state && _state_has_book_move($state)) {
@@ -2299,7 +2335,8 @@ sub _movetime_for_game_ms {
     $budget_ms = $boosted if $boosted > $budget_ms;
   }
 
-  if ($is_production_profile
+  if (!$panic_level
+    && $is_production_profile
     && $prod_opening_boost_plies > 0
     && $prod_opening_boost_mult > 1.0)
   {
@@ -2317,7 +2354,8 @@ sub _movetime_for_game_ms {
     }
   }
 
-  if ($is_production_profile
+  if (!$panic_level
+    && $is_production_profile
     && $prod_opening_floor_plies > 0
     && $prod_opening_floor_ms > 0
     && $plies < $prod_opening_floor_plies
@@ -2338,7 +2376,7 @@ sub _movetime_for_game_ms {
     }
   }
 
-  if ($is_production_profile && $speed ne 'bullet') {
+  if (!$panic_level && $is_production_profile && $speed ne 'bullet') {
     if ($prod_cap_mult > 1.0) {
       my $prod_cap_ms = int($effective_cap_ms * $prod_cap_mult);
       $prod_cap_ms = $effective_cap_ms if $prod_cap_ms < $effective_cap_ms;
@@ -2358,7 +2396,7 @@ sub _movetime_for_game_ms {
       $budget_ms = $speed_floor if $speed_floor > 0 && $budget_ms < $speed_floor && $usable_ms >= $speed_floor;
     }
   }
-  if ($is_develop_branch && $speed ne 'bullet') {
+  if (!$panic_level && $is_develop_branch && $speed ne 'bullet') {
     if ($develop_cap_mult > 1.0) {
       my $dev_cap_ms = int($effective_cap_ms * $develop_cap_mult);
       $dev_cap_ms = $effective_cap_ms if $dev_cap_ms < $effective_cap_ms;
@@ -2381,6 +2419,22 @@ sub _movetime_for_game_ms {
     $budget_ms = $endgame_floor if $budget_ms < $endgame_floor && $usable_ms >= $endgame_floor;
   }
   $budget_ms = $min_ms if $budget_ms < $min_ms;
+  if ($panic_level) {
+    my $panic_cap_ms;
+    if ($panic_level >= 2) {
+      $panic_cap_ms = $panic_10s_cap_ms + int($increment_ms * 0.30);
+      my $remaining_cap = int($remaining_ms * 0.16);
+      $remaining_cap = 80 if $remaining_cap < 80;
+      $panic_cap_ms = $remaining_cap if $panic_cap_ms > $remaining_cap;
+    } else {
+      $panic_cap_ms = $panic_30s_cap_ms + int($increment_ms * 0.45);
+      my $remaining_cap = int($remaining_ms * 0.12);
+      $remaining_cap = 160 if $remaining_cap < 160;
+      $panic_cap_ms = $remaining_cap if $panic_cap_ms > $remaining_cap;
+    }
+    $panic_cap_ms = 80 if $panic_cap_ms < 80;
+    $budget_ms = $panic_cap_ms if $budget_ms > $panic_cap_ms;
+  }
   $budget_ms = $effective_cap_ms if $budget_ms > $effective_cap_ms;
   return $budget_ms;
 }

@@ -104,6 +104,42 @@ sub _finalize_root_search_stats {
   $root_search_stats{best_move_key} = @ranked ? $ranked[0]{move_key} : undef;
 }
 
+sub _resolve_root_candidate_move {
+  my ($state, $candidate) = @_;
+  return undef unless ref($candidate) eq 'HASH';
+  my $move = $candidate->{move};
+  if (!defined $move && defined $candidate->{move_key}) {
+    $move = _find_move_by_key($state, $candidate->{move_key});
+  }
+  return $move;
+}
+
+sub _maybe_randomize_tied_root_move {
+  my ($state, $best_move, $opts) = @_;
+  return $best_move unless $opts && $opts->{randomize_ties};
+
+  my $delta_cp = defined $opts->{tie_random_cp}
+    ? int($opts->{tie_random_cp})
+    : ROOT_NEAR_TIE_DELTA;
+  $delta_cp = 0 if $delta_cp < 0;
+
+  my $ranked = $root_search_stats{root_candidates};
+  return $best_move unless ref($ranked) eq 'ARRAY' && @{$ranked} >= 2;
+  my $best_score = $ranked->[0]{score};
+  return $best_move unless defined $best_score;
+
+  my @near_tied;
+  for my $candidate (@{$ranked}) {
+    next unless defined $candidate->{score};
+    last if ($best_score - $candidate->{score}) > $delta_cp;
+    my $move = _resolve_root_candidate_move($state, $candidate);
+    next unless defined $move;
+    push @near_tied, $move;
+  }
+  return $best_move unless @near_tied >= 2;
+  return $near_tied[int(rand(@near_tied))];
+}
+
 my %piece_values = (
   KING, 5590,
   PAWN, 10,
@@ -2115,6 +2151,7 @@ sub think {
     my @legal = $state->generate_moves;
     $best_move = $legal[0] if @legal;
   }
+  $best_move = _maybe_randomize_tied_root_move($state, $best_move, \%think_opts);
 
   $last_completed_score = _evaluate_board($state) unless defined $last_completed_score;
   $last_completed_depth = 1 unless $last_completed_depth;

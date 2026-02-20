@@ -37,6 +37,7 @@ my $LEGAL_MOVE_MAP_CACHE_MAX = 20_000;
 my $RANKED_LEGAL_CACHE_MAX = 20_000;
 my $book_path_cache;
 my $book_extra_paths_cache;
+my $book_style_overlay_path_cache;
 my $BOOK_MIN_PLAYED   = _env_int('CHESS_BOOK_MIN_PLAYED', 3, 1);
 my $BOOK_MIN_RELATIVE = _env_num('CHESS_BOOK_MIN_RELATIVE', 0.12, 0.0, 1.0);
 my $BOOK_VARIETY      = _env_num('CHESS_BOOK_VARIETY', 0.0, 0.0, 1.0);
@@ -54,6 +55,7 @@ my $BOOK_POLICY = _env_choice(
 my $BOOK_TOP_N = _env_int('CHESS_BOOK_TOP_N', 3, 1);
 my $BOOK_MAX_PLIES = _env_int('CHESS_BOOK_MAX_PLIES', 0, 0);
 my $BOOK_MAX_FULLMOVE = _env_int('CHESS_BOOK_MAX_FULLMOVE', 0, 0);
+my $BOOK_USE_STYLE_OVERLAY = _env_flag('CHESS_BOOK_USE_STYLE_OVERLAY', 1);
 
 sub _book_path {
   return $ENV{CHESS_BOOK_PATH} if defined $ENV{CHESS_BOOK_PATH} && length $ENV{CHESS_BOOK_PATH};
@@ -93,12 +95,28 @@ sub _book_paths {
     push @paths, $extra;
     $seen{$extra} = 1;
   }
+  if ($BOOK_USE_STYLE_OVERLAY) {
+    my $overlay = _book_style_overlay_path();
+    if (defined $overlay && length $overlay && -e $overlay && !$seen{$overlay}) {
+      push @paths, $overlay;
+      $seen{$overlay} = 1;
+    }
+  }
   return @paths;
+}
+
+sub _book_style_overlay_path {
+  return $book_style_overlay_path_cache if defined $book_style_overlay_path_cache;
+  my $module_dir = dirname(__FILE__);
+  my $root = File::Spec->catdir($module_dir, '..');
+  $book_style_overlay_path_cache = File::Spec->catfile($root, 'data', 'opening_style_overlay.json');
+  return $book_style_overlay_path_cache;
 }
 
 sub reload {
   $book_path_cache = undef;
   $book_extra_paths_cache = undef;
+  $book_style_overlay_path_cache = undef;
   _load_json_book();
   return scalar(keys %fen_book);
 }
@@ -617,6 +635,16 @@ sub _env_choice {
   return $value;
 }
 
+sub _env_flag {
+  my ($name, $default) = @_;
+  my $value = $ENV{$name};
+  return $default unless defined $value;
+  $value = lc($value);
+  return 1 if $value eq '1' || $value eq 'true' || $value eq 'yes' || $value eq 'on';
+  return 0 if $value eq '0' || $value eq 'false' || $value eq 'no' || $value eq 'off';
+  return $default;
+}
+
 sub _pick_weighted {
   my ($entries, $weight_cb) = @_;
   $weight_cb ||= sub { $_[0]{weight} };
@@ -632,8 +660,6 @@ sub _pick_weighted {
   return $entries->[-1];
 }
 
-BEGIN {
-  _load_json_book();
-}
+_load_json_book();
 
 1;

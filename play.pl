@@ -105,7 +105,7 @@ sub run_interactive {
         sleep($delay_ms / 1000) if $delay_ms > 0;
         $move = $book_move;
       } else {
-        $move = $engine->think();
+        $move = $engine->think(undef, { randomize_ties => 1 });
       }
       my $elapsed_ms = int((time() - $think_started_at) * 1000);
       my $remaining_delay_ms = $engine_delay_ms - $elapsed_ms;

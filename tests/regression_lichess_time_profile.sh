@@ -52,6 +52,8 @@ sub check_budget {
 my $blitz = check_budget('blitz', 300_000, 3_000, 2_500, 8_000);
 my $rapid = check_budget('rapid', 600_000, 0, 4_500, 12_000);
 my $classical = check_budget('classical', 1_800_000, 0, 7_000, 15_000);
+my $rapid_panic_30 = check_budget('rapid', 30_000, 0, 150, 2_200);
+my $rapid_panic_10 = check_budget('rapid', 10_000, 0, 80, 900);
 
-print "Lichess time-profile regression OK: blitz=$blitz rapid=$rapid classical=$classical\n";
+print "Lichess time-profile regression OK: blitz=$blitz rapid=$rapid classical=$classical rapid_panic_30=$rapid_panic_30 rapid_panic_10=$rapid_panic_10\n";
 PERL
