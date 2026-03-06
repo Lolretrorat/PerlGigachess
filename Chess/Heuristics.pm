@@ -93,10 +93,21 @@ use constant EARLY_KING_WALK_ADVANCED_RANK_PENALTY => 2; # Extra penalty for ear
 use constant HANGING_DEFENDED_SCALE => 0.5; # Retained hanging penalty multiplier when defended; min=0.1 max=0.85.
 use constant HANGING_MOVE_GUARD_BONUS => 26; # Extra penalty for quiet moves leaving loose material; min=6 max=40.
 use constant LMR_KING_DANGER_THRESHOLD => 4; # Disable/reduce LMR when king danger reaches this level; min=4 max=24.
+use constant LMP_MAX_DEPTH => 6; # Max depth where late-move pruning can skip quiet tail moves; min=3 max=10.
+use constant LMP_BASE_MOVES => 4; # Base quiet-move count searched before enabling LMP tail skips; min=2 max=10.
+use constant LMP_DEPTH_FACTOR => 3; # Additional LMP allowance per depth; min=1 max=8.
 use constant NULL_MOVE_MIN_DEPTH => 3; # Minimum depth required for null-move pruning; [FIXED VALUE].
 use constant NULL_MOVE_REDUCTION => 2; # Base depth reduction for null-move pruning; [FIXED VALUE].
 use constant NULL_MOVE_DEEP_DEPTH => 7; # Depth where null-move applies extra reduction; [FIXED VALUE].
 use constant NULL_MOVE_MATE_GUARD => 1500; # Guard band preventing null-move near mate scores; [FIXED VALUE].
+use constant STATIC_NULL_PRUNE_MAX_DEPTH => 6; # Max depth for static null-move pruning shortcut; min=3 max=10.
+use constant STATIC_NULL_PRUNE_MARGIN_BASE => 120; # Base margin for static null-move pruning vs beta; min=40 max=260.
+use constant STATIC_NULL_PRUNE_MARGIN_PER_DEPTH => 70; # Per-depth margin added for static null-move pruning; min=20 max=140.
+use constant RFP_MAX_DEPTH => 5; # Max depth for reverse futility pruning; min=2 max=8.
+use constant RFP_MARGIN_BASE => 75; # Base reverse-futility margin; min=20 max=180.
+use constant RFP_MARGIN_PER_DEPTH => 55; # Per-depth reverse-futility margin; min=15 max=120.
+use constant IID_MIN_DEPTH => 6; # Minimum depth to trigger internal iterative deepening; min=4 max=12.
+use constant IID_REDUCTION => 2; # Depth reduction used by IID probe search; min=1 max=4.
 use constant UNSAFE_CAPTURE_HANGING_BONUS => 74; # Capture-risk penalty for exposing hanging pieces; min=8 max=96.
 use constant UNSAFE_CAPTURE_DEFENDED_SCALE => 0.68; # Capture-risk retention when target square is defended; min=0.2 max=0.9.
 use constant UNSAFE_CAPTURE_KING_EXPOSURE_WEIGHT => 10; # Extra capture-risk weight for king exposure; min=1 max=14.
@@ -117,6 +128,7 @@ use constant PROMOTION_CHECK_ORDER_BONUS => 220; # Move-order bonus for checking
 use constant SEE_ORDER_WEIGHT => 1; # Weight of SEE term in move ordering; [FIXED VALUE].
 use constant SEE_BAD_CAPTURE_THRESHOLD => 0; # SEE threshold classifying captures as bad; [FIXED VALUE].
 use constant SEE_PRUNE_THRESHOLD => -30; # SEE threshold used to prune clearly losing captures; [FIXED VALUE].
+use constant QUIESCE_SEE_PRUNE_THRESHOLD => -45; # SEE threshold for pruning clearly losing quiescence captures; min=-120 max=0.
 use constant MAX_ROOT_WORKERS => 64; # Maximum parallel root workers supported; [FIXED VALUE].
 use constant MAX_MULTIPV => 16; # Maximum MultiPV lines supported; [FIXED VALUE].
 use constant EVAL_CACHE_MAX_ENTRIES => 200_000; # Eval-cache size limit before reset; [FIXED VALUE].
@@ -127,6 +139,62 @@ use constant HANGING_PIECE_PENALTY => {
   BISHOP() => 6, # Piece-specific hanging penalty for bishops; [FIXED VALUE].
   ROOK() => 10, # Piece-specific hanging penalty for rooks; [FIXED VALUE].
   QUEEN() => 18, # Piece-specific hanging penalty for queens; [FIXED VALUE].
+};
+use constant TIME_POLICY => {
+  default_horizon => TIME_DEFAULT_HORIZON,
+  inc_weight => TIME_INC_WEIGHT,
+  reserve_ms => TIME_RESERVE_MS,
+  move_overhead_ms => TIME_MOVE_OVERHEAD_MS,
+  min_budget_ms => TIME_MIN_BUDGET_MS,
+  hard_scale => TIME_HARD_SCALE,
+  movetime_hard_scale => TIME_MOVETIME_HARD_SCALE,
+  movetime_hard_cap_ms => TIME_MOVETIME_HARD_CAP_MS,
+  max_share => TIME_MAX_SHARE,
+};
+use constant TIME_PANIC_POLICY => {
+  '60s' => {
+    threshold_ms => TIME_PANIC_60S_MS,
+    reserve_pct => TIME_PANIC_60S_RESERVE_PCT,
+    min_horizon => TIME_PANIC_60S_MIN_HORIZON,
+    budget_share => TIME_PANIC_60S_BUDGET_SHARE,
+    inc_weight => TIME_PANIC_60S_INC_WEIGHT,
+    hard_scale => TIME_PANIC_60S_HARD_SCALE,
+    quiesce_max_depth => TIME_PANIC_60S_QUIESCE_MAX_DEPTH,
+  },
+  '30s' => {
+    threshold_ms => TIME_PANIC_30S_MS,
+    reserve_pct => TIME_PANIC_30S_RESERVE_PCT,
+    min_horizon => TIME_PANIC_30S_MIN_HORIZON,
+    budget_share => TIME_PANIC_30S_BUDGET_SHARE,
+    inc_weight => TIME_PANIC_30S_INC_WEIGHT,
+    hard_scale => TIME_PANIC_30S_HARD_SCALE,
+    quiesce_max_depth => TIME_PANIC_30S_QUIESCE_MAX_DEPTH,
+  },
+  '10s' => {
+    threshold_ms => TIME_PANIC_10S_MS,
+    reserve_pct => TIME_PANIC_10S_RESERVE_PCT,
+    min_horizon => TIME_PANIC_10S_MIN_HORIZON,
+    budget_share => TIME_PANIC_10S_BUDGET_SHARE,
+    inc_weight => TIME_PANIC_10S_INC_WEIGHT,
+    hard_scale => TIME_PANIC_10S_HARD_SCALE,
+    quiesce_max_depth => TIME_PANIC_10S_QUIESCE_MAX_DEPTH,
+  },
+};
+use constant SEARCH_POLICY => {
+  aspiration_window => ASPIRATION_WINDOW,
+  score_stability_delta => SCORE_STABILITY_DELTA,
+  extra_depth_on_unstable => EXTRA_DEPTH_ON_UNSTABLE,
+  easy_move_min_depth => EASY_MOVE_MIN_DEPTH,
+  easy_move_depth_cap => EASY_MOVE_DEPTH_CAP,
+  null_move_min_depth => NULL_MOVE_MIN_DEPTH,
+  null_move_reduction => NULL_MOVE_REDUCTION,
+  null_move_deep_depth => NULL_MOVE_DEEP_DEPTH,
+};
+use constant ROOT_POLICY => {
+  near_tie_delta => ROOT_NEAR_TIE_DELTA,
+  clear_best_delta => ROOT_CLEAR_BEST_DELTA,
+  max_workers => MAX_ROOT_WORKERS,
+  max_multipv => MAX_MULTIPV,
 };
 
 our @ENGINE_EXPORTS = qw(
@@ -218,10 +286,21 @@ our @ENGINE_EXPORTS = qw(
   HANGING_DEFENDED_SCALE
   HANGING_MOVE_GUARD_BONUS
   LMR_KING_DANGER_THRESHOLD
+  LMP_MAX_DEPTH
+  LMP_BASE_MOVES
+  LMP_DEPTH_FACTOR
   NULL_MOVE_MIN_DEPTH
   NULL_MOVE_REDUCTION
   NULL_MOVE_DEEP_DEPTH
   NULL_MOVE_MATE_GUARD
+  STATIC_NULL_PRUNE_MAX_DEPTH
+  STATIC_NULL_PRUNE_MARGIN_BASE
+  STATIC_NULL_PRUNE_MARGIN_PER_DEPTH
+  RFP_MAX_DEPTH
+  RFP_MARGIN_BASE
+  RFP_MARGIN_PER_DEPTH
+  IID_MIN_DEPTH
+  IID_REDUCTION
   UNSAFE_CAPTURE_HANGING_BONUS
   UNSAFE_CAPTURE_DEFENDED_SCALE
   UNSAFE_CAPTURE_KING_EXPOSURE_WEIGHT
@@ -242,12 +321,17 @@ our @ENGINE_EXPORTS = qw(
   SEE_ORDER_WEIGHT
   SEE_BAD_CAPTURE_THRESHOLD
   SEE_PRUNE_THRESHOLD
+  QUIESCE_SEE_PRUNE_THRESHOLD
   MAX_ROOT_WORKERS
   MAX_MULTIPV
   EVAL_CACHE_MAX_ENTRIES
   PASSED_PAWN_BONUS_BY_RANK
   ENEMY_PASSED_PAWN_PENALTY_BY_RANK
   HANGING_PIECE_PENALTY
+  TIME_POLICY
+  TIME_PANIC_POLICY
+  SEARCH_POLICY
+  ROOT_POLICY
 );
 
 our @EXPORT_OK = @ENGINE_EXPORTS;
