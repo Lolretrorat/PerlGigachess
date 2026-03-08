@@ -24,7 +24,7 @@ use Chess::Book;
 use Chess::TableUtil qw(canonical_fen_key);
 
 my $uci_mode = 0;
-my $depth = 19;
+my $depth = 18;
 my $fen;
 my $workers = 1;
 my $engine_delay_ms = _normalize_delay_ms($ENV{PLAY_ENGINE_DELAY_MS} // 300);
