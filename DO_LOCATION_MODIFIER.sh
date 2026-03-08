@@ -19,7 +19,7 @@ TMP_DIR="$DEFAULT_TMP_DIR"
 KEEP_DOWNLOAD=0
 ALLOW_DUPLICATE_SOURCE=0
 
-LOCATION_OUTPUT="$ROOT_DIR/data/location_modifiers.json"
+LOCATION_OUTPUT="$ROOT_DIR/data/location_modifiers.local.json"
 LOCATION_GAMES=5000
 LOCATION_SCALE=""
 LOCATION_ADAPTIVE_MIN_GAMES=120
@@ -34,7 +34,7 @@ Usage:
 Purpose:
   End-to-end location modifier pipeline that can:
   1) ingest games (default: OWN-URLS)
-  2) train/update data/location_modifiers.json
+  2) train/update data/location_modifiers.local.json
   3) validate output and syntax-check Chess::LocationModifer
 
 Options:
@@ -47,7 +47,7 @@ Options:
   --tmp-dir <dir>                 Temp directory for ingest (default: $PERLGIGACHESS_TMP_DIR or /mnt/throughput/perlgigachess-tmp)
   --keep-download                 Keep monthly archive download
   --allow-duplicate-source        Allow duplicate monthly ingest source
-  --location-output <path>        Location output path (default: data/location_modifiers.json)
+  --location-output <path>        Location output path (default: data/location_modifiers.local.json)
   --location-games <int>          Max games for location training (default: 5000)
   --location-scale <num>          Scale passed to ./init train-location
   --location-adaptive-min-games <int>  Game-count target for full auto scale (default: 120)

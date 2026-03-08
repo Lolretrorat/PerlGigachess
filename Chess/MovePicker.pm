@@ -7,8 +7,13 @@ use Chess::See ();
 sub new {
   my ($class, %args) = @_;
 
+  my $stage_generators = ref($args{stage_generators}) eq 'HASH' ? $args{stage_generators} : {};
+
   my $moves = $args{moves};
-  if (!defined $moves && defined $args{state} && ref($args{state})) {
+  if (!defined $moves
+      && !keys(%{$stage_generators})
+      && defined $args{state}
+      && ref($args{state})) {
     $moves = $args{state}->generate_pseudo_moves;
   }
   $moves = [] unless ref($moves) eq 'ARRAY';
@@ -42,6 +47,16 @@ sub new {
       quiet => [],
       bad_capture => [],
     },
+    bucket_sorted => {
+      tt => 0,
+      tactical => 0,
+      killer => 0,
+      counter => 0,
+      quiet => 0,
+      bad_capture => 0,
+    },
+    stage_generators => $stage_generators,
+    stage_loaded => {},
     stage_order => [qw(tt tactical killer counter quiet bad_capture)],
     stage_index => 0,
   }, $class;
@@ -55,7 +70,8 @@ sub next_move {
 
   while ($self->{stage_index} < @{$self->{stage_order}}) {
     my $stage = $self->{stage_order}[$self->{stage_index}];
-    my $entry = $self->_pop_best_from_bucket($self->{buckets}{$stage});
+    $self->_load_stage($stage);
+    my $entry = $self->_pop_best_from_bucket($stage);
     return $entry if defined $entry;
     $self->{stage_index}++;
   }
@@ -86,8 +102,21 @@ sub _seed_moves {
       next;
     }
     my $bucket = $self->_bucket_for_entry($entry);
-    push @{$self->{buckets}{$bucket}}, $entry if defined $bucket;
+    $self->_push_entry_to_bucket($bucket, $entry) if defined $bucket;
   }
+}
+
+sub _load_stage {
+  my ($self, $stage) = @_;
+  return if $self->{stage_loaded}{$stage};
+  $self->{stage_loaded}{$stage} = 1;
+
+  my $generator = $self->{stage_generators}{$stage};
+  return unless defined $generator && ref($generator) eq 'CODE';
+
+  my $moves = $generator->($self, $stage);
+  return unless ref($moves) eq 'ARRAY' && @{$moves};
+  $self->_seed_moves($moves);
 }
 
 sub _bucket_for_entry {
@@ -137,20 +166,26 @@ sub _score_entry {
 }
 
 sub _pop_best_from_bucket {
-  my ($self, $bucket) = @_;
+  my ($self, $stage) = @_;
+  my $bucket = $self->{buckets}{$stage};
   return unless ref($bucket) eq 'ARRAY' && @{$bucket};
 
-  my $best_idx = 0;
-  my $best_score = $self->_score_entry($bucket->[0]);
-  for my $idx (1 .. $#{$bucket}) {
-    my $score = $self->_score_entry($bucket->[$idx]);
-    if ($score > $best_score) {
-      $best_score = $score;
-      $best_idx = $idx;
-    }
+  if (! $self->{bucket_sorted}{$stage}) {
+    @{$bucket} = sort {
+      $self->_score_entry($a) <=> $self->_score_entry($b)
+    } @{$bucket};
+    $self->{bucket_sorted}{$stage} = 1;
   }
 
-  return splice(@{$bucket}, $best_idx, 1);
+  return pop @{$bucket};
+}
+
+sub _push_entry_to_bucket {
+  my ($self, $bucket, $entry) = @_;
+  return unless defined $bucket;
+  return unless exists $self->{buckets}{$bucket};
+  push @{$self->{buckets}{$bucket}}, $entry;
+  $self->{bucket_sorted}{$bucket} = 0;
 }
 
 sub _move_key {

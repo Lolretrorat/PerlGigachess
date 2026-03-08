@@ -32,7 +32,7 @@ our %location_modifiers = map {
     OPP_KING OPP_QUEEN OPP_BISHOP OPP_KNIGHT OPP_ROOK OPP_PAWN
 );
 
-our @EXPORT_OK = qw(%location_modifiers load_from_file save_to_file train_from_stream default_store_path);
+our @EXPORT_OK = qw(%location_modifiers load_from_file save_to_file train_from_stream default_store_path default_load_path);
 
 sub load_from_file;
 sub save_to_file;
@@ -84,14 +84,35 @@ my %state_move_candidates_cache;
 my $state_move_candidates_cache_size = 0;
 my $STATE_MOVE_CANDIDATES_CACHE_MAX = 100_000;
 
+sub _repo_data_path {
+    my ($filename) = @_;
+    my $module_dir = dirname(__FILE__);
+    my $root = File::Spec->catdir($module_dir, '..');
+    return File::Spec->catfile($root, 'data', $filename);
+}
+
 sub default_store_path {
     return $ENV{PERLGIGACHESS_LOCATION_MODIFIER_FILE}
       if defined $ENV{PERLGIGACHESS_LOCATION_MODIFIER_FILE}
       && length $ENV{PERLGIGACHESS_LOCATION_MODIFIER_FILE};
 
-    my $module_dir = dirname(__FILE__);
-    my $root = File::Spec->catdir($module_dir, '..');
-    return File::Spec->catfile($root, 'data', 'location_modifiers.json');
+    return _repo_data_path('location_modifiers.local.json');
+}
+
+sub default_load_path {
+    return $ENV{PERLGIGACHESS_LOCATION_MODIFIER_FILE}
+      if defined $ENV{PERLGIGACHESS_LOCATION_MODIFIER_FILE}
+      && length $ENV{PERLGIGACHESS_LOCATION_MODIFIER_FILE};
+
+    my @candidates = (
+        _repo_data_path('location_modifiers.local.json'),
+        _repo_data_path('location_modifiers.json'),
+    );
+    for my $path (@candidates) {
+        return $path if -e $path;
+    }
+
+    return $candidates[-1];
 }
 
 sub load_from_file {
@@ -520,7 +541,7 @@ sub _piece_key {
 }
 
 BEGIN {
-    my $default = default_store_path();
+    my $default = default_load_path();
     load_from_file($default) if defined $default && -e $default;
 }
 
