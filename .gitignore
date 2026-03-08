@@ -13,3 +13,27 @@ data/lichess_games_export.pgn
 *.pid
 run/
 tmp/
+
+# data science / notebook local state
+.ipynb_checkpoints/
+analysis/.ipynb_checkpoints/
+analysis/**/.ipynb_checkpoints/
+analysis/*_local.py
+analysis/*.nbconvert.ipynb
+
+# local training/data artifacts
+data/tmp/
+data/processed/
+data/location_modifiers.local.json
+data/location_modifiers_training_report.local.json
+data/**/*.tmp
+data/**/*.cache
+*.npy
+*.npz
+*.parquet
+*.feather
+*.pkl
+*.joblib
+
+# local experiment outputs
+engineMigration/**/checkpoints/

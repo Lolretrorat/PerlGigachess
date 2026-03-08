@@ -7,37 +7,69 @@ our @ISA = qw(Exporter);
 our @EXPORT_OK = qw(generate_moves);
 
 sub generate_moves {
-  my ($state, $type) = @_;
+  my ($state, $type, $opts) = @_;
   $type = lc($type // 'non_evasions');
+  $opts = {} unless ref($opts) eq 'HASH';
 
-  my @pseudo = @{$state->generate_pseudo_moves};
-  my @legal = grep { defined $state->make_move($_) } @pseudo;
+  my $is_checked = $state->is_checked ? 1 : 0;
 
   if ($type eq 'legal' || $type eq 'all') {
-    return \@legal;
+    return _generate_filtered_legal($state, $opts, sub { 1 });
   }
 
   if ($type eq 'evasions') {
-    return [] unless $state->is_checked;
-    return \@legal;
+    return [] unless $is_checked;
+    return _generate_filtered_legal($state, $opts, sub { 1 });
   }
 
   if ($type eq 'captures') {
-    my @captures = grep { _is_capture_like($state, $_) } @legal;
-    return \@captures;
+    return _generate_filtered_legal($state, $opts, sub {
+      my ($move) = @_;
+      return _is_capture_like($state, $move);
+    });
   }
 
   if ($type eq 'quiets') {
-    my @quiets = grep { !_is_capture_like($state, $_) } @legal;
-    return \@quiets;
+    return _generate_filtered_legal($state, $opts, sub {
+      my ($move) = @_;
+      return !_is_capture_like($state, $move);
+    });
   }
 
   # NON_EVASIONS in this mailbox implementation is simply legal moves
   # when not in check; otherwise legal evasions.
   if ($type eq 'non_evasions') {
-    return $state->is_checked ? [] : \@legal;
+    return [] if $is_checked;
+    return _generate_filtered_legal($state, $opts, sub { 1 });
   }
 
+  return _generate_filtered_legal($state, $opts, sub { 1 });
+}
+
+sub _generate_filtered_legal {
+  my ($state, $opts, $predicate) = @_;
+  my $pseudo = $opts->{pseudo_moves};
+  $pseudo = $state->generate_pseudo_moves unless ref($pseudo) eq 'ARRAY';
+  my $move_filter_cb = $opts->{move_filter_cb};
+
+  my $move_key_cb = $opts->{move_key_cb};
+  my $exclude = $opts->{exclude_move_keys};
+  my $has_exclude = ref($exclude) eq 'HASH' && keys %{$exclude};
+
+  my @legal;
+  my @undo_stack;
+  for my $move (@{$pseudo}) {
+    next unless ref($move) eq 'ARRAY';
+    next if defined $predicate && !$predicate->($move);
+    next if defined $move_filter_cb && !$move_filter_cb->($move);
+    if ($has_exclude && defined $move_key_cb) {
+      my $move_key = $move_key_cb->($move);
+      next if defined $move_key && exists $exclude->{$move_key};
+    }
+    next unless defined $state->do_move($move, \@undo_stack);
+    push @legal, $move;
+    $state->undo_move(\@undo_stack);
+  }
   return \@legal;
 }
 

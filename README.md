@@ -201,8 +201,9 @@ engine code. Stream PGN text into the helper:
 zstdcat lichess_db_standard_rated_2024-01.pgn.zst | ./init train-location --games 5000
 ```
 
-The command updates `data/location_modifiers.json`, which the module loads at
-startup. To validate and install JSON exported from other tooling, run
+The command updates `data/location_modifiers.local.json` (gitignored), which the module
+prefers at startup and falls back to `data/location_modifiers.json` when the local
+override is absent. To validate and install JSON exported from other tooling, run
 `perl scripts/update_location_modifiers.pl path/to/tables.json`. The pipeline and
 feature format are described in `docs/location-modifier-ml.md`.
 

@@ -26,7 +26,32 @@ use constant 1.03 {
   PIECE_COUNT => 8,
   STATE_KEY => 9,
   FEN_KEY => 10,
+  UNDO_TURN => 0,
+  UNDO_CASTLE_SELF_KING => 1,
+  UNDO_CASTLE_SELF_QUEEN => 2,
+  UNDO_CASTLE_OPP_KING => 3,
+  UNDO_CASTLE_OPP_QUEEN => 4,
+  UNDO_EP => 5,
+  UNDO_HALFMOVE => 6,
+  UNDO_MOVE => 7,
+  UNDO_KING_IDX => 8,
+  UNDO_OPP_KING_IDX => 9,
+  UNDO_PIECE_COUNT => 10,
+  UNDO_STATE_KEY => 11,
+  UNDO_FEN_KEY => 12,
+  UNDO_FROM => 13,
+  UNDO_TO => 14,
+  UNDO_FROM_PIECE => 15,
+  UNDO_CAPTURED_PIECE => 16,
+  UNDO_CAPTURED_IDX => 17,
+  UNDO_IS_EN_PASSANT => 18,
+  UNDO_SPECIAL => 19,
 };
+
+use constant BOARD_IDXS => (
+  21 .. 28, 31 .. 38, 41 .. 48, 51 .. 58,
+  61 .. 68, 71 .. 78, 81 .. 88, 91 .. 98
+);
 #use constant KINGS => 6;
 
 sub new {
@@ -330,7 +355,7 @@ sub _compute_zobrist_key {
   my $turn = $self->[TURN] ? 1 : 0;
   my $key = zobrist_empty_key();
 
-  for my $idx (21 .. 28, 31 .. 38, 41 .. 48, 51 .. 58, 61 .. 68, 71 .. 78, 81 .. 88, 91 .. 98) {
+  for my $idx (BOARD_IDXS) {
     my $piece = $self->[BOARD][$idx] // EMPTY;
     next if $piece == EMPTY || abs($piece) > KING;
     my $piece_idx = _internal_piece_to_zobrist_piece($piece, $turn);
@@ -355,23 +380,78 @@ sub _compute_zobrist_key {
   return $key;
 }
 
+sub _flip_board_in_place {
+  my ($board) = @_;
+  for my $rank (20, 30, 40, 50) {
+    ($board->[$rank + $_], $board->[110 - $rank + $_])
+      = (-$board->[110 - $rank + $_], -$board->[$rank + $_]) for (1 .. 8);
+  }
+}
 
-sub make_move {
+sub _clone_state {
+  my ($self) = @_;
+  my @board = @{$self->[BOARD]};
+  my @castle = (
+    [
+      $self->[CASTLE][0][CASTLE_KING] ? 1 : 0,
+      $self->[CASTLE][0][CASTLE_QUEEN] ? 1 : 0
+    ],
+    [
+      $self->[CASTLE][1][CASTLE_KING] ? 1 : 0,
+      $self->[CASTLE][1][CASTLE_QUEEN] ? 1 : 0
+    ],
+  );
+
+  return bless [
+    \@board,
+    $self->[TURN] ? 1 : 0,
+    \@castle,
+    $self->[EP],
+    $self->[HALFMOVE],
+    $self->[MOVE],
+    $self->[KING_IDX],
+    $self->[OPP_KING_IDX],
+    $self->[PIECE_COUNT],
+    $self->[STATE_KEY],
+    $self->[FEN_KEY],
+  ], ref($self);
+}
+
+sub _restore_preflip_move {
+  my ($board, $move, $from_piece, $captured_piece, $captured_idx, $is_en_passant) = @_;
+
+  if (defined $move->[3]) {
+    if ($move->[3] == CASTLE_KING) {
+      @{$board}[28, 26] = (ROOK, EMPTY);
+    } elsif ($move->[3] == CASTLE_QUEEN) {
+      @{$board}[21, 24] = (ROOK, EMPTY);
+    }
+  }
+
+  $board->[$move->[0]] = $from_piece;
+  if ($is_en_passant) {
+    $board->[$move->[1]] = EMPTY;
+    $board->[$captured_idx] = $captured_piece;
+  } else {
+    $board->[$move->[1]] = $captured_piece;
+  }
+}
+
+sub _do_move_in_place {
   my ($self, $move) = @_;
 
-  #  Board
-  my @board = @{$self->[BOARD]};
+  my $board = $self->[BOARD];
+  my $from_piece = $board->[$move->[0]];
+  return undef unless defined $from_piece && $from_piece > 0;
 
-  # lookup the existing piece
-  my $from_piece = $board[$move->[0]];
-  my $to_piece   = $board[$move->[1]];
+  my $to_piece = $board->[$move->[1]];
   my $is_capture = ($to_piece // 0) < 0 ? 1 : 0;
   my $is_en_passant = 0;
   my $piece_count = $self->[PIECE_COUNT];
   if (!defined $piece_count) {
     $piece_count = 0;
-    for my $idx (21 .. 28, 31 .. 38, 41 .. 48, 51 .. 58, 61 .. 68, 71 .. 78, 81 .. 88, 91 .. 98) {
-      my $piece = $board[$idx] // 0;
+    for my $idx (BOARD_IDXS) {
+      my $piece = $board->[$idx] // 0;
       $piece_count++ if abs($piece) >= PAWN && abs($piece) <= KING;
     }
   }
@@ -388,7 +468,29 @@ sub make_move {
   my $captured_piece = $to_piece;
   my $captured_idx = $move->[1];
 
-  # En-passant capture moves to an empty target square.
+  my $undo = [
+    $self->[TURN] ? 1 : 0,
+    $self->[CASTLE][0][CASTLE_KING] ? 1 : 0,
+    $self->[CASTLE][0][CASTLE_QUEEN] ? 1 : 0,
+    $self->[CASTLE][1][CASTLE_KING] ? 1 : 0,
+    $self->[CASTLE][1][CASTLE_QUEEN] ? 1 : 0,
+    $self->[EP],
+    $self->[HALFMOVE],
+    $self->[MOVE],
+    $self->[KING_IDX],
+    $self->[OPP_KING_IDX],
+    $piece_count,
+    $old_state_key,
+    $self->[FEN_KEY],
+    $move->[0],
+    $move->[1],
+    $from_piece,
+    $captured_piece,
+    $captured_idx,
+    0,
+    $move->[3],
+  ];
+
   if ($from_piece == PAWN
       && defined $self->[EP]
       && !defined $move->[2]
@@ -396,57 +498,55 @@ sub make_move {
       && $move->[1] == $self->[EP]
       && ($to_piece // 0) == EMPTY)
   {
+    my $ep_capture_idx = $move->[1] - 10;
+    my $ep_captured_piece = $board->[$ep_capture_idx];
+    return undef unless defined $ep_captured_piece && $ep_captured_piece == OPP_PAWN;
     $is_en_passant = 1;
     $is_capture = 1;
-    $captured_piece = $board[$move->[1] - 10];
-    $captured_idx = $move->[1] - 10;
-    $board[$move->[1] - 10] = EMPTY;
+    $captured_piece = $ep_captured_piece;
+    $captured_idx = $ep_capture_idx;
+    $board->[$ep_capture_idx] = EMPTY;
     $piece_count--;
+    $undo->[UNDO_CAPTURED_PIECE] = $captured_piece;
+    $undo->[UNDO_CAPTURED_IDX] = $captured_idx;
+    $undo->[UNDO_IS_EN_PASSANT] = 1;
   }
 
-  # make move
   if (defined $move->[3]) {
-    # special-case handler
     if ($move->[3] == CASTLE_KING) {
-      # kingside castle
-      # cannot castle out of check
-      return undef if checked(\@board);
-      #  test move-through-check
-      @board[25, 26] = (0, KING);
-      return undef if checked(\@board);
-      # move rook
-      @board[28, 26] = (0, ROOK);
-      # fall through to next condition (king move)
+      return undef if checked($board);
+      @{$board}[25, 26] = (EMPTY, KING);
+      if (checked($board)) {
+        @{$board}[25, 26] = (KING, EMPTY);
+        return undef;
+      }
+      @{$board}[28, 26] = (EMPTY, ROOK);
     } elsif ($move->[3] == CASTLE_QUEEN) {
-      # queenside castle
-      # cannot castle out of check
-      return undef if checked(\@board);
-      #  test move-through-check
-      @board[25, 24] = (0, KING);
-      return undef if checked(\@board);
-      # move rook
-      @board[21, 24] = (0, ROOK);
-      # fall through to next condition (king move)
+      return undef if checked($board);
+      @{$board}[25, 24] = (EMPTY, KING);
+      if (checked($board)) {
+        @{$board}[25, 24] = (KING, EMPTY);
+        return undef;
+      }
+      @{$board}[21, 24] = (EMPTY, ROOK);
     }
   }
 
-  @board[$move->[0], $move->[1]] = (0, $move->[2] || $from_piece);
+  @{$board}[$move->[0], $move->[1]] = (EMPTY, $move->[2] || $from_piece);
   $piece_count-- if $is_capture && !$is_en_passant;
   $own_king_idx = $move->[1] if $from_piece == KING;
 
-  # Test for legality.
-  return undef if checked(\@board);
-
-  # flip board
-  for my $rank (20, 30, 40, 50) {
-    ($board[$rank + $_], $board[110 - $rank + $_]) = (-$board[110 - $rank + $_], -$board[$rank + $_]) for (1 .. 8);
+  if (checked($board)) {
+    _restore_preflip_move($board, $move, $from_piece, $captured_piece, $captured_idx, $is_en_passant);
+    return undef;
   }
+
+  _flip_board_in_place($board);
 
   my @next_to_move_castle = (
     $self->[CASTLE][1][CASTLE_KING] ? 1 : 0,
     $self->[CASTLE][1][CASTLE_QUEEN] ? 1 : 0,
   );
-  # Capturing an opponent rook on its home square removes that side's right.
   $next_to_move_castle[CASTLE_KING] = 0 if $move->[1] == 98;
   $next_to_move_castle[CASTLE_QUEEN] = 0 if $move->[1] == 91;
 
@@ -522,33 +622,77 @@ sub make_move {
     $new_state_key ^= zobrist_ep_token($new_ep_square) if defined $new_ep_square;
   }
 
-  return bless [
-    \@board,
-    ! $self->[TURN],
-    \@new_castle,
-    $new_ep,
-    (($from_piece == PAWN || defined $move->[2] || $is_capture || $is_en_passant) ? 0 : $self->[HALFMOVE] + 1),
-    ($self->[TURN] ? $self->[MOVE] + 1 : $self->[MOVE]),
-    $new_king_idx,
-    $new_opp_king_idx,
-    $piece_count,
-    $new_state_key,
-    undef,
-    #[ $self->[KINGS][1], $self->[KINGS][0] ]
-  ];
+  $self->[TURN] = ! $self->[TURN];
+  $self->[CASTLE][0][CASTLE_KING] = $next_to_move_castle[CASTLE_KING] ? 1 : 0;
+  $self->[CASTLE][0][CASTLE_QUEEN] = $next_to_move_castle[CASTLE_QUEEN] ? 1 : 0;
+  $self->[CASTLE][1][CASTLE_KING] = $next_opponent_castle[CASTLE_KING] ? 1 : 0;
+  $self->[CASTLE][1][CASTLE_QUEEN] = $next_opponent_castle[CASTLE_QUEEN] ? 1 : 0;
+  $self->[EP] = $new_ep;
+  $self->[HALFMOVE] = (($from_piece == PAWN || defined $move->[2] || $is_capture || $is_en_passant)
+    ? 0
+    : $self->[HALFMOVE] + 1);
+  $self->[MOVE] = ($turn ? $self->[MOVE] + 1 : $self->[MOVE]);
+  $self->[KING_IDX] = $new_king_idx;
+  $self->[OPP_KING_IDX] = $new_opp_king_idx;
+  $self->[PIECE_COUNT] = $piece_count;
+  $self->[STATE_KEY] = $new_state_key;
+  $self->[FEN_KEY] = undef;
 
-  # Bless this class and return
-  #return bless \@new_state; #, ref $self;
+  return $undo;
+}
+
+sub _undo_move_in_place {
+  my ($self, $undo) = @_;
+  return undef unless ref($undo) eq 'ARRAY';
+
+  my $board = $self->[BOARD];
+  _flip_board_in_place($board);
+
+  if (defined $undo->[UNDO_SPECIAL]) {
+    if ($undo->[UNDO_SPECIAL] == CASTLE_KING) {
+      @{$board}[28, 26] = (ROOK, EMPTY);
+    } elsif ($undo->[UNDO_SPECIAL] == CASTLE_QUEEN) {
+      @{$board}[21, 24] = (ROOK, EMPTY);
+    }
+  }
+
+  $board->[$undo->[UNDO_FROM]] = $undo->[UNDO_FROM_PIECE];
+  if ($undo->[UNDO_IS_EN_PASSANT]) {
+    $board->[$undo->[UNDO_TO]] = EMPTY;
+    $board->[$undo->[UNDO_CAPTURED_IDX]] = $undo->[UNDO_CAPTURED_PIECE];
+  } else {
+    $board->[$undo->[UNDO_TO]] = $undo->[UNDO_CAPTURED_PIECE];
+  }
+
+  $self->[TURN] = $undo->[UNDO_TURN] ? 1 : 0;
+  $self->[CASTLE][0][CASTLE_KING] = $undo->[UNDO_CASTLE_SELF_KING] ? 1 : 0;
+  $self->[CASTLE][0][CASTLE_QUEEN] = $undo->[UNDO_CASTLE_SELF_QUEEN] ? 1 : 0;
+  $self->[CASTLE][1][CASTLE_KING] = $undo->[UNDO_CASTLE_OPP_KING] ? 1 : 0;
+  $self->[CASTLE][1][CASTLE_QUEEN] = $undo->[UNDO_CASTLE_OPP_QUEEN] ? 1 : 0;
+  $self->[EP] = $undo->[UNDO_EP];
+  $self->[HALFMOVE] = $undo->[UNDO_HALFMOVE];
+  $self->[MOVE] = $undo->[UNDO_MOVE];
+  $self->[KING_IDX] = $undo->[UNDO_KING_IDX];
+  $self->[OPP_KING_IDX] = $undo->[UNDO_OPP_KING_IDX];
+  $self->[PIECE_COUNT] = $undo->[UNDO_PIECE_COUNT];
+  $self->[STATE_KEY] = $undo->[UNDO_STATE_KEY];
+  $self->[FEN_KEY] = $undo->[UNDO_FEN_KEY];
+
+  return 1;
+}
+
+
+sub make_move {
+  my ($self, $move) = @_;
+  my $next = _clone_state($self);
+  return undef unless defined _do_move_in_place($next, $move);
+  return $next;
 }
 
 sub generate_moves
 {
   my ($self) = @_;
-
-  # locate king
-  return grep {
-    defined make_move($self, $_);
-  } @{generate_pseudo_moves($self)};
+  return @{Chess::MoveGen::generate_moves($self, 'legal')};
 }
 
 sub generate_moves_by_type {
@@ -559,16 +703,24 @@ sub generate_moves_by_type {
 # Immutable-state compatibility helpers for do/undo style callers.
 sub do_move {
   my ($self, $move, $stack) = @_;
-  my $next = make_move($self, $move);
-  return unless defined $next;
-  push @{$stack}, $self if ref($stack) eq 'ARRAY';
-  return $next;
+  if (ref($stack) eq 'ARRAY') {
+    my $undo = _do_move_in_place($self, $move);
+    return undef unless defined $undo;
+    push @{$stack}, $undo;
+    return $self;
+  }
+  return make_move($self, $move);
 }
 
 sub undo_move {
   my ($self, $stack) = @_;
   return unless ref($stack) eq 'ARRAY' && @{$stack};
-  return pop @{$stack};
+  my $undo = pop @{$stack};
+  if (ref($undo) && ref($undo) eq __PACKAGE__) {
+    return $undo;
+  }
+  return undef unless _undo_move_in_place($self, $undo);
+  return $self;
 }
 
 sub is_checked {
@@ -576,14 +728,21 @@ sub is_checked {
 }
 
 sub is_playable {
-  return (generate_moves($_[0]) > 0);
+  my ($self) = @_;
+  my @undo_stack;
+  for my $move (@{generate_pseudo_moves($self)}) {
+    next unless defined do_move($self, $move, \@undo_stack);
+    undo_move($self, \@undo_stack);
+    return 1;
+  }
+  return 0;
 }
 
 sub checked
 {
   my ($board) = @_;
 
-  for (21 .. 28, 31 .. 38, 41 .. 48, 51 .. 58, 61 .. 68, 71 .. 78, 81 .. 88, 91 .. 98) {
+  for (BOARD_IDXS) {
     return attacked($board, $_) if $board->[$_] == KING
   }
 }
@@ -641,7 +800,7 @@ sub generate_pseudo_moves
   my @m;
 
 
-  for my $idx (21 .. 28, 31 .. 38, 41 .. 48, 51 .. 58, 61 .. 68, 71 .. 78, 81 .. 88, 91 .. 98) {
+  for my $idx (BOARD_IDXS) {
 
     # Compute all possible moves.
     if ($self->[BOARD][$idx] == KING) {

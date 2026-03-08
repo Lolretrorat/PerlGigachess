@@ -13,7 +13,7 @@ BOOK_MAX_GAMES_LICHESS_DB_DEFAULT="${BOOK_MAX_GAMES_LICHESS_DB_DEFAULT:-60000}"
 BOOK_BUILD_RETRY_MIN_GAMES="${BOOK_BUILD_RETRY_MIN_GAMES:-10000}"
 RUN_BOOK=1
 
-LOCATION_OUTPUT="$ROOT_DIR/data/location_modifiers.json"
+LOCATION_OUTPUT="$ROOT_DIR/data/location_modifiers.local.json"
 LOCATION_GAMES=5000
 LOCATION_SCALE=""
 LOCATION_ADAPTIVE_MIN_GAMES=120
@@ -72,7 +72,7 @@ Options:
   --book-min-move-games <n>       Min games per move (default: 2)
 
   --skip-location                 Skip location modifier training
-  --location-output <path>        Location table output (default: data/location_modifiers.json)
+  --location-output <path>        Location table output (default: data/location_modifiers.local.json)
   --location-games <n>            Max games for location training (default: 5000)
   --location-scale <n>            Scale passed to ./init train-location
   --location-adaptive-min-games <n>  Game-count target for full location scale (default: 120)
