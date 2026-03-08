@@ -608,14 +608,10 @@ sub _king_aggression_score {
 }
 
 sub _is_king_safety_critical_move {
-  my ($state, $move, $new_state, $own_king_danger) = @_;
-  my $board = $state->[Chess::State::BOARD];
-  my $from_piece = abs($board->[$move->[0]] // 0);
+  my ($from_piece, $move, $new_state, $own_king_danger, $king_idx, $ring_ref) = @_;
   return 1 if $from_piece == KING;
   return 1 if $new_state->is_checked;
 
-  my $king_idx = $state->[Chess::State::KING_IDX];
-  $king_idx = _find_piece_idx($board, KING) unless defined $king_idx;
   return 1 if defined $own_king_danger && $own_king_danger >= LMR_KING_DANGER_THRESHOLD;
   return 0 unless defined $king_idx;
 
@@ -624,17 +620,15 @@ sub _is_king_safety_critical_move {
     return 1;
   }
 
-  my @ring = _king_ring_indices($board, $king_idx);
-  my %ring = map { $_ => 1 } @ring;
-  return 1 if $ring{$move->[0]} || $ring{$move->[1]};
+  if (ref($ring_ref) eq 'HASH') {
+    return 1 if $ring_ref->{$move->[0]} || $ring_ref->{$move->[1]};
+  }
 
   return 0;
 }
 
 sub _is_tactical_queen_move {
-  my ($state, $move, $new_state, $is_capture) = @_;
-  my $board = $state->[Chess::State::BOARD];
-  my $from_piece = abs($board->[$move->[0]] // 0);
+  my ($from_piece, $new_state, $is_capture) = @_;
   return 0 unless $from_piece == QUEEN;
 
   # Captures and direct checks are already tactical by definition.
@@ -715,9 +709,11 @@ sub _capture_plan_order_bonus {
 sub _promotion_check_order_bonus {
   my ($state, $move) = @_;
   return 0 unless defined $move->[2];
-  my $new_state = $state->make_move($move);
-  return 0 unless defined $new_state;
-  return $new_state->is_checked ? PROMOTION_CHECK_ORDER_BONUS : 0;
+  my @undo_stack;
+  return 0 unless defined $state->do_move($move, \@undo_stack);
+  my $is_check = $state->is_checked ? 1 : 0;
+  $state->undo_move(\@undo_stack);
+  return $is_check ? PROMOTION_CHECK_ORDER_BONUS : 0;
 }
 
 sub _ordered_moves {
@@ -727,49 +723,21 @@ sub _ordered_moves {
 }
 
 sub _new_move_picker {
-  my ($state, $ply, $tt_move_key, $prev_move_key) = @_;
+  my ($state, $ply, $tt_move_key, $prev_move_key, $tt_move) = @_;
   my $killer_move_keys = $move_order->{killer_moves}[$ply] || [];
   my $countermove_key = defined $prev_move_key ? $move_order->{counter_moves}{$prev_move_key} : undef;
-  my %exclude_move_keys;
-  my @tt_moves;
-  if (defined $tt_move_key) {
-    my $tt_move = _find_move_by_key($state, $tt_move_key);
-    if (defined $tt_move) {
-      push @tt_moves, $tt_move;
-      $exclude_move_keys{$tt_move_key} = 1;
-    }
+
+  if (defined $tt_move && !defined $tt_move_key) {
+    $tt_move_key = _move_key($tt_move);
   }
 
-  my $move_gen_opts = {
-    move_key_cb => \&_move_key,
-    exclude_move_keys => \%exclude_move_keys,
-  };
+  my $legal_groups = Chess::MoveGen::collect_legal_moves($state);
+  my $legal_moves = $legal_groups->{legal};
+  $legal_moves = [] unless ref($legal_moves) eq 'ARRAY';
 
   return Chess::MovePicker->new(
     state => $state,
-    moves => \@tt_moves,
-    stage_generators => {
-      tactical => sub {
-        my $captures = Chess::MoveGen::generate_moves($state, 'captures', $move_gen_opts);
-        my $quiet_promotions = Chess::MoveGen::generate_moves($state, 'quiets', {
-          %{$move_gen_opts},
-          move_filter_cb => sub {
-            my ($move) = @_;
-            return defined $move->[2] ? 1 : 0;
-          },
-        });
-        return [ @{$captures}, @{$quiet_promotions} ];
-      },
-      killer => sub {
-        return Chess::MoveGen::generate_moves($state, 'quiets', {
-          %{$move_gen_opts},
-          move_filter_cb => sub {
-            my ($move) = @_;
-            return !defined $move->[2];
-          },
-        });
-      },
-    },
+    moves => $legal_moves,
     tt_move_key => $tt_move_key,
     killer_move_keys => $killer_move_keys,
     countermove_key => $countermove_key,
@@ -785,23 +753,6 @@ sub _new_move_picker {
     score_cb => sub {
       my ($move, $move_key, $is_capture) = @_;
       return _move_order_score($state, $move, $move_key, $is_capture, $ply, $tt_move_key, $prev_move_key);
-    },
-  );
-}
-
-sub _new_quiesce_capture_picker {
-  my ($state) = @_;
-  return Chess::MovePicker->new(
-    state => $state,
-    moves => $state->generate_moves_by_type('captures'),
-    see_order_weight => SEE_ORDER_WEIGHT,
-    see_bad_capture_threshold => SEE_BAD_CAPTURE_THRESHOLD,
-    see_prune_threshold => QUIESCE_SEE_PRUNE_THRESHOLD,
-    move_key_cb => \&_move_key,
-    is_capture_cb => sub { return 1; },
-    score_cb => sub {
-      my ($move, $move_key, $is_capture) = @_;
-      return _move_order_score($state, $move, $move_key, $is_capture, 0);
     },
   );
 }
@@ -1108,10 +1059,13 @@ sub _find_move_by_key {
   my ($state, $target_key) = @_;
   return unless defined $target_key;
 
-  for my $move (@{$state->generate_pseudo_moves}) {
+  my $pseudo = $state->generate_pseudo_moves;
+  my @undo_stack;
+  for my $move (@{$pseudo}) {
     next unless _move_key($move) == $target_key;
-    my $new_state = $state->make_move($move);
-    return $move if defined $new_state;
+    next unless defined $state->do_move($move, \@undo_stack);
+    $state->undo_move(\@undo_stack);
+    return $move;
   }
 
   return;
@@ -1137,30 +1091,48 @@ sub _quiesce {
   $alpha = max($alpha, $stand_pat);
   return $alpha if $alpha >= $beta || $depth >= $search_quiesce_limit;
 
-  my @forcing;
+  my $legal_groups = Chess::MoveGen::collect_legal_moves($state);
+  my $captures = $legal_groups->{captures};
+  my $quiets = $legal_groups->{quiets};
+  $captures = [] unless ref($captures) eq 'ARRAY';
+  $quiets = [] unless ref($quiets) eq 'ARRAY';
 
-  my $capture_picker = _new_quiesce_capture_picker($state);
+  my @forcing;
+  my @undo_stack;
+
+  my $capture_picker = Chess::MovePicker->new(
+    state => $state,
+    moves => $captures,
+    see_order_weight => SEE_ORDER_WEIGHT,
+    see_bad_capture_threshold => SEE_BAD_CAPTURE_THRESHOLD,
+    see_prune_threshold => QUIESCE_SEE_PRUNE_THRESHOLD,
+    move_key_cb => \&_move_key,
+    is_capture_cb => sub { return 1; },
+    score_cb => sub {
+      my ($move, $move_key, $is_capture) = @_;
+      return _move_order_score($state, $move, $move_key, $is_capture, 0);
+    },
+  );
   while (my $entry = $capture_picker->next_move) {
     my ($move, $move_key) = @{$entry}[1, 2];
-    my $new_state = $state->make_move($move);
-    next unless defined $new_state;
-    my $is_check = $new_state->is_checked ? 1 : 0;
+    next unless defined $state->do_move($move, \@undo_stack);
+    my $is_check = $state->is_checked ? 1 : 0;
+    $state->undo_move(\@undo_stack);
     my $score = _move_order_score($state, $move, $move_key, 1, 0) + ($is_check ? QUIESCE_CHECK_BONUS : 0);
-    push @forcing, [ $score, $move, $new_state ];
+    push @forcing, [ $score, $move ];
   }
 
   if ($depth < QUIESCE_CHECK_MAX_DEPTH) {
-    for my $move (@{$state->generate_pseudo_moves}) {
+    for my $move (@{$quiets}) {
       my $is_promo = defined $move->[2] ? 1 : 0;
-      my $is_capture = _is_capture_state($state, $move);
-      next if $is_capture;
-      my $new_state = $state->make_move($move);
-      next unless defined $new_state;
-      my $is_check = $new_state->is_checked ? 1 : 0;
-      next unless $is_promo || $is_check;
       my $move_key = _move_key($move);
-      my $score = _move_order_score($state, $move, $move_key, $is_capture, 0) + ($is_check ? QUIESCE_CHECK_BONUS : 0);
-      push @forcing, [ $score, $move, $new_state ];
+      my $base_score = _move_order_score($state, $move, $move_key, 0, 0);
+      next unless defined $state->do_move($move, \@undo_stack);
+      my $is_check = $state->is_checked ? 1 : 0;
+      $state->undo_move(\@undo_stack);
+      next unless $is_promo || $is_check;
+      my $score = $base_score + ($is_check ? QUIESCE_CHECK_BONUS : 0);
+      push @forcing, [ $score, $move ];
     }
   }
   return $alpha unless @forcing;
@@ -1168,8 +1140,15 @@ sub _quiesce {
   my @ordered = _sort_scored_desc(@forcing);
 
   foreach my $entry (@ordered) {
-    my ($move, $new_state) = @{$entry}[1, 2];
-    my $score = -_quiesce($new_state, -$beta, -$alpha, $depth + 1);
+    my $move = $entry->[1];
+    next unless defined $state->do_move($move, \@undo_stack);
+    my $score;
+    my $ok = eval {
+      $score = -_quiesce($state, -$beta, -$alpha, $depth + 1);
+      1;
+    };
+    $state->undo_move(\@undo_stack);
+    die $@ unless $ok;
     if ($score > $alpha) {
       $alpha = $score;
       last if $alpha >= $beta;
@@ -1241,11 +1220,13 @@ sub _search {
 
   my $key = _state_key($state);
   my $tt_entry = $transposition_table->probe($key, ply => $ply, mate_score => MATE_SCORE);
+  my $tt_move_key = $tt_entry ? $tt_entry->{best_move_key} : undef;
+  my $tt_move;
 
   if ($tt_entry && $tt_entry->{depth} >= $depth) {
     my $tt_score = $tt_entry->{score};
     if ($tt_entry->{flag} == TT_FLAG_EXACT) {
-      return ($tt_score, _find_move_by_key($state, $tt_entry->{best_move_key}));
+      return ($tt_score, ($ply == 0 ? _find_move_by_key($state, $tt_move_key) : undef));
     }
     if ($tt_entry->{flag} == TT_FLAG_LOWER) {
       $alpha = max($alpha, $tt_score);
@@ -1253,14 +1234,13 @@ sub _search {
       $beta = min($beta, $tt_score);
     }
     if ($alpha >= $beta) {
-      return ($tt_score, _find_move_by_key($state, $tt_entry->{best_move_key}));
+      return ($tt_score, ($ply == 0 ? _find_move_by_key($state, $tt_move_key) : undef));
     }
   }
 
   my $alpha_orig = $alpha;
   my $beta_orig = $beta;
   my $is_pv = ($beta - $alpha) > 1 ? 1 : 0;
-  my $tt_move_key = $tt_entry ? $tt_entry->{best_move_key} : undef;
   my $best_value = -INF_SCORE;
   my $best_move;
   my $best_move_key;
@@ -1311,7 +1291,14 @@ sub _search {
       my (undef, $iid_move) = _search(
         $state, $iid_depth, $alpha, $beta, $ply, $prev_move_key, $prev_was_null, $rep_counts
       );
-      $tt_move_key = _move_key($iid_move) if defined $iid_move;
+      if (defined $iid_move) {
+        $tt_move = $iid_move;
+        $tt_move_key = _move_key($iid_move);
+      }
+      if (!defined $tt_move_key) {
+        my $iid_tt_entry = $transposition_table->probe($key, ply => $ply, mate_score => MATE_SCORE);
+        $tt_move_key = $iid_tt_entry->{best_move_key} if $iid_tt_entry;
+      }
     }
   }
 
@@ -1339,15 +1326,22 @@ sub _search {
     }
   }
 
-  my $move_picker = _new_move_picker($state, $ply, $tt_move_key, $prev_move_key);
+  my $parent_board = $state->[Chess::State::BOARD];
+  my $king_idx = $state->[Chess::State::KING_IDX];
+  $king_idx = _find_piece_idx($parent_board, KING) unless defined $king_idx;
+  my %king_ring = map { $_ => 1 } _king_ring_indices($parent_board, $king_idx);
+  my @undo_stack;
+  my $move_picker = _new_move_picker($state, $ply, $tt_move_key, $prev_move_key, $tt_move);
   while (my $entry = $move_picker->next_move) {
     my ($move, $child_prev_move_key, $is_capture) = @{$entry}[1, 2, 3];
-    my $new_state = $state->make_move($move);
-    next unless defined $new_state;
-    my $gives_check = $new_state->is_checked ? 1 : 0;
-    my $quiet_hanging_move = _is_quiet_hanging_move($new_state, $move, $is_capture);
-    my $king_safety_critical = _is_king_safety_critical_move($state, $move, $new_state, $own_king_danger);
-    my $tactical_queen_move = _is_tactical_queen_move($state, $move, $new_state, $is_capture);
+    my $from_piece = abs($parent_board->[$move->[0]] // 0);
+    next unless defined $state->do_move($move, \@undo_stack);
+    my $gives_check = $state->is_checked ? 1 : 0;
+    my $quiet_hanging_move = _is_quiet_hanging_move($state, $move, $is_capture);
+    my $king_safety_critical = _is_king_safety_critical_move(
+      $from_piece, $move, $state, $own_king_danger, $king_idx, \%king_ring
+    );
+    my $tactical_queen_move = _is_tactical_queen_move($from_piece, $state, $is_capture);
 
     $legal_moves++;
     if (!$in_check
@@ -1362,60 +1356,67 @@ sub _search {
       && !$king_safety_critical
       && !$tactical_queen_move)
     {
+      $state->undo_move(\@undo_stack);
       $move_index++;
       next;
     }
 
     my $value;
-    my $child_rep_key = _rep_push_state($rep_counts, $new_state);
-    if ($move_index == 0) {
-      ($value) = _search($new_state, $depth - 1, -$beta, -$alpha, $ply + 1, $child_prev_move_key, 0, $rep_counts);
-      $value = -$value;
-    } else {
-      my $reduction = 0;
-      if (! $in_check
-        && $depth >= 4
-        && $move_index >= 3
-        && !defined $move->[2]
-        && !defined $move->[3]
-        && ! $is_capture
-        && ! $gives_check
-        && ! $quiet_hanging_move
-        && ! $king_safety_critical
-        && ! $tactical_queen_move
-        && $own_king_danger < LMR_KING_DANGER_THRESHOLD)
-      {
-        $reduction = 1;
-        $reduction = 2 if $depth >= 6 && $move_index >= 8;
-      }
-
-      if ($reduction) {
-        my $reduced_depth = $depth - 1 - $reduction;
-        $reduced_depth = 0 if $reduced_depth < 0;
-        ($value) = _search($new_state, $reduced_depth, -$alpha - 1, -$alpha, $ply + 1, $child_prev_move_key, 0, $rep_counts);
+    my $hanging_penalty = $quiet_hanging_move ? _hanging_move_penalty($state, $move) : 0;
+    my $child_rep_key = _rep_push_state($rep_counts, $state);
+    my $ok = eval {
+      if ($move_index == 0) {
+        ($value) = _search($state, $depth - 1, -$beta, -$alpha, $ply + 1, $child_prev_move_key, 0, $rep_counts);
         $value = -$value;
+      } else {
+        my $reduction = 0;
+        if (! $in_check
+          && $depth >= 4
+          && $move_index >= 3
+          && !defined $move->[2]
+          && !defined $move->[3]
+          && ! $is_capture
+          && ! $gives_check
+          && ! $quiet_hanging_move
+          && ! $king_safety_critical
+          && ! $tactical_queen_move
+          && $own_king_danger < LMR_KING_DANGER_THRESHOLD)
+        {
+          $reduction = 1;
+          $reduction = 2 if $depth >= 6 && $move_index >= 8;
+        }
 
-        if ($value > $alpha) {
-          ($value) = _search($new_state, $depth - 1, -$alpha - 1, -$alpha, $ply + 1, $child_prev_move_key, 0, $rep_counts);
+        if ($reduction) {
+          my $reduced_depth = $depth - 1 - $reduction;
+          $reduced_depth = 0 if $reduced_depth < 0;
+          ($value) = _search($state, $reduced_depth, -$alpha - 1, -$alpha, $ply + 1, $child_prev_move_key, 0, $rep_counts);
+          $value = -$value;
+
+          if ($value > $alpha) {
+            ($value) = _search($state, $depth - 1, -$alpha - 1, -$alpha, $ply + 1, $child_prev_move_key, 0, $rep_counts);
+            $value = -$value;
+            if ($value > $alpha && $value < $beta) {
+              ($value) = _search($state, $depth - 1, -$beta, -$alpha, $ply + 1, $child_prev_move_key, 0, $rep_counts);
+              $value = -$value;
+            }
+          }
+        } else {
+          ($value) = _search($state, $depth - 1, -$alpha - 1, -$alpha, $ply + 1, $child_prev_move_key, 0, $rep_counts);
           $value = -$value;
           if ($value > $alpha && $value < $beta) {
-            ($value) = _search($new_state, $depth - 1, -$beta, -$alpha, $ply + 1, $child_prev_move_key, 0, $rep_counts);
+            ($value) = _search($state, $depth - 1, -$beta, -$alpha, $ply + 1, $child_prev_move_key, 0, $rep_counts);
             $value = -$value;
           }
         }
-      } else {
-        ($value) = _search($new_state, $depth - 1, -$alpha - 1, -$alpha, $ply + 1, $child_prev_move_key, 0, $rep_counts);
-        $value = -$value;
-        if ($value > $alpha && $value < $beta) {
-          ($value) = _search($new_state, $depth - 1, -$beta, -$alpha, $ply + 1, $child_prev_move_key, 0, $rep_counts);
-          $value = -$value;
-        }
       }
-    }
+      1;
+    };
     _rep_pop_key($rep_counts, $child_rep_key);
+    $state->undo_move(\@undo_stack);
+    die $@ unless $ok;
     $move_index++;
-    if ($quiet_hanging_move) {
-      $value -= _hanging_move_penalty($new_state, $move);
+    if ($hanging_penalty) {
+      $value -= $hanging_penalty;
     }
 
     if ($ply == 0) {

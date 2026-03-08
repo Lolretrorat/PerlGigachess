@@ -52,16 +52,25 @@ sub new {
 
   my $cluster_count = int(($max_entries + $cluster_size - 1) / $cluster_size);
   $cluster_count = 1 if $cluster_count < 1;
+  my $slot_count = $cluster_count * $cluster_size;
 
-  my @clusters;
-  for (1 .. $cluster_count) {
-    push @clusters, [ (undef) x $cluster_size ];
-  }
+  my @keys = ((undef) x $slot_count);
+  my @depths = ((0) x $slot_count);
+  my @scores = ((0) x $slot_count);
+  my @flags = ((undef) x $slot_count);
+  my @best_move_keys = ((undef) x $slot_count);
+  my @gens = ((0) x $slot_count);
 
   my %self = (
-    clusters => \@clusters,
+    keys => \@keys,
+    depths => \@depths,
+    scores => \@scores,
+    flags => \@flags,
+    best_move_keys => \@best_move_keys,
+    gens => \@gens,
     cluster_count => $cluster_count,
     cluster_size => $cluster_size,
+    slot_count => $slot_count,
     age_weight => $age_weight,
     generation => 0,
     entry_count => 0,
@@ -74,28 +83,49 @@ sub probe {
   my ($self, $key, %opts) = @_;
   return undef unless defined $key && length $key;
 
-  my $entry;
+  my $ply = int($opts{ply} // 0);
+  my $mate_score = int($opts{mate_score} // 0);
   if ($self->{shared}) {
     lock(%{$self->{entries}});
     my $packed = $self->{entries}{$key};
     return undef unless defined $packed;
-    $entry = _decode_entry($key, $packed);
-  } else {
-    my $cluster = _cluster_for_key($self, $key);
-    for my $candidate (@{$cluster}) {
-      next unless defined $candidate;
-      if ($candidate->{key} eq $key) {
-        $entry = { %{$candidate} };
-        last;
-      }
-    }
-    return undef unless defined $entry;
+
+    my ($depth, $score, $flag, $best_move_key, $gen) = _decode_entry_fields($packed);
+    return {
+      key => $key,
+      depth => $depth,
+      score => _score_from_tt($score, $ply, $mate_score),
+      flag => $flag,
+      best_move_key => $best_move_key,
+      gen => $gen,
+    };
   }
 
-  my $ply = int($opts{ply} // 0);
-  my $mate_score = int($opts{mate_score} // 0);
-  $entry->{score} = _score_from_tt($entry->{score}, $ply, $mate_score);
-  return $entry;
+  my $base = _cluster_base_for_key($self, $key);
+  my $cluster_size = $self->{cluster_size};
+  my $keys = $self->{keys};
+  my $depths = $self->{depths};
+  my $scores = $self->{scores};
+  my $flags = $self->{flags};
+  my $best_move_keys = $self->{best_move_keys};
+  my $gens = $self->{gens};
+
+  for my $offset (0 .. $cluster_size - 1) {
+    my $slot = $base + $offset;
+    my $stored_key = $keys->[$slot];
+    next unless defined $stored_key && $stored_key eq $key;
+
+    return {
+      key => $stored_key,
+      depth => $depths->[$slot],
+      score => _score_from_tt($scores->[$slot], $ply, $mate_score),
+      flag => $flags->[$slot],
+      best_move_key => $best_move_keys->[$slot],
+      gen => $gens->[$slot],
+    };
+  }
+
+  return undef;
 }
 
 sub store {
@@ -107,22 +137,25 @@ sub store {
   my $ply = int($args{ply} // 0);
   my $mate_score = int($args{mate_score} // 0);
   my $score = _score_to_tt(int($args{score} // 0), $ply, $mate_score);
-
-  my $entry = {
-    key => $key,
-    depth => int($args{depth} // 0),
-    score => $score,
-    flag => $args{flag},
-    best_move_key => $args{best_move_key},
-    gen => defined $args{gen} ? int($args{gen}) : $self->generation(),
-  };
+  my $depth = int($args{depth} // 0);
+  my $flag = $args{flag};
+  my $best_move_key = $args{best_move_key};
+  my $gen = defined $args{gen} ? int($args{gen}) : $self->generation();
 
   if ($self->{shared}) {
+    my $entry = {
+      key => $key,
+      depth => $depth,
+      score => $score,
+      flag => $flag,
+      best_move_key => $best_move_key,
+      gen => $gen,
+    };
     lock(%{$self->{entries}});
     my $entries = $self->{entries};
     if (exists $entries->{$key}) {
-      my $existing = _decode_entry($key, $entries->{$key});
-      if (_should_replace_for_same_key($existing, $entry)) {
+      my ($existing_depth, undef, undef, undef, $existing_gen) = _decode_entry_fields($entries->{$key});
+      if (_should_replace_for_same_key($existing_depth, $existing_gen, $depth, $gen)) {
         $entries->{$key} = _encode_entry($entry);
         return 1;
       }
@@ -151,27 +184,36 @@ sub store {
     return 1;
   }
 
-  my $cluster = _cluster_for_key($self, $key);
+  my $base = _cluster_base_for_key($self, $key);
+  my $cluster_size = $self->{cluster_size};
+  my $keys = $self->{keys};
+  my $depths = $self->{depths};
+  my $scores = $self->{scores};
+  my $flags = $self->{flags};
+  my $best_move_keys = $self->{best_move_keys};
+  my $gens = $self->{gens};
 
-  for my $slot (0 .. $#{$cluster}) {
-    my $existing = $cluster->[$slot];
-    next unless defined $existing && $existing->{key} eq $key;
-    if (_should_replace_for_same_key($existing, $entry)) {
-      $cluster->[$slot] = $entry;
+  for my $offset (0 .. $cluster_size - 1) {
+    my $slot = $base + $offset;
+    my $existing_key = $keys->[$slot];
+    next unless defined $existing_key && $existing_key eq $key;
+    if (_should_replace_for_same_key($depths->[$slot], $gens->[$slot], $depth, $gen)) {
+      _write_slot($self, $slot, $key, $depth, $score, $flag, $best_move_key, $gen);
       return 1;
     }
     return 0;
   }
 
-  for my $slot (0 .. $#{$cluster}) {
-    next if defined $cluster->[$slot];
-    $cluster->[$slot] = $entry;
+  for my $offset (0 .. $cluster_size - 1) {
+    my $slot = $base + $offset;
+    next if defined $keys->[$slot];
+    _write_slot($self, $slot, $key, $depth, $score, $flag, $best_move_key, $gen);
     $self->{entry_count}++;
     return 1;
   }
 
-  my $victim_slot = _select_victim_slot($self, $cluster);
-  $cluster->[$victim_slot] = $entry;
+  my $victim_slot = _select_victim_slot($self, $base);
+  _write_slot($self, $victim_slot, $key, $depth, $score, $flag, $best_move_key, $gen);
   return 1;
 }
 
@@ -205,33 +247,34 @@ sub entry_count {
 }
 
 sub _should_replace_for_same_key {
-  my ($existing, $new_entry) = @_;
+  my ($existing_depth, $existing_gen, $new_depth, $new_gen) = @_;
+  $existing_depth = int($existing_depth // 0);
+  $existing_gen = int($existing_gen // 0);
+  $new_depth = int($new_depth // 0);
+  $new_gen = int($new_gen // 0);
 
-  my $existing_depth = $existing->{depth} // 0;
-  my $new_depth = $new_entry->{depth} // 0;
   return 1 if $new_depth > $existing_depth;
 
-  my $existing_gen = $existing->{gen} // 0;
-  my $new_gen = $new_entry->{gen} // 0;
   return 1 if $new_gen > $existing_gen;
 
   return $new_depth >= $existing_depth;
 }
 
 sub _select_victim_slot {
-  my ($self, $cluster) = @_;
+  my ($self, $base) = @_;
 
-  my $worst_slot = 0;
+  my $worst_slot = $base;
   my $worst_score;
   my $generation = $self->{generation} // 0;
   my $age_weight = $self->{age_weight} // DEFAULT_AGE_WEIGHT;
+  my $cluster_size = $self->{cluster_size};
+  my $depths = $self->{depths};
+  my $gens = $self->{gens};
 
-  for my $slot (0 .. $#{$cluster}) {
-    my $entry = $cluster->[$slot];
-    next unless defined $entry;
-
-    my $depth = $entry->{depth} // 0;
-    my $entry_gen = $entry->{gen} // 0;
+  for my $offset (0 .. $cluster_size - 1) {
+    my $slot = $base + $offset;
+    my $depth = $depths->[$slot] // 0;
+    my $entry_gen = $gens->[$slot] // 0;
     my $age = $generation - $entry_gen;
     $age = 0 if $age < 0;
 
@@ -255,9 +298,7 @@ sub _select_shared_victim_key {
   my $worst_score;
   my $checked = 0;
   for my $key (keys %{$entries}) {
-    my $entry = _decode_entry($key, $entries->{$key});
-    my $depth = $entry->{depth} // 0;
-    my $entry_gen = $entry->{gen} // 0;
+    my ($depth, undef, undef, undef, $entry_gen) = _decode_entry_fields($entries->{$key});
     my $age = $generation - $entry_gen;
     $age = 0 if $age < 0;
     my $score = $depth - ($age * $age_weight);
@@ -270,12 +311,23 @@ sub _select_shared_victim_key {
   return $worst_key;
 }
 
-sub _cluster_for_key {
+sub _cluster_base_for_key {
   my ($self, $key) = @_;
 
   my $hash = _hash_key($key);
   my $index = $hash % $self->{cluster_count};
-  return $self->{clusters}[$index];
+  return $index * $self->{cluster_size};
+}
+
+sub _write_slot {
+  my ($self, $slot, $key, $depth, $score, $flag, $best_move_key, $gen) = @_;
+
+  $self->{keys}[$slot] = $key;
+  $self->{depths}[$slot] = $depth;
+  $self->{scores}[$slot] = $score;
+  $self->{flags}[$slot] = $flag;
+  $self->{best_move_keys}[$slot] = $best_move_key;
+  $self->{gens}[$slot] = $gen;
 }
 
 sub _hash_key {
@@ -298,17 +350,17 @@ sub _encode_entry {
   );
 }
 
-sub _decode_entry {
-  my ($key, $packed) = @_;
+sub _decode_entry_fields {
+  my ($packed) = @_;
   my ($depth, $score, $flag, $best_move_key, $gen) = split(/\t/, ($packed // ''), 5);
-  return {
-    key => $key,
-    depth => int($depth // 0),
-    score => int($score // 0),
-    flag => ($flag eq '' ? undef : int($flag)),
-    best_move_key => ($best_move_key eq '' ? undef : int($best_move_key)),
-    gen => int($gen // 0),
-  };
+
+  return (
+    int($depth // 0),
+    int($score // 0),
+    ($flag eq '' ? undef : int($flag)),
+    ($best_move_key eq '' ? undef : int($best_move_key)),
+    int($gen // 0),
+  );
 }
 
 sub _score_to_tt {

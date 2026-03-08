@@ -6,13 +6,17 @@ use Chess::Constant;
 use Chess::State;
 use Chess::Heuristics qw(:engine);
 
+use constant MOVE_KEY_SIZE => 1 << 18; # 7 bits from, 7 bits to, 4 bits promo.
+
 sub new {
   my ($class, %opts) = @_;
+  my @history_scores = (undef) x MOVE_KEY_SIZE;
+  my @counter_moves = (undef) x MOVE_KEY_SIZE;
   my $self = {
-    history_scores => {},
+    history_scores => \@history_scores,
     history_scale => 1.0,
     killer_moves => [],
-    counter_moves => {},
+    counter_moves => \@counter_moves,
     piece_values => $opts{piece_values} || {},
     location_modifier_percent_cb => $opts{location_modifier_percent_cb},
     square_of_idx_cb => $opts{square_of_idx_cb},
@@ -38,13 +42,19 @@ sub move_key {
   return (($from & 0x7f) << 11) | (($to & 0x7f) << 4) | $promo;
 }
 
+sub _valid_move_key {
+  my ($self, $move_key) = @_;
+  return defined $move_key && $move_key >= 0 && $move_key < MOVE_KEY_SIZE;
+}
+
 sub history_bonus {
   my ($self, $move_key) = @_;
-  my $raw = $self->{history_scores}{$move_key};
+  return 0 unless $self->_valid_move_key($move_key);
+  my $raw = $self->{history_scores}[$move_key];
   return 0 unless defined $raw;
   my $scaled = int($raw * $self->{history_scale});
   if ($scaled <= 0) {
-    delete $self->{history_scores}{$move_key};
+    $self->{history_scores}[$move_key] = undef;
     return 0;
   }
   return $scaled;
@@ -60,8 +70,8 @@ sub killer_bonus {
 
 sub countermove_bonus {
   my ($self, $move_key, $prev_move_key) = @_;
-  return 0 unless defined $prev_move_key;
-  my $counter = $self->{counter_moves}{$prev_move_key};
+  return 0 unless $self->_valid_move_key($move_key) && $self->_valid_move_key($prev_move_key);
+  my $counter = $self->{counter_moves}[$prev_move_key];
   return 0 unless defined $counter;
   return $move_key == $counter ? COUNTERMOVE_BONUS : 0;
 }
@@ -76,17 +86,18 @@ sub store_killer {
 
 sub store_countermove {
   my ($self, $prev_move_key, $move_key) = @_;
-  return unless defined $prev_move_key;
-  $self->{counter_moves}{$prev_move_key} = $move_key;
+  return unless $self->_valid_move_key($prev_move_key) && $self->_valid_move_key($move_key);
+  $self->{counter_moves}[$prev_move_key] = $move_key;
 }
 
 sub update_history {
   my ($self, $move_key, $depth) = @_;
+  return unless $self->_valid_move_key($move_key);
   my $bonus = $depth * $depth;
   my $scale = $self->{history_scale} > 0 ? $self->{history_scale} : 1;
   my $unscaled_bonus = int($bonus / $scale);
   $unscaled_bonus = 1 if $unscaled_bonus < 1;
-  $self->{history_scores}{$move_key} = ($self->{history_scores}{$move_key} // 0) + $unscaled_bonus;
+  $self->{history_scores}[$move_key] = ($self->{history_scores}[$move_key] // 0) + $unscaled_bonus;
 }
 
 sub decay_history {
@@ -94,12 +105,13 @@ sub decay_history {
   $self->{history_scale} *= HISTORY_DECAY_FACTOR;
   return if $self->{history_scale} >= HISTORY_RENORM_MIN_SCALE;
 
-  for my $key (keys %{$self->{history_scores}}) {
-    my $scaled = int(($self->{history_scores}{$key} // 0) * $self->{history_scale});
+  for my $key (0 .. MOVE_KEY_SIZE - 1) {
+    next unless defined $self->{history_scores}[$key];
+    my $scaled = int(($self->{history_scores}[$key] // 0) * $self->{history_scale});
     if ($scaled > 0) {
-      $self->{history_scores}{$key} = $scaled;
+      $self->{history_scores}[$key] = $scaled;
     } else {
-      delete $self->{history_scores}{$key};
+      $self->{history_scores}[$key] = undef;
     }
   }
   $self->{history_scale} = 1.0;
