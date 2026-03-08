@@ -98,7 +98,7 @@ sub new {
 
   my %self;
   $self{state} = shift || die "Cannot instantiate Chess::Engine without a Chess::State";
-  $self{depth} = shift || 6; # bigger number more thinky
+  $self{depth} = shift || 8; # bigger number more thinky
   my $opts = shift;
   my $workers = 1;
   if (defined $opts) {
