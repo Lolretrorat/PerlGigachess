@@ -725,7 +725,7 @@ sub _ordered_moves {
 sub _new_move_picker {
   my ($state, $ply, $tt_move_key, $prev_move_key, $tt_move) = @_;
   my $killer_move_keys = $move_order->{killer_moves}[$ply] || [];
-  my $countermove_key = defined $prev_move_key ? $move_order->{counter_moves}{$prev_move_key} : undef;
+  my $countermove_key = defined $prev_move_key ? $move_order->{counter_moves}[$prev_move_key] : undef;
 
   if (defined $tt_move && !defined $tt_move_key) {
     $tt_move_key = _move_key($tt_move);
