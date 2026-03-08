@@ -47,6 +47,11 @@ use constant 1.03 {
   UNDO_IS_EN_PASSANT => 18,
   UNDO_SPECIAL => 19,
 };
+
+use constant BOARD_IDXS => (
+  21 .. 28, 31 .. 38, 41 .. 48, 51 .. 58,
+  61 .. 68, 71 .. 78, 81 .. 88, 91 .. 98
+);
 #use constant KINGS => 6;
 
 sub new {
@@ -350,7 +355,7 @@ sub _compute_zobrist_key {
   my $turn = $self->[TURN] ? 1 : 0;
   my $key = zobrist_empty_key();
 
-  for my $idx (21 .. 28, 31 .. 38, 41 .. 48, 51 .. 58, 61 .. 68, 71 .. 78, 81 .. 88, 91 .. 98) {
+  for my $idx (BOARD_IDXS) {
     my $piece = $self->[BOARD][$idx] // EMPTY;
     next if $piece == EMPTY || abs($piece) > KING;
     my $piece_idx = _internal_piece_to_zobrist_piece($piece, $turn);
@@ -445,7 +450,7 @@ sub _do_move_in_place {
   my $piece_count = $self->[PIECE_COUNT];
   if (!defined $piece_count) {
     $piece_count = 0;
-    for my $idx (21 .. 28, 31 .. 38, 41 .. 48, 51 .. 58, 61 .. 68, 71 .. 78, 81 .. 88, 91 .. 98) {
+    for my $idx (BOARD_IDXS) {
       my $piece = $board->[$idx] // 0;
       $piece_count++ if abs($piece) >= PAWN && abs($piece) <= KING;
     }
@@ -687,15 +692,7 @@ sub make_move {
 sub generate_moves
 {
   my ($self) = @_;
-
-  my @legal;
-  my @undo_stack;
-  for my $move (@{generate_pseudo_moves($self)}) {
-    next unless defined do_move($self, $move, \@undo_stack);
-    push @legal, $move;
-    undo_move($self, \@undo_stack);
-  }
-  return @legal;
+  return @{Chess::MoveGen::generate_moves($self, 'legal')};
 }
 
 sub generate_moves_by_type {
@@ -745,7 +742,7 @@ sub checked
 {
   my ($board) = @_;
 
-  for (21 .. 28, 31 .. 38, 41 .. 48, 51 .. 58, 61 .. 68, 71 .. 78, 81 .. 88, 91 .. 98) {
+  for (BOARD_IDXS) {
     return attacked($board, $_) if $board->[$_] == KING
   }
 }
@@ -803,7 +800,7 @@ sub generate_pseudo_moves
   my @m;
 
 
-  for my $idx (21 .. 28, 31 .. 38, 41 .. 48, 51 .. 58, 61 .. 68, 71 .. 78, 81 .. 88, 91 .. 98) {
+  for my $idx (BOARD_IDXS) {
 
     # Compute all possible moves.
     if ($self->[BOARD][$idx] == KING) {

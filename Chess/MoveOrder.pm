@@ -4,7 +4,6 @@ use warnings;
 
 use Chess::Constant;
 use Chess::State;
-use Chess::MovePicker;
 use Chess::Heuristics qw(:engine);
 
 sub new {
@@ -22,7 +21,6 @@ sub new {
     promotion_check_order_bonus_cb => $opts{promotion_check_order_bonus_cb},
     is_sac_candidate_move_cb => $opts{is_sac_candidate_move_cb},
     piece_count_cb => $opts{piece_count_cb},
-    is_capture_state_cb => $opts{is_capture_state_cb},
   };
   return bless $self, $class;
 }
@@ -107,26 +105,6 @@ sub decay_history {
   $self->{history_scale} = 1.0;
 }
 
-sub is_capture_state {
-  my ($self, $state, $move) = @_;
-  if (ref($self->{is_capture_state_cb}) eq 'CODE') {
-    return $self->{is_capture_state_cb}->($state, $move);
-  }
-
-  my $board = $state->[Chess::State::BOARD];
-  my $to_piece = $board->[$move->[1]] // 0;
-  return 1 if $to_piece < 0;
-
-  my $from_piece = $board->[$move->[0]] // 0;
-  return 0 unless $from_piece == PAWN;
-
-  my $ep = $state->[Chess::State::EP];
-  return 0 unless defined $ep && $move->[1] == $ep;
-  return 0 unless ($move->[1] - $move->[0] == 9 || $move->[1] - $move->[0] == 11);
-
-  return $to_piece == EMPTY ? 1 : 0;
-}
-
 sub score_move {
   my ($self, $state, $move, $move_key, $is_capture, $ply, $tt_move_key, $prev_move_key) = @_;
   my $board = $state->[Chess::State::BOARD];
@@ -191,32 +169,6 @@ sub score_move {
   }
 
   return $score;
-}
-
-sub new_picker {
-  my ($self, $state, $ply, $tt_move_key, $prev_move_key) = @_;
-  my $killer_move_keys = $self->{killer_moves}[$ply] || [];
-  my $countermove_key = defined $prev_move_key ? $self->{counter_moves}{$prev_move_key} : undef;
-
-  return Chess::MovePicker->new(
-    state => $state,
-    moves => $state->generate_pseudo_moves,
-    tt_move_key => $tt_move_key,
-    killer_move_keys => $killer_move_keys,
-    countermove_key => $countermove_key,
-    see_order_weight => SEE_ORDER_WEIGHT,
-    see_bad_capture_threshold => SEE_BAD_CAPTURE_THRESHOLD,
-    see_prune_threshold => undef,
-    move_key_cb => sub { $self->move_key($_[0]); },
-    is_capture_cb => sub {
-      my ($move) = @_;
-      return $self->is_capture_state($state, $move);
-    },
-    score_cb => sub {
-      my ($move, $move_key, $is_capture) = @_;
-      return $self->score_move($state, $move, $move_key, $is_capture, $ply, $tt_move_key, $prev_move_key);
-    },
-  );
 }
 
 1;

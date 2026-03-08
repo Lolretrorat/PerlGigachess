@@ -6,6 +6,9 @@ require Exporter;
 our @ISA = qw(Exporter);
 our @EXPORT_OK = qw(evaluate_position);
 
+my @phase_weight = (0, 0, 1, 1, 2, 4, 0);
+my $phase_max = 24;
+
 sub evaluate_position {
   my ($state, $opts) = @_;
   $opts ||= {};
@@ -16,16 +19,7 @@ sub evaluate_position {
   my $square_of_idx_cb = $opts->{square_of_idx_cb};
   my $location_bonus_cb = $opts->{location_bonus_cb};
   my $strategic_cb = $opts->{strategic_cb};
-
-  my %phase_weight = (
-    1 => 0, # pawn
-    2 => 1, # bishop
-    3 => 1, # knight
-    4 => 2, # rook
-    5 => 4, # queen
-    6 => 0, # king
-  );
-  my $phase_max = 24;
+  my $has_pst = defined $square_of_idx_cb && defined $location_bonus_cb;
   my $phase = 0;
 
   my $material = 0;
@@ -51,7 +45,7 @@ sub evaluate_position {
     my $abs_piece = abs($piece);
     if ($abs_piece >= 1 && $abs_piece <= 6) {
       $ctx{piece_count}++;
-      $phase += ($phase_weight{$abs_piece} // 0);
+      $phase += ($phase_weight[$abs_piece] // 0);
     }
     if ($abs_piece >= 1 && $abs_piece <= 5) {
       if ($piece > 0) {
@@ -78,7 +72,7 @@ sub evaluate_position {
     next unless $base;
     $material += $base;
 
-    next unless defined $square_of_idx_cb && defined $location_bonus_cb;
+    next unless $has_pst;
     my $sq = $square_of_idx_cb->($idx);
     next unless defined $sq;
     my $pst = $location_bonus_cb->($piece, $sq, $base) // 0;

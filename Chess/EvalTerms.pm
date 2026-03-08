@@ -717,6 +717,7 @@ sub piece_count {
     my $abs_piece = abs($piece);
     $count++ if $abs_piece >= PAWN && $abs_piece <= KING;
   }
+  $state->[Chess::State::PIECE_COUNT] = $count;
   return $count;
 }
 

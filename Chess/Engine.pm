@@ -65,9 +65,6 @@ my $THREADING_AVAILABLE = eval {
   1;
 } ? 1 : 0;
 
-my %history_scores;
-my $history_scale = 1.0;
-my @killer_moves;
 my $root_search_stats = root_search_stats();
 my $transposition_table = Chess::TranspositionTable->new(
   max_entries => TT_MAX_ENTRIES,
@@ -75,7 +72,6 @@ my $transposition_table = Chess::TranspositionTable->new(
   age_weight => TT_REPLACE_AGE_WEIGHT,
   shared => $THREADING_AVAILABLE,
 );
-my %counter_moves;
 my %eval_cache;
 my %piece_values = %{piece_values()};
 my @board_indices = Chess::TableUtil::board_indices();
@@ -147,16 +143,6 @@ sub _finalize_root_search_stats {
   $root_search_stats = root_search_stats();
 }
 
-sub _resolve_root_candidate_move {
-  my ($state, $candidate) = @_;
-  return undef unless ref($candidate) eq 'HASH';
-  my $move = $candidate->{move};
-  if (!defined $move && defined $candidate->{move_key}) {
-    $move = _find_move_by_key($state, $candidate->{move_key});
-  }
-  return $move;
-}
-
 sub _maybe_randomize_tied_root_move {
   my ($state, $best_move, $opts) = @_;
   return maybe_randomize_tied_root_move($state, $best_move, $opts, \&_find_move_by_key);
@@ -165,11 +151,6 @@ sub _maybe_randomize_tied_root_move {
 sub _clamp {
   my ($value, $min, $max) = @_;
   return Chess::EvalTerms::clamp($value, $min, $max);
-}
-
-sub _location_modifier_percent {
-  my ($piece, $square) = @_;
-  return location_modifier_percent($piece, $square);
 }
 
 sub _location_bonus {
@@ -747,8 +728,8 @@ sub _ordered_moves {
 
 sub _new_move_picker {
   my ($state, $ply, $tt_move_key, $prev_move_key) = @_;
-  my $killer_move_keys = $killer_moves[$ply] || [];
-  my $countermove_key = defined $prev_move_key ? $counter_moves{$prev_move_key} : undef;
+  my $killer_move_keys = $move_order->{killer_moves}[$ply] || [];
+  my $countermove_key = defined $prev_move_key ? $move_order->{counter_moves}{$prev_move_key} : undef;
   my %exclude_move_keys;
   my @tt_moves;
   if (defined $tt_move_key) {
@@ -864,21 +845,6 @@ sub _is_capture_state {
 sub _move_key {
   my ($move) = @_;
   return $move_order->move_key($move);
-}
-
-sub _history_bonus {
-  my ($move_key) = @_;
-  return $move_order->history_bonus($move_key);
-}
-
-sub _killer_bonus {
-  my ($move_key, $ply) = @_;
-  return $move_order->killer_bonus($move_key, $ply);
-}
-
-sub _countermove_bonus {
-  my ($move_key, $prev_move_key) = @_;
-  return $move_order->countermove_bonus($move_key, $prev_move_key);
 }
 
 sub _store_killer {
@@ -1149,34 +1115,6 @@ sub _find_move_by_key {
   }
 
   return;
-}
-
-sub _extract_pv_from_move {
-  my ($state, $first_move, $max_depth) = @_;
-  return () unless defined $first_move;
-
-  $max_depth = int($max_depth // 1);
-  $max_depth = 1 if $max_depth < 1;
-
-  my @pv = ($first_move);
-  my $cursor_state = $state->make_move($first_move);
-  return @pv unless defined $cursor_state;
-
-  my %seen_keys;
-  for my $ply (1 .. ($max_depth - 1)) {
-    my $cursor_key = _state_key($cursor_state);
-    last if $seen_keys{$cursor_key}++;
-    my $entry = $transposition_table->probe($cursor_key);
-    last unless $entry && defined $entry->{best_move_key};
-    my $next_move = _find_move_by_key($cursor_state, $entry->{best_move_key});
-    last unless defined $next_move;
-    push @pv, $next_move;
-    my $next_state = $cursor_state->make_move($next_move);
-    last unless defined $next_state;
-    $cursor_state = $next_state;
-  }
-
-  return @pv;
 }
 
 sub _collect_root_pv_lines {
@@ -1537,55 +1475,6 @@ sub _search {
   return ($best_value, $best_move);
 }
 
-sub _root_thread_worker {
-  my ($job_queue, $result_queue) = @_;
-
-  while (1) {
-    my $job = $job_queue->dequeue();
-    last unless defined $job;
-    last if ($job->{type} // '') eq 'stop';
-
-    my %result = (index => $job->{index});
-    my $ok = eval {
-      my $child_state = Chess::State->new($job->{fen});
-      my %rep_counts;
-      $rep_counts{$job->{root_key}} = 1 if defined $job->{root_key};
-      my $child_key = _state_key($child_state);
-      $rep_counts{$child_key} = ($rep_counts{$child_key} // 0) + 1;
-
-      my ($score) = _search(
-        $child_state,
-        $job->{depth},
-        -$job->{beta},
-        -$job->{alpha},
-        1,
-        $job->{move_key},
-        0,
-        \%rep_counts,
-      );
-      $score = -$score;
-      if (_is_quiet_hanging_move($child_state, $job->{move}, $job->{is_capture})) {
-        $score -= _hanging_move_penalty($child_state, $job->{move});
-      }
-      $result{score} = $score;
-      1;
-    };
-
-    if (! $ok) {
-      my $err = $@;
-      if (defined $err && $err =~ /\Q$search_time_abort\E/) {
-        $result{timed_out} = 1;
-      } else {
-        $err = '' unless defined $err;
-        $err =~ s/[\r\n\t]+/ /g;
-        $result{error} = $err;
-      }
-    }
-
-    $result_queue->enqueue(\%result);
-  }
-}
-
 sub _search_root_with_workers {
   my ($state, $depth, $alpha, $beta, $workers) = @_;
 
@@ -1594,196 +1483,6 @@ sub _search_root_with_workers {
   # Root parallelization currently races time control/cancellation across threads.
   # Keep single-thread root search for stable playing strength.
   return _search($state, $depth, $alpha, $beta, 0, undef);
-}
-
-sub _search_parallel_root {
-  my ($state, $depth, $alpha, $beta, $workers) = @_;
-
-  my $alpha_orig = $alpha;
-  my $beta_orig = $beta;
-  my $key = _state_key($state);
-  my $tt_entry = $transposition_table->probe($key, ply => 0, mate_score => MATE_SCORE);
-
-  if ($tt_entry && $tt_entry->{depth} >= $depth) {
-    my $tt_score = $tt_entry->{score};
-    if ($tt_entry->{flag} == TT_FLAG_EXACT) {
-      return ($tt_score, _find_move_by_key($state, $tt_entry->{best_move_key}));
-    }
-    if ($tt_entry->{flag} == TT_FLAG_LOWER) {
-      $alpha = max($alpha, $tt_score);
-    } elsif ($tt_entry->{flag} == TT_FLAG_UPPER) {
-      $beta = min($beta, $tt_score);
-    }
-    if ($alpha >= $beta) {
-      return ($tt_score, _find_move_by_key($state, $tt_entry->{best_move_key}));
-    }
-  }
-
-  my $tt_move_key = $tt_entry ? $tt_entry->{best_move_key} : undef;
-  my @root_jobs;
-  my $move_picker = _new_move_picker($state, 0, $tt_move_key, undef);
-  while (my $entry = $move_picker->next_move) {
-    my ($move, $child_prev_move_key, $is_capture) = @{$entry}[1, 2, 3];
-    my $new_state = $state->make_move($move);
-    next unless defined $new_state;
-    push @root_jobs, {
-      index => scalar(@root_jobs),
-      move => $move,
-      move_key => $child_prev_move_key,
-      is_capture => $is_capture ? 1 : 0,
-      new_state => $new_state,
-    };
-  }
-
-  if (!@root_jobs) {
-    my $mate_or_draw = $state->is_checked ? -MATE_SCORE : 0;
-    return ($mate_or_draw, undef);
-  }
-
-  my $worker_count = min($workers, scalar @root_jobs);
-  return _search($state, $depth, $alpha, $beta, 0, undef) if $worker_count <= 1;
-  return _search($state, $depth, $alpha, $beta, 0, undef) if !$THREADING_AVAILABLE;
-
-  my %job_by_index = map { $_->{index} => $_ } @root_jobs;
-  my %score_by_index;
-  my %missing_by_index = map { $_->{index} => 1 } @root_jobs;
-  my $job_queue = Thread::Queue->new();
-  my $result_queue = Thread::Queue->new();
-
-  for my $job (@root_jobs) {
-    $job_queue->enqueue({
-      index => $job->{index},
-      fen => $job->{new_state}->get_fen,
-      depth => $depth - 1,
-      alpha => $alpha,
-      beta => $beta,
-      move_key => $job->{move_key},
-      is_capture => $job->{is_capture},
-      move => $job->{move},
-      root_key => $key,
-    });
-  }
-  $job_queue->enqueue({ type => 'stop' }) for (1 .. $worker_count);
-
-  my @threads;
-  for (1 .. $worker_count) {
-    push @threads, threads->create(\&_root_thread_worker, $job_queue, $result_queue);
-  }
-
-  my $timed_out = 0;
-  my $received = 0;
-  my $expected = scalar @root_jobs;
-  while ($received < $expected) {
-    if ($search_time_manager->hard_deadline_reached()) {
-      $timed_out = 1;
-      last;
-    }
-    my $result = $result_queue->dequeue_timed(0.05);
-    next unless defined $result;
-    $received++;
-    my $idx = $result->{index};
-    if ($result->{timed_out}) {
-      $timed_out = 1;
-      next;
-    }
-    next if defined $result->{error};
-    if (defined $idx && exists $job_by_index{$idx} && defined $result->{score}) {
-      $score_by_index{$idx} = int($result->{score});
-      delete $missing_by_index{$idx};
-    }
-  }
-
-  for my $thread (@threads) {
-    $thread->join();
-  }
-
-  if ($timed_out) {
-    die $search_time_abort;
-  }
-
-  for my $job (@root_jobs) {
-    $missing_by_index{$job->{index}} = 1 unless exists $score_by_index{$job->{index}};
-  }
-
-  for my $idx (sort { $a <=> $b } keys %missing_by_index) {
-    my $job = $job_by_index{$idx} or next;
-    my ($score);
-    my $ok = eval {
-      my %rep_counts = ($key => 1);
-      my $child_key = _state_key($job->{new_state});
-      $rep_counts{$child_key} = ($rep_counts{$child_key} // 0) + 1;
-      ($score) = _search($job->{new_state}, $depth - 1, -$beta, -$alpha, 1, $job->{move_key}, 0, \%rep_counts);
-      $score = -$score;
-      if (_is_quiet_hanging_move($job->{new_state}, $job->{move}, $job->{is_capture})) {
-        $score -= _hanging_move_penalty($job->{new_state}, $job->{move});
-      }
-      1;
-    };
-    if (! $ok) {
-      my $err = $@;
-      if (defined $err && $err =~ /\Q$search_time_abort\E/) {
-        die $search_time_abort;
-      }
-      die $err;
-    }
-    $score_by_index{$idx} = $score;
-  }
-
-  my $best_value = -INF_SCORE;
-  my $best_move;
-  my $best_move_key;
-  my @root_candidates;
-  for my $idx (sort { $a <=> $b } keys %score_by_index) {
-    my $job = $job_by_index{$idx};
-    next unless $job;
-    my $value = $score_by_index{$idx};
-
-    push @root_candidates, {
-      score => $value,
-      move => $job->{move},
-      move_key => $job->{move_key},
-    };
-
-    if (!defined $best_move || $value > $best_value) {
-      $best_value = $value;
-      $best_move = $job->{move};
-    }
-  }
-
-  if (!defined $best_move) {
-    my @legal = $state->generate_moves;
-    $best_move = $legal[0] if @legal;
-    $best_value = _evaluate_board($state) unless @legal;
-    $best_move_key = defined $best_move ? _move_key($best_move) : undef;
-    @root_candidates = ({
-      score => $best_value,
-      move => $best_move,
-      move_key => $best_move_key,
-    }) if defined $best_move;
-  }
-
-  $root_search_stats->{root_candidates} = \@root_candidates;
-  _finalize_root_search_stats(scalar @root_jobs);
-  $best_move_key = $root_search_stats->{best_move_key};
-
-  my $flag = TT_FLAG_EXACT;
-  if ($best_value <= $alpha_orig) {
-    $flag = TT_FLAG_UPPER;
-  } elsif ($best_value >= $beta_orig) {
-    $flag = TT_FLAG_LOWER;
-  }
-
-  $transposition_table->store(
-    key => $key,
-    depth => $depth,
-    score => $best_value,
-    flag => $flag,
-    best_move_key => $best_move_key,
-    ply => 0,
-    mate_score => MATE_SCORE,
-  );
-
-  return ($best_value, $best_move);
 }
 
 #  mainly a converience wrapper around rec_think.

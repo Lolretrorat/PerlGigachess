@@ -172,12 +172,12 @@ sub _pop_best_from_bucket {
 
   if (! $self->{bucket_sorted}{$stage}) {
     @{$bucket} = sort {
-      $self->_score_entry($b) <=> $self->_score_entry($a)
+      $self->_score_entry($a) <=> $self->_score_entry($b)
     } @{$bucket};
     $self->{bucket_sorted}{$stage} = 1;
   }
 
-  return shift @{$bucket};
+  return pop @{$bucket};
 }
 
 sub _push_entry_to_bucket {

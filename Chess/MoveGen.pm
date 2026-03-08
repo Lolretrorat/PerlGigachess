@@ -57,6 +57,7 @@ sub _generate_filtered_legal {
   my $has_exclude = ref($exclude) eq 'HASH' && keys %{$exclude};
 
   my @legal;
+  my @undo_stack;
   for my $move (@{$pseudo}) {
     next unless ref($move) eq 'ARRAY';
     next if defined $predicate && !$predicate->($move);
@@ -65,9 +66,9 @@ sub _generate_filtered_legal {
       my $move_key = $move_key_cb->($move);
       next if defined $move_key && exists $exclude->{$move_key};
     }
-    my $new_state = $state->make_move($move);
-    next unless defined $new_state;
+    next unless defined $state->do_move($move, \@undo_stack);
     push @legal, $move;
+    $state->undo_move(\@undo_stack);
   }
   return \@legal;
 }
