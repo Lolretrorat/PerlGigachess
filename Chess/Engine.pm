@@ -1518,15 +1518,17 @@ sub think {
     ? _normalize_worker_count($think_opts{workers})
     : _normalize_worker_count($self->{workers});
   my $requested_multipv = _normalize_multipv($think_opts{multipv});
+  my $strict_depth = $think_opts{strict_depth} ? 1 : 0;
 
   my $target_depth = max(1, $self->{depth});
-  $target_depth += MID_ENDGAME_DEPTH_BOOST if $piece_count <= MID_ENDGAME_PIECE_THRESHOLD;
-  $target_depth += DEEP_ENDGAME_DEPTH_BOOST if $piece_count <= DEEP_ENDGAME_PIECE_THRESHOLD;
-  $target_depth = min(20, $target_depth);
-  my $max_depth = min(20, $target_depth + EXTRA_DEPTH_ON_UNSTABLE);
-  if ($think_opts{strict_depth}) {
-    $max_depth = $target_depth;
+  if (!$strict_depth) {
+    $target_depth += MID_ENDGAME_DEPTH_BOOST if $piece_count <= MID_ENDGAME_PIECE_THRESHOLD;
+    $target_depth += DEEP_ENDGAME_DEPTH_BOOST if $piece_count <= DEEP_ENDGAME_PIECE_THRESHOLD;
   }
+  $target_depth = min(20, $target_depth);
+  my $max_depth = $strict_depth
+    ? $target_depth
+    : min(20, $target_depth + EXTRA_DEPTH_ON_UNSTABLE);
   my $easy_move_depth = max(EASY_MOVE_MIN_DEPTH, min($target_depth, EASY_MOVE_DEPTH_CAP));
   if ($piece_count <= MID_ENDGAME_PIECE_THRESHOLD) {
     $easy_move_depth = min($target_depth, $easy_move_depth + MID_ENDGAME_EASY_MOVE_EXTRA_DEPTH);
@@ -1545,7 +1547,7 @@ sub think {
 
   DEPTH_LOOP:
   for my $depth (1 .. $max_depth) {
-    last DEPTH_LOOP if $last_completed_depth && _time_up_soft();
+    last DEPTH_LOOP if !$strict_depth && $last_completed_depth && _time_up_soft();
     my $alpha = -INF_SCORE;
     my $beta = INF_SCORE;
     my $window = ASPIRATION_WINDOW;
@@ -1579,14 +1581,14 @@ sub think {
         $aspiration_expansions++;
         $alpha = max(-INF_SCORE, $alpha - $window);
         $window *= 2;
-        last if $last_completed_depth && _time_up_soft();
+        last if !$strict_depth && $last_completed_depth && _time_up_soft();
         next;
       }
       if ($score >= $beta) {
         $aspiration_expansions++;
         $beta = min(INF_SCORE, $beta + $window);
         $window *= 2;
-        last if $last_completed_depth && _time_up_soft();
+        last if !$strict_depth && $last_completed_depth && _time_up_soft();
         next;
       }
 
@@ -1649,7 +1651,8 @@ sub think {
       eval { $on_update->($depth, $iteration_score, $best_move, $update); };
     }
 
-    if ($time_policy->{has_clock}
+    if (!$strict_depth
+      && $time_policy->{has_clock}
       && $forced_or_easy_root
       && !$critical_position
       && $depth >= max(3, $easy_move_depth - 1)
@@ -1694,7 +1697,7 @@ sub think {
       }
     }
 
-    if ($time_policy->{has_clock} && $depth >= $easy_move_depth) {
+    if (!$strict_depth && $time_policy->{has_clock} && $depth >= $easy_move_depth) {
       my $easy_move = !$critical_position
         && $stable_best_hits >= 2
         && $score_delta <= SCORE_STABILITY_DELTA
@@ -1703,6 +1706,9 @@ sub think {
     }
 
     if ($depth >= $target_depth) {
+      if ($strict_depth) {
+        last;
+      }
       last if $stability_hits >= 1;
       last if _time_up_soft();
     }

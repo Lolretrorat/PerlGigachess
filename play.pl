@@ -420,7 +420,10 @@ sub _run_uci_go_search {
     $go_depth,
     { workers => $workers },
   );
-  my %time_args = (move_overhead_ms => $move_overhead_ms);
+  my %time_args = (
+    move_overhead_ms => $move_overhead_ms,
+    strict_depth => 1,
+  );
   if (defined $go->{movetime}) {
     $time_args{movetime_ms} = $go->{movetime};
   } else {
@@ -430,11 +433,8 @@ sub _run_uci_go_search {
     $time_args{increment_ms} = $increment_ms if defined $increment_ms;
     $time_args{movestogo} = $go->{movestogo} if defined $go->{movestogo};
   }
-  if (defined $go->{depth}) {
-    $time_args{strict_depth} = 1;
-  }
   $time_args{multipv} = $multi_pv;
-  $time_args{use_book} = $has_searchmoves ? 0 : $own_book;
+  $time_args{use_book} = ($has_searchmoves || defined $go->{depth}) ? 0 : $own_book;
 
   my $critical_mate_logged = 0;
   my $critical_swing_logged = 0;
