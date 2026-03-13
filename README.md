@@ -7,6 +7,11 @@ points:
 - `tests/perft.pl` — perft validation driver (`perft.pl` remains as a compatibility shim).
 - `lichess.pl` — Bot API bridge that lets the engine play on lichess.org.
 
+## Contributing and License
+
+- Contribution guidelines: [CONTRIBUTING.md](CONTRIBUTING.md)
+- License: [GNU GPL v3.0](LICENSE)
+
 ## Development Environment
 
 Dependencies are isolated with a Python virtual environment and a local Perl
