@@ -35,6 +35,25 @@ use Chess::Engine ();
 use Chess::Book ();
 use Chess::TableUtil qw(canonical_fen_key);
 
+BEGIN {
+  my $env_path = "$FindBin::RealBin/.env";
+  if (-e $env_path) {
+    open my $fh, '<', $env_path or die "Unable to open $env_path: $!";
+    while (my $line = <$fh>) {
+      $line =~ s/[\r\n]+$//;
+      next if $line =~ /^\s*#/;
+      next unless length $line;
+      if ($line =~ /^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)\s*$/) {
+        my ($key, $val) = ($1, $2);
+        $val =~ s/^['"]// && $val =~ s/['"]$//;
+        $ENV{$key} = $val unless exists $ENV{$key};
+      }
+    }
+    close $fh;
+  }
+}
+use Chess::TimeConfig;
+
 eval {
   require IO::Socket::SSL;
   IO::Socket::SSL->import();
@@ -75,85 +94,17 @@ if (defined $depth_override) {
 }
 my $is_production_profile = $branch_override_allowed ? 0 : 1;
 
-my $prod_opening_boost_mult = $ENV{LICHESS_PROD_OPENING_MULT};
-if (!defined $prod_opening_boost_mult || $prod_opening_boost_mult !~ /^\d+(?:\.\d+)?$/) {
-  $prod_opening_boost_mult = 1.20;
-}
-$prod_opening_boost_mult += 0;
-$prod_opening_boost_mult = 1.0 if $prod_opening_boost_mult < 1.0;
-$prod_opening_boost_mult = 2.0 if $prod_opening_boost_mult > 2.0;
-
-my $prod_opening_boost_plies = $ENV{LICHESS_PROD_OPENING_PLIES};
-if (!defined $prod_opening_boost_plies || $prod_opening_boost_plies !~ /^\d+$/) {
-  $prod_opening_boost_plies = 18;
-}
-$prod_opening_boost_plies = int($prod_opening_boost_plies);
-$prod_opening_boost_plies = 0 if $prod_opening_boost_plies < 0;
-$prod_opening_boost_plies = 80 if $prod_opening_boost_plies > 80;
-
-my $prod_opening_cap_mult = $ENV{LICHESS_PROD_OPENING_CAP_MULT};
-if (!defined $prod_opening_cap_mult || $prod_opening_cap_mult !~ /^\d+(?:\.\d+)?$/) {
-  $prod_opening_cap_mult = 1.25;
-}
-$prod_opening_cap_mult += 0;
-$prod_opening_cap_mult = 1.0 if $prod_opening_cap_mult < 1.0;
-$prod_opening_cap_mult = 2.0 if $prod_opening_cap_mult > 2.0;
-
-my $prod_opening_floor_ms = $ENV{LICHESS_PROD_OPENING_FLOOR_MS};
-if (!defined $prod_opening_floor_ms || $prod_opening_floor_ms !~ /^\d+$/) {
-  $prod_opening_floor_ms = 8000;
-}
-$prod_opening_floor_ms = int($prod_opening_floor_ms);
-$prod_opening_floor_ms = 0 if $prod_opening_floor_ms < 0;
-$prod_opening_floor_ms = 30_000 if $prod_opening_floor_ms > 30_000;
-
-my $prod_opening_floor_plies = $ENV{LICHESS_PROD_OPENING_FLOOR_PLIES};
-if (!defined $prod_opening_floor_plies || $prod_opening_floor_plies !~ /^\d+$/) {
-  $prod_opening_floor_plies = 16;
-}
-$prod_opening_floor_plies = int($prod_opening_floor_plies);
-$prod_opening_floor_plies = 0 if $prod_opening_floor_plies < 0;
-$prod_opening_floor_plies = 80 if $prod_opening_floor_plies > 80;
-
-my $prod_think_mult = $ENV{LICHESS_PROD_THINK_MULT};
-if (!defined $prod_think_mult || $prod_think_mult !~ /^\d+(?:\.\d+)?$/) {
-  $prod_think_mult = 1.18;
-}
-$prod_think_mult += 0;
-$prod_think_mult = 1.0 if $prod_think_mult < 1.0;
-$prod_think_mult = 2.0 if $prod_think_mult > 2.0;
-
-my $prod_cap_mult = $ENV{LICHESS_PROD_CAP_MULT};
-if (!defined $prod_cap_mult || $prod_cap_mult !~ /^\d+(?:\.\d+)?$/) {
-  $prod_cap_mult = 1.35;
-}
-$prod_cap_mult += 0;
-$prod_cap_mult = 1.0 if $prod_cap_mult < 1.0;
-$prod_cap_mult = 2.0 if $prod_cap_mult > 2.0;
-
-my $prod_floor_ms = $ENV{LICHESS_PROD_FLOOR_MS};
-if (!defined $prod_floor_ms || $prod_floor_ms !~ /^\d+$/) {
-  $prod_floor_ms = 2600;
-}
-$prod_floor_ms = int($prod_floor_ms);
-$prod_floor_ms = 0 if $prod_floor_ms < 0;
-$prod_floor_ms = 30_000 if $prod_floor_ms > 30_000;
-
-my $post_book_think_mult = $ENV{LICHESS_POST_BOOK_THINK_MULT};
-if (!defined $post_book_think_mult || $post_book_think_mult !~ /^\d+(?:\.\d+)?$/) {
-  $post_book_think_mult = 1.12;
-}
-$post_book_think_mult += 0;
-$post_book_think_mult = 1.0 if $post_book_think_mult < 1.0;
-$post_book_think_mult = 2.0 if $post_book_think_mult > 2.0;
-
-my $post_book_cap_mult = $ENV{LICHESS_POST_BOOK_CAP_MULT};
-if (!defined $post_book_cap_mult || $post_book_cap_mult !~ /^\d+(?:\.\d+)?$/) {
-  $post_book_cap_mult = 1.18;
-}
-$post_book_cap_mult += 0;
-$post_book_cap_mult = 1.0 if $post_book_cap_mult < 1.0;
-$post_book_cap_mult = 2.0 if $post_book_cap_mult > 2.0;
+# Time/think multipliers from centralized config (LICHESS_ overrides for backwards compat)
+my $prod_opening_boost_mult   = $Chess::TimeConfig::OPENING_BOOST_MULT;
+my $prod_opening_boost_plies  = $Chess::TimeConfig::OPENING_BOOST_PLIES;
+my $prod_opening_cap_mult     = $Chess::TimeConfig::OPENING_CAP_MULT;
+my $prod_opening_floor_ms     = $Chess::TimeConfig::OPENING_FLOOR_MS;
+my $prod_opening_floor_plies  = $Chess::TimeConfig::OPENING_FLOOR_PLIES;
+my $prod_think_mult           = $Chess::TimeConfig::PROD_THINK_MULT;
+my $prod_cap_mult             = $Chess::TimeConfig::PROD_CAP_MULT;
+my $prod_floor_ms             = $Chess::TimeConfig::PROD_FLOOR_MS;
+my $post_book_think_mult      = $Chess::TimeConfig::POST_BOOK_THINK_MULT;
+my $post_book_cap_mult        = $Chess::TimeConfig::POST_BOOK_CAP_MULT;
 
 my $repetition_avoid_cp = $ENV{LICHESS_REPETITION_AVOID_CP};
 if (!defined $repetition_avoid_cp || $repetition_avoid_cp !~ /^-?\d+$/) {
@@ -219,79 +170,25 @@ $repetition_rethink_min_budget_multiple += 0;
 $repetition_rethink_min_budget_multiple = 1.0 if $repetition_rethink_min_budget_multiple < 1.0;
 $repetition_rethink_min_budget_multiple = 20.0 if $repetition_rethink_min_budget_multiple > 20.0;
 
-my $panic_30s_ms = $ENV{LICHESS_PANIC_30S_MS};
-if (!defined $panic_30s_ms || $panic_30s_ms !~ /^\d+$/) {
-  $panic_30s_ms = 30_000;
-}
-$panic_30s_ms = int($panic_30s_ms);
-$panic_30s_ms = 1_000 if $panic_30s_ms < 1_000;
-$panic_30s_ms = 180_000 if $panic_30s_ms > 180_000;
+my $panic_30s_ms        = $Chess::TimeConfig::PANIC_30S_MS;
+my $panic_10s_ms        = $Chess::TimeConfig::PANIC_10S_MS;
+my $panic_30s_cap_ms    = $Chess::TimeConfig::PANIC_30S_CAP_MS;
+my $panic_10s_cap_ms    = $Chess::TimeConfig::PANIC_10S_CAP_MS;
 
-my $panic_10s_ms = $ENV{LICHESS_PANIC_10S_MS};
-if (!defined $panic_10s_ms || $panic_10s_ms !~ /^\d+$/) {
-  $panic_10s_ms = 10_000;
-}
-$panic_10s_ms = int($panic_10s_ms);
-$panic_10s_ms = 500 if $panic_10s_ms < 500;
-$panic_10s_ms = $panic_30s_ms if $panic_10s_ms > $panic_30s_ms;
+my $eval_drop_extra_think_cp   = $Chess::TimeConfig::EVAL_DROP_EXTRA_THINK_CP;
+my $eval_drop_extra_think_mult = $Chess::TimeConfig::EVAL_DROP_EXTRA_THINK_MULT;
 
-my $panic_30s_cap_ms = $ENV{LICHESS_PANIC_30S_CAP_MS};
-if (!defined $panic_30s_cap_ms || $panic_30s_cap_ms !~ /^\d+$/) {
-  $panic_30s_cap_ms = 2_200;
-}
-$panic_30s_cap_ms = int($panic_30s_cap_ms);
-$panic_30s_cap_ms = 200 if $panic_30s_cap_ms < 200;
-$panic_30s_cap_ms = 8_000 if $panic_30s_cap_ms > 8_000;
+my $rethink_depth_bump = $Chess::TimeConfig::RETHINK_DEPTH_BUMP;
 
-my $panic_10s_cap_ms = $ENV{LICHESS_PANIC_10S_CAP_MS};
-if (!defined $panic_10s_cap_ms || $panic_10s_cap_ms !~ /^\d+$/) {
-  $panic_10s_cap_ms = 900;
-}
-$panic_10s_cap_ms = int($panic_10s_cap_ms);
-$panic_10s_cap_ms = 80 if $panic_10s_cap_ms < 80;
-$panic_10s_cap_ms = $panic_30s_cap_ms if $panic_10s_cap_ms > $panic_30s_cap_ms;
+# Develop settings conditionally apply defaults based on branch
+my $develop_depth_bump = $Chess::TimeConfig::DEVELOP_DEPTH_BUMP;
+$develop_depth_bump = 1 if $is_develop_branch && $develop_depth_bump == 0 && !defined $ENV{CHESS_DEVELOP_DEPTH_BUMP};
 
-my $eval_drop_extra_think_cp = $ENV{LICHESS_EVAL_DROP_EXTRA_THINK_CP};
-if (!defined $eval_drop_extra_think_cp || $eval_drop_extra_think_cp !~ /^\d+$/) {
-  $eval_drop_extra_think_cp = 40;
-}
-$eval_drop_extra_think_cp = int($eval_drop_extra_think_cp);
-$eval_drop_extra_think_cp = 0 if $eval_drop_extra_think_cp < 0;
-$eval_drop_extra_think_cp = 1000 if $eval_drop_extra_think_cp > 1000;
+my $develop_think_mult = $Chess::TimeConfig::DEVELOP_THINK_MULT;
+$develop_think_mult = 1.12 if $is_develop_branch && $develop_think_mult == 1.0 && !defined $ENV{CHESS_DEVELOP_THINK_MULT};
 
-my $eval_drop_extra_think_mult = $ENV{LICHESS_EVAL_DROP_EXTRA_THINK_MULT};
-if (!defined $eval_drop_extra_think_mult || $eval_drop_extra_think_mult !~ /^\d+(?:\.\d+)?$/) {
-  $eval_drop_extra_think_mult = 1.55;
-}
-$eval_drop_extra_think_mult += 0;
-$eval_drop_extra_think_mult = 1.0 if $eval_drop_extra_think_mult < 1.0;
-$eval_drop_extra_think_mult = 3.0 if $eval_drop_extra_think_mult > 3.0;
-
-my $rethink_depth_bump = _env_int_range('LICHESS_RETHINK_DEPTH_BUMP', 1, 0, 4);
-
-my $develop_depth_bump = $ENV{LICHESS_DEVELOP_DEPTH_BUMP};
-if (!defined $develop_depth_bump || $develop_depth_bump !~ /^-?\d+$/) {
-  $develop_depth_bump = $is_develop_branch ? 1 : 0;
-}
-$develop_depth_bump = int($develop_depth_bump);
-$develop_depth_bump = 0 if $develop_depth_bump < 0;
-$develop_depth_bump = 4 if $develop_depth_bump > 4;
-
-my $develop_think_mult = $ENV{LICHESS_DEVELOP_THINK_MULT};
-if (!defined $develop_think_mult || $develop_think_mult !~ /^\d+(?:\.\d+)?$/) {
-  $develop_think_mult = $is_develop_branch ? 1.12 : 1.0;
-}
-$develop_think_mult += 0;
-$develop_think_mult = 1.0 if $develop_think_mult < 1.0;
-$develop_think_mult = 2.0 if $develop_think_mult > 2.0;
-
-my $develop_cap_mult = $ENV{LICHESS_DEVELOP_CAP_MULT};
-if (!defined $develop_cap_mult || $develop_cap_mult !~ /^\d+(?:\.\d+)?$/) {
-  $develop_cap_mult = $is_develop_branch ? 1.10 : 1.0;
-}
-$develop_cap_mult += 0;
-$develop_cap_mult = 1.0 if $develop_cap_mult < 1.0;
-$develop_cap_mult = 2.0 if $develop_cap_mult > 2.0;
+my $develop_cap_mult = $Chess::TimeConfig::DEVELOP_CAP_MULT;
+$develop_cap_mult = 1.10 if $is_develop_branch && $develop_cap_mult == 1.0 && !defined $ENV{CHESS_DEVELOP_CAP_MULT};
 
 STDOUT->autoflush(1);
 STDERR->autoflush(1);
@@ -1843,6 +1740,10 @@ sub _reorder_candidates_for_repetition {
     push @scored, [ $idx, $score, $uci, $visits_after, $is_capture, $gives_check, $is_promo ];
   }
 
+  # Only apply repetition guard if at least one move would create a repeated position
+  my $has_repetition_pressure = grep { $_->[3] >= 2 } @scored;
+  return @$candidates_ref unless $has_repetition_pressure;
+
   my @ordered = map { $_->[2] } sort {
     $b->[1] <=> $a->[1] || $a->[0] <=> $b->[0]
   } @scored;
@@ -2710,44 +2611,32 @@ sub compute_bestmove {
     $depth = 20 if $depth > 20;
     $go = "go depth $depth";
   } else {
-    my ($remaining_ms) = _clock_for_side_ms($game);
-    my $use_clock_go = defined $remaining_ms
-      && !defined $opts->{movetime_multiplier}
-      && !defined $opts->{movetime_floor_ms};
-
-    if ($use_clock_go) {
-      my $go_depth = defined $bumped_depth
-        ? _bumped_engine_depth_for_game($game, $bumped_depth)
-        : undef;
-      $go = _clock_go_command_for_game($game, $state, $go_depth);
+    my $movetime = _movetime_for_game_ms($game, $state);
+    if (defined $opts->{movetime_multiplier} && $opts->{movetime_multiplier} =~ /^\d+(?:\.\d+)?$/) {
+      my $mult = $opts->{movetime_multiplier} + 0;
+      $mult = 1.0 if $mult < 1.0;
+      $mult = 3.0 if $mult > 3.0;
+      my $boosted = int($movetime * $mult);
+      my ($clock_ms, $inc_ms) = _clock_for_side_ms($game);
+      if (defined $clock_ms && defined $inc_ms) {
+        my $cap = int(($clock_ms * 0.45) + ($inc_ms * 2));
+        $cap = $clock_ms - 200 if $cap > ($clock_ms - 200);
+        $cap = 80 if $cap < 80;
+        $boosted = $cap if $boosted > $cap;
+      }
+      $movetime = $boosted if $boosted > $movetime;
+    }
+    if (defined $opts->{movetime_floor_ms} && $opts->{movetime_floor_ms} =~ /^\d+$/) {
+      my $floor = int($opts->{movetime_floor_ms});
+      $movetime = $floor if $floor > $movetime;
+    }
+    my $go_depth = defined $bumped_depth
+      ? _bumped_engine_depth_for_game($game, $bumped_depth)
+      : undef;
+    if (defined $go_depth) {
+      $go = "go depth $go_depth movetime $movetime";
     } else {
-      my $movetime = _movetime_for_game_ms($game, $state);
-      if (defined $opts->{movetime_multiplier} && $opts->{movetime_multiplier} =~ /^\d+(?:\.\d+)?$/) {
-        my $mult = $opts->{movetime_multiplier} + 0;
-        $mult = 1.0 if $mult < 1.0;
-        $mult = 3.0 if $mult > 3.0;
-        my $boosted = int($movetime * $mult);
-        my ($clock_ms, $inc_ms) = _clock_for_side_ms($game);
-        if (defined $clock_ms && defined $inc_ms) {
-          my $cap = int(($clock_ms * 0.45) + ($inc_ms * 2));
-          $cap = $clock_ms - 200 if $cap > ($clock_ms - 200);
-          $cap = 80 if $cap < 80;
-          $boosted = $cap if $boosted > $cap;
-        }
-        $movetime = $boosted if $boosted > $movetime;
-      }
-      if (defined $opts->{movetime_floor_ms} && $opts->{movetime_floor_ms} =~ /^\d+$/) {
-        my $floor = int($opts->{movetime_floor_ms});
-        $movetime = $floor if $floor > $movetime;
-      }
-      my $go_depth = defined $bumped_depth
-        ? _bumped_engine_depth_for_game($game, $bumped_depth)
-        : undef;
-      if (defined $go_depth) {
-        $go = "go depth $go_depth movetime $movetime";
-      } else {
-        $go = "go movetime $movetime";
-      }
+      $go = "go movetime $movetime";
     }
   }
   print {$engine_in} "$go\n";

@@ -3,7 +3,7 @@ use strict;
 use warnings;
 
 use Chess::Constant;
-use Chess::MoveGen ();
+# Chess::MovePicker loaded via require to avoid circular dependency
 use Chess::Zobrist qw(
   zobrist_empty_key
   zobrist_is_key
@@ -896,12 +896,14 @@ sub clone {
 sub generate_moves
 {
   my ($self) = @_;
-  return @{Chess::MoveGen::generate_moves($self, 'legal')};
+  require Chess::MovePicker;
+  return @{Chess::MovePicker::generate_moves($self, 'legal')};
 }
 
 sub generate_moves_by_type {
   my ($self, $type) = @_;
-  return Chess::MoveGen::generate_moves($self, $type);
+  require Chess::MovePicker;
+  return Chess::MovePicker::generate_moves($self, $type);
 }
 
 # Immutable-state compatibility helpers for do/undo style callers.

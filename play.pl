@@ -12,8 +12,6 @@ $| = 1;
 STDOUT->autoflush(1);
 STDERR->autoflush(1);
 
-## LOCAL MODULES
-# make local dir accessible for use statements
 use FindBin qw( $RealBin );
 use lib $RealBin;
 
@@ -422,8 +420,8 @@ sub _run_uci_go_search {
   );
   my %time_args = (
     move_overhead_ms => $move_overhead_ms,
-    strict_depth => 1,
   );
+  $time_args{strict_depth} = 1 if defined $go->{depth};
   if (defined $go->{movetime}) {
     $time_args{movetime_ms} = $go->{movetime};
   } else {
