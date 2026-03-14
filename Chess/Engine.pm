@@ -7,6 +7,7 @@ use Chess::State;
 use Chess::EndgameTable;
 use Chess::TableUtil qw(canonical_fen_key);
 use Chess::TranspositionTable;
+use Chess::See;
 use Chess::TimeManager;
 use Chess::Eval qw(evaluate_position);
 use Chess::Heuristics qw(:engine);
@@ -53,6 +54,7 @@ use Chess::Search qw(
 
 use Chess::Book;
 use Chess::MovePicker qw(generate_moves collect_legal_moves);
+use Chess::See ();
 
 use List::Util qw(max min);
 
@@ -1165,7 +1167,7 @@ sub _ordered_moves {
 }
 
 sub _new_move_picker {
-  my ($state, $ply, $tt_move_key, $prev_move_key, $tt_move) = @_;
+  my ($state, $ply, $tt_move_key, $prev_move_key, $tt_move, $prev_piece, $prev_to) = @_;
   my $killer_move_keys = $move_order->{killer_moves}[$ply] || [];
   my $countermove_key = defined $prev_move_key ? $move_order->{counter_moves}[$prev_move_key] : undef;
   my %exclude_move_keys;
@@ -1191,6 +1193,10 @@ sub _new_move_picker {
   };
   my $legal_moves = generate_moves($state, 'legal', $move_gen_opts);
 
+  my $cont_opts = {};
+  $cont_opts->{prev_piece} = $prev_piece if defined $prev_piece;
+  $cont_opts->{prev_to} = $prev_to if defined $prev_to;
+
   return Chess::MovePicker->new(
     state => $state,
     moves => [ @tt_moves, @{$legal_moves} ],
@@ -1208,7 +1214,7 @@ sub _new_move_picker {
     },
     score_cb => sub {
       my ($move, $move_key, $is_capture) = @_;
-      return _move_order_score($state, $move, $move_key, $is_capture, $ply, $tt_move_key, $prev_move_key);
+      return _move_order_score($state, $move, $move_key, $is_capture, $ply, $tt_move_key, $prev_move_key, $cont_opts);
     },
   );
 }
@@ -1246,8 +1252,8 @@ sub _sort_scored_desc {
 }
 
 sub _move_order_score {
-  my ($state, $move, $move_key, $is_capture, $ply, $tt_move_key, $prev_move_key) = @_;
-  return $move_order->score_move($state, $move, $move_key, $is_capture, $ply, $tt_move_key, $prev_move_key);
+  my ($state, $move, $move_key, $is_capture, $ply, $tt_move_key, $prev_move_key, $opts) = @_;
+  return $move_order->score_move($state, $move, $move_key, $is_capture, $ply, $tt_move_key, $prev_move_key, $opts);
 }
 
 sub _is_capture_state {
@@ -1284,6 +1290,13 @@ sub _store_countermove {
 sub _update_history {
   my ($move_key, $depth) = @_;
   $move_order->update_history($move_key, $depth);
+}
+
+sub _update_continuation_history {
+  my ($prev_piece, $prev_to, $piece, $to, $depth) = @_;
+  return unless defined $prev_piece && defined $prev_to;
+  my $bonus = $depth * $depth;
+  $move_order->update_continuation_history($prev_piece, $prev_to, $piece, $to, $bonus);
 }
 
 sub _decay_history {
@@ -1623,6 +1636,15 @@ sub _quiesce {
 
   foreach my $entry (@ordered) {
     my ($move) = @{$entry}[1];
+
+    # More aggressive SEE pruning for captures in quiescence
+    if (!$in_check && _is_capture_state($state, $move)) {
+      my $see_value = Chess::See::evaluate_capture(state => $state, move => $move);
+      if (defined $see_value && $see_value < QUIESCE_SEE_PRUNE_THRESHOLD) {
+        next;  # Skip losing captures
+      }
+    }
+
     my @undo_stack;
     next unless defined $state->do_move($move, \@undo_stack);
     my $score = ($in_check && $depth >= $search_quiesce_limit)
@@ -1682,7 +1704,7 @@ sub _evaluate_board {
 }
 
 sub _search {
-  my ($state, $depth, $alpha, $beta, $ply, $prev_move_key, $prev_was_null, $rep_counts) = @_;
+  my ($state, $depth, $alpha, $beta, $ply, $prev_move_key, $prev_was_null, $rep_counts, $prev_piece, $prev_to) = @_;
   $ply //= 0;
   $prev_was_null = $prev_was_null ? 1 : 0;
   if (!defined $rep_counts || ref($rep_counts) ne 'HASH') {
@@ -1764,6 +1786,16 @@ sub _search {
     }
   }
 
+  # Razoring: skip search if eval is way below alpha at shallow depths
+  if (!$in_check
+    && !$is_pv
+    && $depth <= RAZORING_MAX_DEPTH
+    && defined $static_eval
+    && $static_eval < $alpha - RAZORING_MARGIN_BASE - RAZORING_MARGIN_DEPTH * $depth * $depth)
+  {
+    return (_quiesce($state, $alpha, $beta, 0), undef);
+  }
+
   if (!defined $tt_move_key
     && !$in_check
     && $ply > 0
@@ -1773,7 +1805,7 @@ sub _search {
     my $iid_depth = $depth - $iid_reduction;
     if ($iid_depth > 0) {
       my (undef, $iid_move) = _search(
-        $state, $iid_depth, $alpha, $beta, $ply, $prev_move_key, $prev_was_null, $rep_counts
+        $state, $iid_depth, $alpha, $beta, $ply, $prev_move_key, $prev_was_null, $rep_counts, $prev_piece, $prev_to
       );
       if (defined $iid_move) {
         $tt_move = $iid_move;
@@ -1801,11 +1833,70 @@ sub _search {
       my $null_depth = $depth - 1 - $reduction;
       $null_depth = 0 if $null_depth < 0;
       my $null_rep_key = _rep_push_state($rep_counts, $null_state);
-      my ($null_value) = _search($null_state, $null_depth, -$beta, -$beta + 1, $ply + 1, undef, 1, $rep_counts);
+      my ($null_value) = _search($null_state, $null_depth, -$beta, -$beta + 1, $ply + 1, undef, 1, $rep_counts, undef, undef);
       _rep_pop_key($rep_counts, $null_rep_key);
       $null_value = -$null_value;
-      if ($null_value >= $beta) {
-        return ($null_value, undef);
+      if ($null_value >= $beta && abs($null_value) < (MATE_SCORE - NULL_MOVE_MATE_GUARD)) {
+        # At shallow depths, trust the null move result
+        if ($depth < NULL_MOVE_VERIFY_DEPTH) {
+          return ($null_value, undef);
+        }
+        
+        # At high depths, do verification search to avoid zugzwang errors
+        my $verification_depth = $depth - $reduction - 1;
+        $verification_depth = 1 if $verification_depth < 1;
+        
+        # Search with null move disabled (prev_was_null=1) for verification
+        my ($verification_value) = _search(
+          $state, $verification_depth, $beta - 1, $beta,
+          $ply + 1, $prev_move_key, 1, $rep_counts, $prev_piece, $prev_to
+        );
+        
+        if ($verification_value >= $beta) {
+          return ($null_value, undef);
+        }
+      }
+    }
+  }
+
+  # ProbCut: prune if shallow capture search beats beta by margin
+  my $probcut_beta = $beta + PROBCUT_MARGIN;
+  if (!$in_check
+      && !$is_pv
+      && $depth >= PROBCUT_MIN_DEPTH
+      && abs($beta) < (MATE_SCORE - NULL_MOVE_MATE_GUARD)
+      && $has_non_pawn_material)
+  {
+    # Generate captures with good SEE
+    my $capture_moves = $state->generate_moves_by_type('captures');
+    my $probcut_depth = $depth - PROBCUT_REDUCTION;
+
+    for my $move (@{$capture_moves}) {
+      # Skip captures with bad SEE
+      my $see_value = Chess::See::evaluate_capture(state => $state, move => $move);
+      next unless defined $see_value && $see_value >= $probcut_beta - $static_eval;
+
+      my @undo_stack;
+      my $pc_board = $state->[Chess::State::BOARD];
+      my $pc_from_piece = abs($pc_board->[$move->[0]] // 0);
+      next unless defined $state->do_move($move, \@undo_stack);
+
+      # Do qsearch first to verify the capture holds
+      my $qvalue = -_quiesce($state, -$probcut_beta, -$probcut_beta + 1, 0);
+
+      if ($qvalue >= $probcut_beta && $probcut_depth > 0) {
+        # Verify with reduced search
+        my ($value) = _search(
+          $state, $probcut_depth, -$probcut_beta, -$probcut_beta + 1,
+          $ply + 1, _move_key($move), 0, $rep_counts, $pc_from_piece, $move->[1]
+        );
+        $qvalue = -$value;
+      }
+
+      $state->undo_move(\@undo_stack);
+
+      if ($qvalue >= $probcut_beta) {
+        return ($qvalue, undef);
       }
     }
   }
@@ -1815,9 +1906,22 @@ sub _search {
   $king_idx = _find_piece_idx($parent_board, KING) unless defined $king_idx;
   my %king_ring = map { $_ => 1 } _king_ring_indices($parent_board, $king_idx);
   my @undo_stack;
-  my $move_picker = _new_move_picker($state, $ply, $tt_move_key, $prev_move_key, $tt_move);
+  my $move_picker = _new_move_picker($state, $ply, $tt_move_key, $prev_move_key, $tt_move, $prev_piece, $prev_to);
   while (my $entry = $move_picker->next_move) {
     my ($move, $child_prev_move_key, $is_capture) = @{$entry}[1, 2, 3];
+
+    # SEE-based capture pruning
+    if ($is_capture && !$in_check && !$is_pv && $depth <= SEE_PRUNING_MAX_DEPTH) {
+      my $see_value = Chess::See::evaluate_capture(state => $state, move => $move);
+      if (defined $see_value) {
+        # Calculate margin based on depth
+        my $margin = SEE_PRUNING_MARGIN_BASE * $depth;
+        # Prune clearly losing captures
+        if ($see_value < -$margin) {
+          next;  # Skip this move
+        }
+      }
+    }
     my $board = $state->[Chess::State::BOARD];
     my $from_piece = abs($board->[$move->[0]] // 0);
     my $king_safety_critical = 0;
@@ -1882,8 +1986,10 @@ sub _search {
 
     my $value;
     my $child_rep_key = _rep_push_state($rep_counts, $state);
+    my $child_prev_piece = $from_piece;
+    my $child_prev_to = $move->[1];
     if ($move_index == 0) {
-      ($value) = _search($state, $depth - 1, -$beta, -$alpha, $ply + 1, $child_prev_move_key, 0, $rep_counts);
+      ($value) = _search($state, $depth - 1, -$beta, -$alpha, $ply + 1, $child_prev_move_key, 0, $rep_counts, $child_prev_piece, $child_prev_to);
       $value = -$value;
     } else {
       my $reduction = 0;
@@ -1906,21 +2012,21 @@ sub _search {
       if ($reduction) {
         my $reduced_depth = $depth - 1 - $reduction;
         $reduced_depth = 0 if $reduced_depth < 0;
-        ($value) = _search($state, $reduced_depth, -$alpha - 1, -$alpha, $ply + 1, $child_prev_move_key, 0, $rep_counts);
+        ($value) = _search($state, $reduced_depth, -$alpha - 1, -$alpha, $ply + 1, $child_prev_move_key, 0, $rep_counts, $child_prev_piece, $child_prev_to);
         $value = -$value;
         if ($value > $alpha) {
-          ($value) = _search($state, $depth - 1, -$alpha - 1, -$alpha, $ply + 1, $child_prev_move_key, 0, $rep_counts);
+          ($value) = _search($state, $depth - 1, -$alpha - 1, -$alpha, $ply + 1, $child_prev_move_key, 0, $rep_counts, $child_prev_piece, $child_prev_to);
           $value = -$value;
           if ($value > $alpha && $value < $beta) {
-            ($value) = _search($state, $depth - 1, -$beta, -$alpha, $ply + 1, $child_prev_move_key, 0, $rep_counts);
+            ($value) = _search($state, $depth - 1, -$beta, -$alpha, $ply + 1, $child_prev_move_key, 0, $rep_counts, $child_prev_piece, $child_prev_to);
             $value = -$value;
           }
         }
       } else {
-        ($value) = _search($state, $depth - 1, -$alpha - 1, -$alpha, $ply + 1, $child_prev_move_key, 0, $rep_counts);
+        ($value) = _search($state, $depth - 1, -$alpha - 1, -$alpha, $ply + 1, $child_prev_move_key, 0, $rep_counts, $child_prev_piece, $child_prev_to);
         $value = -$value;
         if ($value > $alpha && $value < $beta) {
-          ($value) = _search($state, $depth - 1, -$beta, -$alpha, $ply + 1, $child_prev_move_key, 0, $rep_counts);
+          ($value) = _search($state, $depth - 1, -$beta, -$alpha, $ply + 1, $child_prev_move_key, 0, $rep_counts, $child_prev_piece, $child_prev_to);
           $value = -$value;
         }
       }
@@ -1960,6 +2066,8 @@ sub _search {
           _store_killer($ply, $child_prev_move_key);
           _update_history($child_prev_move_key, $depth);
           _store_countermove($prev_move_key, $child_prev_move_key);
+          # Update continuation history
+          _update_continuation_history($prev_piece, $prev_to, $from_piece, $move->[1], $depth);
         }
         $state->undo_move(\@undo_stack);
         last;
@@ -2073,17 +2181,15 @@ sub think {
   for my $depth (1 .. $max_depth) {
     last DEPTH_LOOP if $last_completed_depth && _time_up_soft();
     _begin_root_regression_depth();
-    my $alpha = -INF_SCORE;
-    my $beta = INF_SCORE;
-    my $window = ASPIRATION_WINDOW;
     my $iteration_score;
     my $iteration_move;
     my $aspiration_expansions = 0;
 
-    if ($depth >= 3) {
-      $alpha = max(-INF_SCORE, $prev_score - $window);
-      $beta = min(INF_SCORE, $prev_score + $window);
-    }
+    # Aspiration window with iterative widening
+    my $delta = ASPIRATION_WINDOW_INITIAL;
+    my $avg = $prev_score // 0;
+    my $alpha = ($depth >= 3) ? max(-INF_SCORE, $avg - $delta) : -INF_SCORE;
+    my $beta = ($depth >= 3) ? min(INF_SCORE, $avg + $delta) : INF_SCORE;
 
     while (1) {
       my ($score, $move);
@@ -2104,20 +2210,29 @@ sub think {
       $iteration_move = $move if defined $move;
 
       if ($score <= $alpha) {
+        # Fail low - widen window downward
         $aspiration_expansions++;
-        $alpha = max(-INF_SCORE, $alpha - $window);
-        $window *= 2;
+        $beta = $alpha;
+        $alpha = max(-INF_SCORE, $score - $delta);
+        $delta += int($delta / 3);
         last if !$strict_depth && $last_completed_depth && _time_up_soft();
+        last if $aspiration_expansions >= ASPIRATION_WINDOW_MAX_WIDEN;
+        last if $delta > INF_SCORE / 2;
         next;
       }
       if ($score >= $beta) {
+        # Fail high - widen window upward
         $aspiration_expansions++;
-        $beta = min(INF_SCORE, $beta + $window);
-        $window *= 2;
+        $alpha = max($beta - $delta, $alpha);
+        $beta = min(INF_SCORE, $score + $delta);
+        $delta += int($delta / 3);
         last if !$strict_depth && $last_completed_depth && _time_up_soft();
+        last if $aspiration_expansions >= ASPIRATION_WINDOW_MAX_WIDEN;
+        last if $delta > INF_SCORE / 2;
         next;
       }
 
+      # Success - value within window
       last;
     }
 

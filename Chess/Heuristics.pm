@@ -12,6 +12,8 @@ use constant QUIESCE_CHECK_BONUS => 128;                    # Move-order bonus f
 use constant INF_SCORE => 1_000_000;                        # Search infinity sentinel score; [FIXED VALUE].
 use constant MATE_SCORE => 900_000;                         # Mate score base used in negamax bounds; [FIXED VALUE].
 use constant ASPIRATION_WINDOW => 18;                       # Aspiration half-window around prior score; min=12 max=80.
+use constant ASPIRATION_WINDOW_INITIAL => 12;               # Initial aspiration half-window; min=8 max=30.
+use constant ASPIRATION_WINDOW_MAX_WIDEN => 4;              # Max widening iterations before full window; min=2 max=8.
 use constant TT_FLAG_EXACT => 0;                            # Transposition-table exact bound marker; [FIXED VALUE].
 use constant TT_FLAG_LOWER => 1;                            # Transposition-table lower-bound marker; [FIXED VALUE].
 use constant TT_FLAG_UPPER => 2;                            # Transposition-table upper-bound marker; [FIXED VALUE].
@@ -59,6 +61,8 @@ use constant TT_CLUSTER_SIZE => 4;                          # Entries per TT buc
 use constant TT_REPLACE_AGE_WEIGHT => 2;                    # Replacement bias toward newer TT entries; [FIXED VALUE].
 use constant HISTORY_DECAY_FACTOR => 0.85;                  # Decay factor for history heuristic scores; [FIXED VALUE].
 use constant HISTORY_RENORM_MIN_SCALE => 0.02;              # Lower scale threshold for history renormalization; [FIXED VALUE].
+use constant CONTINUATION_HISTORY_WEIGHT => 32;             # Divisor for continuation history in move ordering; [FIXED VALUE].
+use constant CONTINUATION_HISTORY_LIMIT => 16384;           # Max continuation history value; [FIXED VALUE].
 use constant COUNTERMOVE_BONUS => 220;                      # Move-order bonus for learned countermoves; min=80 max=320.
 use constant EASY_MOVE_MIN_DEPTH => 4;                      # Earliest depth where easy-move early-exit is considered; [FIXED VALUE].
 use constant EASY_MOVE_DEPTH_CAP => 5;                      # Depth cap for easy-move shortcut logic; [FIXED VALUE].
@@ -104,12 +108,19 @@ use constant NULL_MOVE_MIN_DEPTH => 3;                      # Minimum depth requ
 use constant NULL_MOVE_REDUCTION => 2;                      # Base depth reduction for null-move pruning; [FIXED VALUE].
 use constant NULL_MOVE_DEEP_DEPTH => 7;                     # Depth where null-move applies extra reduction; [FIXED VALUE].
 use constant NULL_MOVE_MATE_GUARD => 1500;                  # Guard band preventing null-move near mate scores; [FIXED VALUE].
+use constant PROBCUT_MARGIN => 229;                         # ProbCut margin above beta; min=150 max=300.
+use constant PROBCUT_MIN_DEPTH => 3;                        # Minimum depth for ProbCut; min=3 max=5.
+use constant PROBCUT_REDUCTION => 4;                        # Depth reduction for ProbCut search; min=3 max=5.
+use constant NULL_MOVE_VERIFY_DEPTH => 16;                  # Depth threshold for null move verification; min=10 max=20.
 use constant STATIC_NULL_PRUNE_MAX_DEPTH => 6;              # Max depth for static null-move pruning shortcut; min=3 max=10.
 use constant STATIC_NULL_PRUNE_MARGIN_BASE => 120;          # Base margin for static null-move pruning vs beta; min=40 max=260.
 use constant STATIC_NULL_PRUNE_MARGIN_PER_DEPTH => 70;      # Per-depth margin added for static null-move pruning; min=20 max=140.
 use constant RFP_MAX_DEPTH => 5;                            # Max depth for reverse futility pruning; min=2 max=8.
 use constant RFP_MARGIN_BASE => 75;                         # Base reverse-futility margin; min=20 max=180.
 use constant RFP_MARGIN_PER_DEPTH => 55;                    # Per-depth reverse-futility margin; min=15 max=120.
+use constant RAZORING_MAX_DEPTH => 3;                       # Max depth for razoring; [FIXED VALUE].
+use constant RAZORING_MARGIN_BASE => 507;                   # Base razoring margin below alpha; min=200 max=800.
+use constant RAZORING_MARGIN_DEPTH => 312;                  # Per-depth-squared razoring margin; min=100 max=500.
 use constant IID_MIN_DEPTH => 6;                            # Minimum depth to trigger internal iterative deepening; min=4 max=12.
 use constant IID_REDUCTION => 2;                            # Depth reduction used by IID probe search; min=1 max=4.
 use constant UNSAFE_CAPTURE_HANGING_BONUS => 74;            # Capture-risk penalty for exposing hanging pieces; min=8 max=96.
@@ -133,6 +144,8 @@ use constant SEE_ORDER_WEIGHT => 1;                         # Weight of SEE term
 use constant SEE_BAD_CAPTURE_THRESHOLD => 0;                # SEE threshold classifying captures as bad; [FIXED VALUE].
 use constant SEE_PRUNE_THRESHOLD => -30;                    # SEE threshold used to prune clearly losing captures; [FIXED VALUE].
 use constant QUIESCE_SEE_PRUNE_THRESHOLD => -45;            # SEE threshold for pruning clearly losing quiescence captures; min=-120 max=0.
+use constant SEE_PRUNING_MAX_DEPTH => 8;                    # Max depth for SEE-based capture pruning; min=4 max=12.
+use constant SEE_PRUNING_MARGIN_BASE => 20;                 # Per-depth SEE margin for capture pruning; min=10 max=40.
 use constant MAX_ROOT_WORKERS => 64;                        # Maximum parallel root workers supported; [FIXED VALUE].
 use constant MAX_MULTIPV => 16;                             # Maximum MultiPV lines supported; [FIXED VALUE].
 use constant EVAL_CACHE_MAX_ENTRIES => 200_000;             # Eval-cache size limit before reset; [FIXED VALUE].
@@ -228,6 +241,8 @@ our @ENGINE_EXPORTS = qw(
   INF_SCORE
   MATE_SCORE
   ASPIRATION_WINDOW
+  ASPIRATION_WINDOW_INITIAL
+  ASPIRATION_WINDOW_MAX_WIDEN
   TT_FLAG_EXACT
   TT_FLAG_LOWER
   TT_FLAG_UPPER
@@ -275,6 +290,8 @@ our @ENGINE_EXPORTS = qw(
   TT_REPLACE_AGE_WEIGHT
   HISTORY_DECAY_FACTOR
   HISTORY_RENORM_MIN_SCALE
+  CONTINUATION_HISTORY_WEIGHT
+  CONTINUATION_HISTORY_LIMIT
   COUNTERMOVE_BONUS
   EASY_MOVE_MIN_DEPTH
   EASY_MOVE_DEPTH_CAP
@@ -320,9 +337,16 @@ our @ENGINE_EXPORTS = qw(
   NULL_MOVE_REDUCTION
   NULL_MOVE_DEEP_DEPTH
   NULL_MOVE_MATE_GUARD
+  NULL_MOVE_VERIFY_DEPTH
+  PROBCUT_MARGIN
+  PROBCUT_MIN_DEPTH
+  PROBCUT_REDUCTION
   STATIC_NULL_PRUNE_MAX_DEPTH
   STATIC_NULL_PRUNE_MARGIN_BASE
   STATIC_NULL_PRUNE_MARGIN_PER_DEPTH
+  RAZORING_MAX_DEPTH
+  RAZORING_MARGIN_BASE
+  RAZORING_MARGIN_DEPTH
   RFP_MAX_DEPTH
   RFP_MARGIN_BASE
   RFP_MARGIN_PER_DEPTH
@@ -349,6 +373,8 @@ our @ENGINE_EXPORTS = qw(
   SEE_BAD_CAPTURE_THRESHOLD
   SEE_PRUNE_THRESHOLD
   QUIESCE_SEE_PRUNE_THRESHOLD
+  SEE_PRUNING_MAX_DEPTH
+  SEE_PRUNING_MARGIN_BASE
   MAX_ROOT_WORKERS
   MAX_MULTIPV
   EVAL_CACHE_MAX_ENTRIES

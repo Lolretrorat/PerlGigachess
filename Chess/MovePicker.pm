@@ -353,6 +353,7 @@ sub new {
     history_scale                => 1.0,
     killer_moves                 => [],
     counter_moves                => \@counter_moves,
+    continuation_history         => {},
     piece_values                 => $opts{piece_values} || {},
     location_modifier_percent_cb => $opts{location_modifier_percent_cb},
     square_of_idx_cb             => $opts{square_of_idx_cb},
@@ -412,6 +413,24 @@ sub countermove_bonus {
   return $move_key == $counter ? COUNTERMOVE_BONUS : 0;
 }
 
+sub get_continuation_bonus {
+  my ($self, $prev_piece, $prev_to, $piece, $to) = @_;
+  return 0 unless defined $prev_piece && defined $prev_to;
+  my $key = "$prev_piece:$prev_to:$piece:$to";
+  return $self->{continuation_history}{$key} // 0;
+}
+
+sub update_continuation_history {
+  my ($self, $prev_piece, $prev_to, $piece, $to, $bonus) = @_;
+  return unless defined $prev_piece && defined $prev_to;
+  my $key = "$prev_piece:$prev_to:$piece:$to";
+  my $current = $self->{continuation_history}{$key} // 0;
+  # Gravity update: new = old + bonus - old * |bonus| / D
+  my $D = CONTINUATION_HISTORY_LIMIT;
+  my $clamped = $bonus > $D ? $D : ($bonus < -$D ? -$D : $bonus);
+  $self->{continuation_history}{$key} = $current + $clamped - int($current * abs($clamped) / $D);
+}
+
 sub store_killer {
   my ($self, $ply, $move_key) = @_;
   $self->{killer_moves}[$ply] ||= [];
@@ -454,7 +473,8 @@ sub decay_history {
 }
 
 sub score_move {
-  my ($self, $state, $move, $move_key, $is_capture, $ply, $tt_move_key, $prev_move_key) = @_;
+  my ($self, $state, $move, $move_key, $is_capture, $ply, $tt_move_key, $prev_move_key, $opts) = @_;
+  $opts = {} unless ref($opts) eq 'HASH';
   my $board = $state->[0];  # BOARD index
   my $from_piece = $board->[$move->[0]] || 0;
   my $to_piece = $board->[$move->[1]] || 0;
@@ -503,6 +523,13 @@ sub score_move {
     $score += $self->history_bonus($move_key);
     $score += $self->killer_bonus($move_key, $ply);
     $score += $self->countermove_bonus($move_key, $prev_move_key);
+    # Continuation history bonus
+    if (defined $opts->{prev_piece} && defined $opts->{prev_to}) {
+      my $cont_bonus = $self->get_continuation_bonus(
+        $opts->{prev_piece}, $opts->{prev_to}, $from_piece, $move->[1]
+      );
+      $score += int($cont_bonus / CONTINUATION_HISTORY_WEIGHT);
+    }
   } elsif (ref($self->{is_sac_candidate_move_cb}) eq 'CODE' && $self->{is_sac_candidate_move_cb}->($state, $move)) {
     $score -= SAC_MOVE_ORDER_PENALTY;
   }
