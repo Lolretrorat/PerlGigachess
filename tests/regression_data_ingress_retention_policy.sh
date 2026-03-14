@@ -100,8 +100,7 @@ EOF
   cat > "$root/mock_python.sh" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
-printf 'DO_DATA_SCIENCE=%s\n' "\${DO_DATA_SCIENCE:-}" > "$env_log"
-printf 'ENGINE_TRAINING_CLEAR_GAME_URL_LOG=%s\n' "\${ENGINE_TRAINING_CLEAR_GAME_URL_LOG:-}" >> "$env_log"
+printf 'ENGINE_TRAINING_CLEAR_GAME_URL_LOG=%s\n' "\${ENGINE_TRAINING_CLEAR_GAME_URL_LOG:-}" > "$env_log"
 mkdir -p "$bundle_dir"
 EOF
   chmod +x "$root/mock_python.sh"
@@ -116,33 +115,67 @@ EOF
   )
 
   assert_contains "$env_log" "ENGINE_TRAINING_CLEAR_GAME_URL_LOG=0"
-  assert_contains "$env_log" "DO_DATA_SCIENCE="
 }
 
-run_data_science_wrapper_checks() {
-  local root="$TMP_ROOT/data_science"
-  local args_log="$root/data_science_args.log"
+run_giga_wrapper_checks() {
+  local root="$TMP_ROOT/giga"
+  local engine_log="$root/giga_engine_args.log"
+  local validation_log="$root/giga_validation_args.log"
   mkdir -p "$root"
 
-  cp "$ROOT_DIR/DO_DATA_SCIENCE.sh" "$root/DO_DATA_SCIENCE.sh"
-  cat > "$root/DO_PARAMATER_EXTRACTION.sh" <<'EOF'
+  cp "$ROOT_DIR/DO_GIGA_DATA_PROCESSING.sh" "$root/DO_GIGA_DATA_PROCESSING.sh"
+  cat > "$root/DO_ENGINE_PIPELINE.sh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
-printf 'DO_DATA_SCIENCE=%s\n' "${DO_DATA_SCIENCE:-}" > "$DATA_SCIENCE_ARGS_LOG"
-printf 'ENGINE_TRAINING_CLEAR_GAME_URL_LOG=%s\n' "${ENGINE_TRAINING_CLEAR_GAME_URL_LOG:-}" >> "$DATA_SCIENCE_ARGS_LOG"
-printf 'ARGS=%s\n' "$*" >> "$DATA_SCIENCE_ARGS_LOG"
+printf '%s\n' "$@" > "$GIGA_ENGINE_ARGS_LOG"
 EOF
-  chmod +x "$root/DO_PARAMATER_EXTRACTION.sh"
+  chmod +x "$root/DO_ENGINE_PIPELINE.sh"
+  cat > "$root/DO_LOCATION_MODIFIER.sh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$@" > "$GIGA_LOCATION_ARGS_LOG"
+EOF
+  chmod +x "$root/DO_LOCATION_MODIFIER.sh"
 
   (
     cd "$root"
-    DATA_SCIENCE_ARGS_LOG="$args_log" \
-      ./DO_DATA_SCIENCE.sh --engine-training --python /bin/sh --max-games 12
+    GIGA_ENGINE_ARGS_LOG="$engine_log" \
+    GIGA_LOCATION_ARGS_LOG="$validation_log" \
+      ./DO_GIGA_DATA_PROCESSING.sh --max-games 12
   )
+  assert_not_contains "$engine_log" "--clear-url-log"
+  assert_contains "$engine_log" "--include-location-ingress"
+  assert_contains "$validation_log" "--skip-ingress"
 
-  assert_contains "$args_log" "DO_DATA_SCIENCE=1"
-  assert_contains "$args_log" "ENGINE_TRAINING_CLEAR_GAME_URL_LOG=1"
-  assert_contains "$args_log" "ARGS=--clear-url-log --max-games 12"
+  (
+    cd "$root"
+    GIGA_ENGINE_ARGS_LOG="$engine_log" \
+    GIGA_LOCATION_ARGS_LOG="$validation_log" \
+      ./DO_GIGA_DATA_PROCESSING.sh --consume-own-urls --max-games 12
+  )
+  assert_contains "$engine_log" "--clear-url-log"
+  assert_contains "$engine_log" "--max-games"
+  assert_contains "$engine_log" "12"
+
+  if (
+    cd "$root"
+    GIGA_ENGINE_ARGS_LOG="$engine_log" \
+    GIGA_LOCATION_ARGS_LOG="$validation_log" \
+      ./DO_GIGA_DATA_PROCESSING.sh --month 2026-01 --consume-own-urls
+  ); then
+    echo "Expected --consume-own-urls without --with-own-urls to fail" >&2
+    exit 1
+  fi
+
+  (
+    cd "$root"
+    GIGA_ENGINE_ARGS_LOG="$engine_log" \
+    GIGA_LOCATION_ARGS_LOG="$validation_log" \
+      ./DO_GIGA_DATA_PROCESSING.sh --month 2026-01 --with-own-urls --consume-own-urls
+  )
+  assert_contains "$engine_log" "--month"
+  assert_contains "$engine_log" "2026-01"
+  assert_contains "$engine_log" "--clear-url-log"
 }
 
 check_notebook_contract() {
@@ -164,16 +197,14 @@ location_text = "\n".join(
     for cell in location.get("cells", [])
 )
 
-assert 'DO_DATA_SCIENCE = _env_bool("DO_DATA_SCIENCE", False)' in engine_text
-assert 'CLEAR_GAME_URL_LOG_AFTER_CONSUME = _env_bool("ENGINE_TRAINING_CLEAR_GAME_URL_LOG", DO_DATA_SCIENCE)' in engine_text
-assert 'DO_DATA_SCIENCE = _env_bool("DO_DATA_SCIENCE", False)' in location_text
-assert 'CLEAR_GAME_URL_LOG_AFTER_CONSUME = _env_bool("LOCATION_TRAINING_CLEAR_GAME_URL_LOG", DO_DATA_SCIENCE)' in location_text
+assert 'ENGINE_TRAINING_CLEAR_GAME_URL_LOG' in engine_text
+assert 'LOCATION_TRAINING_CLEAR_GAME_URL_LOG' in location_text
 PY
 }
 
 run_location_wrapper_checks
 run_parameter_wrapper_checks
-run_data_science_wrapper_checks
+run_giga_wrapper_checks
 check_notebook_contract
 
-echo "Data ingress retention regression OK: standard wrappers retain URLs, DO_DATA_SCIENCE clears explicitly"
+echo "Data ingress retention regression OK: standard wrappers retain URLs, DO_GIGA_DATA_PROCESSING consumes explicitly"
