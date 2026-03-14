@@ -1170,9 +1170,21 @@ sub _new_move_picker {
   my ($state, $ply, $tt_move_key, $prev_move_key, $tt_move) = @_;
   my $killer_move_keys = $move_order->{killer_moves}[$ply] || [];
   my $countermove_key = defined $prev_move_key ? $move_order->{counter_moves}[$prev_move_key] : undef;
+  my %exclude_move_keys;
+  my @tt_moves;
 
   if (defined $tt_move && !defined $tt_move_key) {
     $tt_move_key = _move_key($tt_move);
+  }
+  if (defined $tt_move) {
+    push @tt_moves, $tt_move;
+    $exclude_move_keys{$tt_move_key} = 1 if defined $tt_move_key;
+  } elsif (defined $tt_move_key) {
+    my $resolved_tt_move = _find_move_by_key($state, $tt_move_key);
+    if (defined $resolved_tt_move) {
+      push @tt_moves, $resolved_tt_move;
+      $exclude_move_keys{$tt_move_key} = 1;
+    }
   }
 
   my $move_gen_opts = {
@@ -1199,6 +1211,23 @@ sub _new_move_picker {
     score_cb => sub {
       my ($move, $move_key, $is_capture) = @_;
       return _move_order_score($state, $move, $move_key, $is_capture, $ply, $tt_move_key, $prev_move_key);
+    },
+  );
+}
+
+sub _new_quiesce_capture_picker {
+  my ($state) = @_;
+  return Chess::MovePicker->new(
+    state => $state,
+    moves => $state->generate_moves_by_type('captures'),
+    see_order_weight => SEE_ORDER_WEIGHT,
+    see_bad_capture_threshold => SEE_BAD_CAPTURE_THRESHOLD,
+    see_prune_threshold => QUIESCE_SEE_PRUNE_THRESHOLD,
+    move_key_cb => \&_move_key,
+    is_capture_cb => sub { return 1; },
+    score_cb => sub {
+      my ($move, $move_key, $is_capture) = @_;
+      return _move_order_score($state, $move, $move_key, $is_capture, 0);
     },
   );
 }
@@ -1850,7 +1879,6 @@ sub _search {
     {
       $state->undo_move(\@undo_stack);
       $move_index++;
-      $state->undo_move(\@undo_stack);
       next;
     }
 
@@ -1882,34 +1910,12 @@ sub _search {
         $reduced_depth = 0 if $reduced_depth < 0;
         ($value) = _search($state, $reduced_depth, -$alpha - 1, -$alpha, $ply + 1, $child_prev_move_key, 0, $rep_counts);
         $value = -$value;
-      } else {
-        my $reduction = 0;
-        if (! $in_check
-          && $depth >= 4
-          && $move_index >= 3
-          && !defined $move->[2]
-          && !defined $move->[3]
-          && ! $is_capture
-          && ! $gives_check
-          && ! $quiet_hanging_move
-          && ! $king_safety_critical
-          && ! $tactical_queen_move
-          && $own_king_danger < LMR_KING_DANGER_THRESHOLD)
-        {
-          $reduction = 1;
-          $reduction = 2 if $depth >= 6 && $move_index >= 8;
-        }
-
         if ($value > $alpha) {
           ($value) = _search($state, $depth - 1, -$alpha - 1, -$alpha, $ply + 1, $child_prev_move_key, 0, $rep_counts);
           $value = -$value;
           if ($value > $alpha && $value < $beta) {
             ($value) = _search($state, $depth - 1, -$beta, -$alpha, $ply + 1, $child_prev_move_key, 0, $rep_counts);
             $value = -$value;
-            if ($value > $alpha && $value < $beta) {
-              ($value) = _search($state, $depth - 1, -$beta, -$alpha, $ply + 1, $child_prev_move_key, 0, $rep_counts);
-              $value = -$value;
-            }
           }
         }
       } else {
@@ -1918,17 +1924,10 @@ sub _search {
         if ($value > $alpha && $value < $beta) {
           ($value) = _search($state, $depth - 1, -$beta, -$alpha, $ply + 1, $child_prev_move_key, 0, $rep_counts);
           $value = -$value;
-          if ($value > $alpha && $value < $beta) {
-            ($value) = _search($state, $depth - 1, -$beta, -$alpha, $ply + 1, $child_prev_move_key, 0, $rep_counts);
-            $value = -$value;
-          }
         }
       }
-      1;
-    };
+    }
     _rep_pop_key($rep_counts, $child_rep_key);
-    $state->undo_move(\@undo_stack);
-    die $@ unless $ok;
     $move_index++;
     if ($quiet_hanging_move) {
       $value -= _hanging_move_penalty($state, $move);
