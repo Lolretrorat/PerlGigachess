@@ -1740,6 +1740,10 @@ sub _reorder_candidates_for_repetition {
     push @scored, [ $idx, $score, $uci, $visits_after, $is_capture, $gives_check, $is_promo ];
   }
 
+  # Only apply repetition guard if at least one move would create a repeated position
+  my $has_repetition_pressure = grep { $_->[3] >= 2 } @scored;
+  return @$candidates_ref unless $has_repetition_pressure;
+
   my @ordered = map { $_->[2] } sort {
     $b->[1] <=> $a->[1] || $a->[0] <=> $b->[0]
   } @scored;
