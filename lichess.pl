@@ -45,6 +45,16 @@ eval {
 my $loaded_as_library = caller ? 1 : 0;
 load_env("$RealBin/.env");
 
+sub _env_int_range {
+  my ($name, $default, $min, $max) = @_;
+  my $value = $ENV{$name};
+  $value = $default unless defined $value && $value =~ /^-?\d+$/;
+  $value = int($value);
+  $value = $min if defined $min && $value < $min;
+  $value = $max if defined $max && $value > $max;
+  return $value;
+}
+
 my $dry_run = $ENV{LICHESS_DRY_RUN} ? 1 : 0;
 my $token = $ENV{LICHESS_TOKEN} // '';
 my $engine_cmd = $ENV{LICHESS_ENGINE_CMD} // "$^X $RealBin/play.pl --uci";
@@ -257,6 +267,8 @@ $eval_drop_extra_think_mult += 0;
 $eval_drop_extra_think_mult = 1.0 if $eval_drop_extra_think_mult < 1.0;
 $eval_drop_extra_think_mult = 3.0 if $eval_drop_extra_think_mult > 3.0;
 
+my $rethink_depth_bump = _env_int_range('LICHESS_RETHINK_DEPTH_BUMP', 1, 0, 4);
+
 my $develop_depth_bump = $ENV{LICHESS_DEVELOP_DEPTH_BUMP};
 if (!defined $develop_depth_bump || $develop_depth_bump !~ /^-?\d+$/) {
   $develop_depth_bump = $is_develop_branch ? 1 : 0;
@@ -303,18 +315,18 @@ my %socket_read_buffers;
 my $http_request_sock;
 my $http_request_sock_pid = $$;
 my %speed_depth_targets = (
-  bullet    => 11,
-  blitz     => 13,
-  rapid     => 5,
-  classical => 17,
-  unlimited => 18,
+  bullet    => _env_int_range('LICHESS_DEPTH_TARGET_BULLET', 10, 1, 20),
+  blitz     => _env_int_range('LICHESS_DEPTH_TARGET_BLITZ', 12, 1, 20),
+  rapid     => _env_int_range('LICHESS_DEPTH_TARGET_RAPID', 14, 1, 20),
+  classical => _env_int_range('LICHESS_DEPTH_TARGET_CLASSICAL', 16, 1, 20),
+  unlimited => _env_int_range('LICHESS_DEPTH_TARGET_UNLIMITED', 18, 1, 20),
 );
 my %speed_horizon_targets = (
-  bullet    => 72,
-  blitz     => 56,
-  rapid     => 40,
-  classical => 30,
-  unlimited => 26,
+  bullet    => _env_int_range('LICHESS_MOVESTOGO_TARGET_BULLET', 72, 8, 100),
+  blitz     => _env_int_range('LICHESS_MOVESTOGO_TARGET_BLITZ', 56, 8, 100),
+  rapid     => _env_int_range('LICHESS_MOVESTOGO_TARGET_RAPID', 40, 8, 100),
+  classical => _env_int_range('LICHESS_MOVESTOGO_TARGET_CLASSICAL', 30, 8, 100),
+  unlimited => _env_int_range('LICHESS_MOVESTOGO_TARGET_UNLIMITED', 26, 8, 100),
 );
 
 unless (caller) {
@@ -958,7 +970,7 @@ sub play_game {
     engine_depth_min      => $engine_meta->{depth_min},
     engine_depth_max      => $engine_meta->{depth_max},
     engine_depth_default  => $engine_meta->{depth_default},
-    engine_depth          => $engine_meta->{depth_default},
+    engine_depth          => undef,
   );
   log_debug("Opening game stream for $game_id");
   my $buffer = '';
@@ -1383,7 +1395,7 @@ sub _rethink_with_multiplier {
     $state,
     {
       movetime_multiplier => $multiplier,
-      depth_bump => 1,
+      depth_bump => $rethink_depth_bump,
       reason => $reason,
     },
   );
@@ -1807,8 +1819,7 @@ sub _reorder_candidates_for_repetition {
       }
     }
 
-    my $target = $board->[$encoded->[1]] // 0;
-    my $is_capture = $target < 0 ? 1 : 0;
+    my $is_capture = _is_capture_move($state, $encoded) ? 1 : 0;
     my $is_pawn_advance = _is_pawn_advance_move($state, $encoded) ? 1 : 0;
     my $is_promo = length($uci) > 4 ? 1 : 0;
     if ($policy eq 'seek') {
@@ -2004,6 +2015,24 @@ sub _is_simple_backtrack {
     && substr($candidate, 2, 2) eq substr($last, 0, 2);
 }
 
+sub _is_capture_move {
+  my ($state, $move) = @_;
+  return 0 unless ref($state) && ref($move) eq 'ARRAY';
+  my $board = $state->[Chess::State::BOARD];
+  return 0 unless ref $board eq 'ARRAY';
+
+  my $target = $board->[$move->[1]] // 0;
+  return 1 if $target < 0;
+
+  my $from_piece = $board->[$move->[0]] // 0;
+  return 0 unless abs($from_piece) == 1;
+  my $ep = $state->[Chess::State::EP];
+  return 0 unless defined $ep && $move->[1] == $ep;
+
+  my $delta = $move->[1] - $move->[0];
+  return ($delta == 9 || $delta == 11) ? 1 : 0;
+}
+
 sub _is_pawn_advance_move {
   my ($state, $move) = @_;
   return 0 unless ref($state) && ref($move) eq 'ARRAY';
@@ -2011,9 +2040,8 @@ sub _is_pawn_advance_move {
   return 0 unless ref $board eq 'ARRAY';
   my $from_piece = $board->[$move->[0]] // 0;
   return 0 unless abs($from_piece) == 1;
-  my $from_rank = int($move->[0] / 10);
-  my $to_rank = int($move->[1] / 10);
-  return $to_rank > $from_rank ? 1 : 0;
+  my $delta = $move->[1] - $move->[0];
+  return ($delta == 10 || $delta == 20) ? 1 : 0;
 }
 
 sub _engine_contender_moves {
@@ -2027,8 +2055,12 @@ sub _engine_contender_moves {
     map {
       my $move = $_;
       my $score = 0;
-      my $target = $board->[$move->[1]] // 0;
-      $score += 1000 + (10 * abs($target)) if $target < 0;
+      if (_is_capture_move($state, $move)) {
+        my $target = $board->[$move->[1]] // 0;
+        my $victim_value = abs($target);
+        $victim_value = 1 if !$victim_value && abs(($board->[$move->[0]] // 0)) == 1;
+        $score += 1000 + (10 * $victim_value);
+      }
       $score += 250 if defined $move->[2];
       $score += 50 if defined $move->[3];
       [ $score, $move ];
@@ -2233,7 +2265,7 @@ sub _syzygy_ready {
 
 sub _movetime_for_game_ms {
   my ($game, $state) = @_;
-  my $allow_forced_movetime = !$loaded_as_library || $ENV{LICHESS_ALLOW_FORCED_MOVETIME_IN_LIBRARY};
+  my $allow_forced_movetime = $ENV{LICHESS_ALLOW_FORCED_MOVETIME} ? 1 : 0;
   if ($allow_forced_movetime
     && defined $ENV{LICHESS_MOVETIME_MS}
     && $ENV{LICHESS_MOVETIME_MS} =~ /^\d+$/)
@@ -2439,6 +2471,61 @@ sub _movetime_for_game_ms {
   return $budget_ms;
 }
 
+sub _clock_go_movestogo_for_game {
+  my ($game, $state) = @_;
+  return unless ref $game eq 'HASH';
+  my $speed = normalize_speed($game->{speed}) // '';
+  my $movestogo = $speed_horizon_targets{$speed};
+  $movestogo = 34 unless defined $movestogo && $movestogo =~ /^\d+$/;
+
+  my $plies = _opening_ply_count($game);
+  if ($plies >= 8 && $speed ne 'bullet') {
+    $movestogo = int($movestogo * 0.88);
+  } elsif ($plies <= 6) {
+    $movestogo += 4;
+  }
+
+  my $piece_count = _state_piece_count($state);
+  if (defined $piece_count) {
+    if ($piece_count <= 14) {
+      $movestogo = int($movestogo * 0.86);
+    }
+    if ($piece_count <= 10) {
+      $movestogo = int($movestogo * 0.78);
+    }
+    if ($piece_count <= _syzygy_max_pieces() && _syzygy_ready()) {
+      $movestogo = int($movestogo * 0.72);
+    }
+  }
+
+  $movestogo = 8 if $movestogo < 8;
+  $movestogo = 80 if $movestogo > 80;
+  return $movestogo;
+}
+
+sub _clock_go_command_for_game {
+  my ($game, $state, $depth) = @_;
+  return unless ref $game eq 'HASH';
+
+  my @go = ('go');
+  if (defined $depth && $depth =~ /^-?\d+$/) {
+    my $target = int($depth);
+    $target = 1 if $target < 1;
+    $target = 20 if $target > 20;
+    push @go, ('depth', $target);
+  }
+
+  for my $field (qw(wtime btime winc binc)) {
+    next unless defined $game->{$field} && $game->{$field} =~ /^\d+$/;
+    push @go, ($field, int($game->{$field}));
+  }
+
+  my $movestogo = _clock_go_movestogo_for_game($game, $state);
+  push @go, ('movestogo', $movestogo) if defined $movestogo;
+
+  return join(' ', @go);
+}
+
 sub _set_engine_depth {
   my ($game, $engine_out, $engine_in, $target, $reason) = @_;
   return unless ref $game eq 'HASH';
@@ -2474,7 +2561,6 @@ sub _effective_engine_depth_for_game {
   return unless ref $game eq 'HASH';
 
   my $depth = $game->{engine_depth};
-  $depth = $game->{engine_depth_default} if !defined $depth;
   return unless defined $depth && $depth =~ /^-?\d+$/;
 
   my $min_depth = defined $game->{engine_depth_min} ? int($game->{engine_depth_min}) : 1;
@@ -2530,15 +2616,8 @@ sub maybe_apply_speed_depth {
   my $speed = normalize_speed($game->{speed});
   return unless defined $speed && exists $speed_depth_targets{$speed};
 
-  my $target = $speed_depth_targets{$speed};
+  my $target = _speed_target_depth_for_game($game);
   return unless defined $target;
-  if ($is_develop_branch && $develop_depth_bump > 0) {
-    $target += $develop_depth_bump;
-  }
-  my $current_depth = $game->{engine_depth};
-  $current_depth = $game->{engine_depth_default} if !defined $current_depth;
-  return if defined $current_depth && $current_depth == $target;
-
   return _set_engine_depth($game, $engine_out, $engine_in, $target, $speed);
 }
 
@@ -2631,40 +2710,44 @@ sub compute_bestmove {
     $depth = 20 if $depth > 20;
     $go = "go depth $depth";
   } else {
-    my $movetime = _movetime_for_game_ms($game, $state);
-    if (defined $opts->{movetime_multiplier} && $opts->{movetime_multiplier} =~ /^\d+(?:\.\d+)?$/) {
-      my $mult = $opts->{movetime_multiplier} + 0;
-      $mult = 1.0 if $mult < 1.0;
-      $mult = 3.0 if $mult > 3.0;
-      my $boosted = int($movetime * $mult);
-      my ($remaining_ms, $inc_ms) = _clock_for_side_ms($game);
-      if (defined $remaining_ms && defined $inc_ms) {
-        my $cap = int(($remaining_ms * 0.45) + ($inc_ms * 2));
-        $cap = $remaining_ms - 200 if $cap > ($remaining_ms - 200);
-        $cap = 80 if $cap < 80;
-        $boosted = $cap if $boosted > $cap;
-      }
-      $movetime = $boosted if $boosted > $movetime;
-    }
-    if (defined $opts->{movetime_floor_ms} && $opts->{movetime_floor_ms} =~ /^\d+$/) {
-      my $floor = int($opts->{movetime_floor_ms});
-      $movetime = $floor if $floor > $movetime;
-    }
-    my $go_depth = _bumped_engine_depth_for_game($game, $bumped_depth);
-    if (!defined $go_depth) {
-      $go_depth = _speed_target_depth_for_game($game);
-      if (defined $go_depth && defined $bumped_depth) {
-        $go_depth += $bumped_depth;
-        my $min_depth = defined $game->{engine_depth_min} ? int($game->{engine_depth_min}) : 1;
-        my $max_depth = defined $game->{engine_depth_max} ? int($game->{engine_depth_max}) : 20;
-        $go_depth = $min_depth if $go_depth < $min_depth;
-        $go_depth = $max_depth if $go_depth > $max_depth;
-      }
-    }
-    if (defined $go_depth) {
-      $go = "go depth $go_depth movetime $movetime";
+    my ($remaining_ms) = _clock_for_side_ms($game);
+    my $use_clock_go = defined $remaining_ms
+      && !defined $opts->{movetime_multiplier}
+      && !defined $opts->{movetime_floor_ms};
+
+    if ($use_clock_go) {
+      my $go_depth = defined $bumped_depth
+        ? _bumped_engine_depth_for_game($game, $bumped_depth)
+        : undef;
+      $go = _clock_go_command_for_game($game, $state, $go_depth);
     } else {
-      $go = "go movetime $movetime";
+      my $movetime = _movetime_for_game_ms($game, $state);
+      if (defined $opts->{movetime_multiplier} && $opts->{movetime_multiplier} =~ /^\d+(?:\.\d+)?$/) {
+        my $mult = $opts->{movetime_multiplier} + 0;
+        $mult = 1.0 if $mult < 1.0;
+        $mult = 3.0 if $mult > 3.0;
+        my $boosted = int($movetime * $mult);
+        my ($clock_ms, $inc_ms) = _clock_for_side_ms($game);
+        if (defined $clock_ms && defined $inc_ms) {
+          my $cap = int(($clock_ms * 0.45) + ($inc_ms * 2));
+          $cap = $clock_ms - 200 if $cap > ($clock_ms - 200);
+          $cap = 80 if $cap < 80;
+          $boosted = $cap if $boosted > $cap;
+        }
+        $movetime = $boosted if $boosted > $movetime;
+      }
+      if (defined $opts->{movetime_floor_ms} && $opts->{movetime_floor_ms} =~ /^\d+$/) {
+        my $floor = int($opts->{movetime_floor_ms});
+        $movetime = $floor if $floor > $movetime;
+      }
+      my $go_depth = defined $bumped_depth
+        ? _bumped_engine_depth_for_game($game, $bumped_depth)
+        : undef;
+      if (defined $go_depth) {
+        $go = "go depth $go_depth movetime $movetime";
+      } else {
+        $go = "go movetime $movetime";
+      }
     }
   }
   print {$engine_in} "$go\n";

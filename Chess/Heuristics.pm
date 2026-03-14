@@ -81,6 +81,10 @@ use constant SAC_EXTRA_TIME_SHARE => 0.10; # Budget share used for sac-candidate
 use constant SAC_EXTRA_TIME_MAX_MS => 260; # Max milliseconds added for sac-candidate extension; [FIXED VALUE].
 use constant ROOT_NEAR_TIE_DELTA => 10; # Root score gap considered a near tie; [FIXED VALUE].
 use constant ROOT_CLEAR_BEST_DELTA => 24; # Root score gap considered a clear best; [FIXED VALUE].
+use constant ROOT_SCORE_DROP_THRESHOLD_CP => 45; # Root candidate score-drop threshold before applying a regression penalty; min=10 max=180.
+use constant ROOT_SCORE_DROP_PENALTY_SCALE => 0.45; # Penalty scale applied to root candidates whose score collapses between iterations; min=0.1 max=1.5.
+use constant ROOT_SCORE_DROP_MAX_PENALTY_CP => 120; # Max root regression penalty applied to a collapsing candidate line; min=20 max=300.
+use constant ROOT_SCORE_DROP_MIN_DEPTH => 4; # Minimum iterative depth before root regression penalties activate; min=2 max=10.
 use constant DEVELOPMENT_MINOR_PENALTY => 4; # Opening penalty per undeveloped minor piece; min=1 max=10.
 use constant EARLY_ROOK_MOVE_PENALTY => 3; # Opening penalty for early rook moves; min=1 max=10.
 use constant EARLY_QUEEN_MOVE_PENALTY => 6; # Opening penalty for early queen sorties; min=1 max=14.
@@ -134,6 +138,25 @@ use constant MAX_MULTIPV => 16; # Maximum MultiPV lines supported; [FIXED VALUE]
 use constant EVAL_CACHE_MAX_ENTRIES => 200_000; # Eval-cache size limit before reset; [FIXED VALUE].
 use constant PASSED_PAWN_BONUS_BY_RANK => [0, 0, 0, 2, 4, 7, 11, 16, 0]; # Passed-pawn bonus table by rank index; [FIXED VALUE].
 use constant ENEMY_PASSED_PAWN_PENALTY_BY_RANK => [0, 0, 17, 12, 8, 5, 3, 2, 0]; # Enemy passed-pawn penalty table by rank index; [FIXED VALUE].
+use constant PAWN_ISOLATED_PENALTY => 4; # Penalty for isolated pawns lacking neighboring pawn support; min=1 max=10.
+use constant PAWN_DOUBLED_PENALTY => 3; # Penalty for doubled pawns on the same file; min=1 max=10.
+use constant PAWN_CONNECTED_BONUS => 2; # Bonus for connected pawns supporting each other; min=0 max=8.
+use constant PAWN_CANDIDATE_BONUS => 3; # Bonus for candidate passers with clear advance potential; min=0 max=10.
+use constant PAWN_ISLAND_PENALTY => 2; # Penalty per extra pawn island beyond the first; min=0 max=6.
+use constant KNIGHT_MOBILITY_BONUS => 1; # Bonus per safe knight mobility square; min=0 max=4.
+use constant BISHOP_MOBILITY_BONUS => 1; # Bonus per bishop mobility square; min=0 max=4.
+use constant ROOK_MOBILITY_BONUS => 1; # Bonus per rook mobility square; min=0 max=4.
+use constant QUEEN_MOBILITY_BONUS => 1; # Bonus per queen mobility square; min=0 max=3.
+use constant BISHOP_PAIR_BONUS => 8; # Bonus for owning the bishop pair; min=0 max=20.
+use constant KNIGHT_OUTPOST_BONUS => 5; # Bonus for a protected knight outpost that enemy pawns cannot chase; min=0 max=16.
+use constant ROOK_OPEN_FILE_BONUS => 6; # Bonus for rooks on fully open files; min=0 max=16.
+use constant ROOK_SEMIOPEN_FILE_BONUS => 3; # Bonus for rooks on semi-open files; min=0 max=12.
+use constant ROOK_SEVENTH_RANK_BONUS => 4; # Bonus for active rooks on the seventh rank; min=0 max=12.
+use constant THREAT_ATTACK_BONUS => 4; # Bonus for safe attacks on loose or weakly defended enemy pieces; min=0 max=16.
+use constant THREAT_SAFE_CHECK_BONUS => 8; # Bonus for safe checking pressure in the static evaluation; min=0 max=24.
+use constant KING_DANGER_ATTACK_UNIT_PENALTY => 2; # Extra king-danger penalty per quality attacking unit near the king; min=0 max=8.
+use constant ENDGAME_KING_CENTER_BONUS => 2; # Endgame bonus for centralizing the king; min=0 max=8.
+use constant ENDGAME_PASSED_PAWN_BONUS => 3; # Endgame bonus for supporting our advanced passers / restraining enemy ones; min=0 max=12.
 use constant HANGING_PIECE_PENALTY => {
   KNIGHT() => 6, # Piece-specific hanging penalty for knights; [FIXED VALUE].
   BISHOP() => 6, # Piece-specific hanging penalty for bishops; [FIXED VALUE].
@@ -274,6 +297,10 @@ our @ENGINE_EXPORTS = qw(
   SAC_EXTRA_TIME_MAX_MS
   ROOT_NEAR_TIE_DELTA
   ROOT_CLEAR_BEST_DELTA
+  ROOT_SCORE_DROP_THRESHOLD_CP
+  ROOT_SCORE_DROP_PENALTY_SCALE
+  ROOT_SCORE_DROP_MAX_PENALTY_CP
+  ROOT_SCORE_DROP_MIN_DEPTH
   DEVELOPMENT_MINOR_PENALTY
   EARLY_ROOK_MOVE_PENALTY
   EARLY_QUEEN_MOVE_PENALTY
@@ -327,6 +354,25 @@ our @ENGINE_EXPORTS = qw(
   EVAL_CACHE_MAX_ENTRIES
   PASSED_PAWN_BONUS_BY_RANK
   ENEMY_PASSED_PAWN_PENALTY_BY_RANK
+  PAWN_ISOLATED_PENALTY
+  PAWN_DOUBLED_PENALTY
+  PAWN_CONNECTED_BONUS
+  PAWN_CANDIDATE_BONUS
+  PAWN_ISLAND_PENALTY
+  KNIGHT_MOBILITY_BONUS
+  BISHOP_MOBILITY_BONUS
+  ROOK_MOBILITY_BONUS
+  QUEEN_MOBILITY_BONUS
+  BISHOP_PAIR_BONUS
+  KNIGHT_OUTPOST_BONUS
+  ROOK_OPEN_FILE_BONUS
+  ROOK_SEMIOPEN_FILE_BONUS
+  ROOK_SEVENTH_RANK_BONUS
+  THREAT_ATTACK_BONUS
+  THREAT_SAFE_CHECK_BONUS
+  KING_DANGER_ATTACK_UNIT_PENALTY
+  ENDGAME_KING_CENTER_BONUS
+  ENDGAME_PASSED_PAWN_BONUS
   HANGING_PIECE_PENALTY
   TIME_POLICY
   TIME_PANIC_POLICY

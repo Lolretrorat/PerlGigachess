@@ -13,7 +13,7 @@ RUN_LICHESS_DB=0
 LICHESS_MONTH=""
 OWN_URL_LOG="$ROOT_DIR/data/lichess_game_urls.log"
 PGN_PATH="$ROOT_DIR/data/lichess_games_export.pgn"
-CLEAR_OWN_URL_LOG=1
+CLEAR_OWN_URL_LOG=0
 SKIP_LOCATION_INGRESS=1
 
 DEFAULT_TMP_DIR="${PERLGIGACHESS_TMP_DIR:-/mnt/throughput/perlgigachess-tmp}"
@@ -52,7 +52,8 @@ Options:
   --month <YYYY-MM>               Also ingest Lichess monthly dump via LICHESS-DB-PGNS
   --own-url-log <path>            URL log path (default: data/lichess_game_urls.log)
   --pgn <path>                    Training PGN path (default: data/lichess_games_export.pgn)
-  --keep-url-log                  Do not clear URL log after OWN-URLS ingest
+  --clear-url-log                 Clear URL log after OWN-URLS ingest
+  --keep-url-log                  Deprecated no-op; URLs are retained by default
   --include-location-ingress      Keep location training enabled during ingest
   --tmp-dir <dir>                 Temp directory for ingest (default: $PERLGIGACHESS_TMP_DIR or /mnt/throughput/perlgigachess-tmp)
   --keep-download                 Keep monthly archive download
@@ -113,6 +114,10 @@ while [[ $# -gt 0 ]]; do
       require_value "--pgn" "${2:-}"
       PGN_PATH="${2:-}"
       shift 2
+      ;;
+    --clear-url-log)
+      CLEAR_OWN_URL_LOG=1
+      shift
       ;;
     --keep-url-log)
       CLEAR_OWN_URL_LOG=0
@@ -299,13 +304,14 @@ if [[ -z "$RUN_MIGRATION_TIMESTAMP" ]]; then
 fi
 RUN_MIGRATION_BUNDLE="V${RUN_MIGRATION_TIMESTAMP}__${MIGRATION_SUFFIX}"
 
-nb_env=(
-  ENGINE_TRAINING_INPUT_SOURCE_MODE="$ENGINE_INPUT_SOURCE_MODE"
-  ENGINE_TRAINING_PGN_PATH="$PGN_PATH"
-  ENGINE_TRAINING_APPLY_ENGINE_PATCH=0
-  ENGINE_TRAINING_MIGRATION_SUFFIX="$MIGRATION_SUFFIX"
-  ENGINE_TRAINING_MIGRATION_TIMESTAMP="$RUN_MIGRATION_TIMESTAMP"
-)
+  nb_env=(
+    ENGINE_TRAINING_INPUT_SOURCE_MODE="$ENGINE_INPUT_SOURCE_MODE"
+    ENGINE_TRAINING_PGN_PATH="$PGN_PATH"
+    ENGINE_TRAINING_APPLY_ENGINE_PATCH=0
+    ENGINE_TRAINING_CLEAR_GAME_URL_LOG="$CLEAR_OWN_URL_LOG"
+    ENGINE_TRAINING_MIGRATION_SUFFIX="$MIGRATION_SUFFIX"
+    ENGINE_TRAINING_MIGRATION_TIMESTAMP="$RUN_MIGRATION_TIMESTAMP"
+  )
 
 if [[ "$ENGINE_INPUT_SOURCE_MODE" == "lichess_db_urls" ]]; then
   nb_env+=(

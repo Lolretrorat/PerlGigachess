@@ -62,10 +62,16 @@ def load_parameter_registry(path: Path) -> Dict[str, Any]:
         if direction not in {"increase", "decrease"}:
             raise ValueError(f"Unsupported direction for {name}: {direction}")
 
+        source = str(entry.get("source", "engine_constant")).lower()
+        if source not in {"engine_constant", "external_config"}:
+            raise ValueError(f"Unsupported source for {name}: {source}")
+
         normalized.append(
             {
                 "name": name,
                 "group": str(entry.get("group", "misc")),
+                "source": source,
+                "current_key": str(entry.get("current_key", name)),
                 "type": typ,
                 "min": float(entry.get("min", 0)),
                 "max": float(entry.get("max", 10**9)),
@@ -75,6 +81,7 @@ def load_parameter_registry(path: Path) -> Dict[str, Any]:
                 "base_weight": float(entry.get("base_weight", 1.0)),
                 "feature_weights": dict(entry.get("feature_weights", {})),
                 "signal_weights": dict(entry.get("signal_weights", {})),
+                "default_current": entry.get("default_current"),
             }
         )
 
@@ -100,6 +107,12 @@ def build_signal_context(df_eval: pd.DataFrame, summary: Dict[str, Any], severe_
             "opening_risk": 0.0,
             "development_risk": 0.0,
             "endgame_risk": 0.0,
+            "mobility_risk": 0.0,
+            "pawn_structure_risk": 0.0,
+            "threat_risk": 0.0,
+            "endgame_conversion_risk": 0.0,
+            "time_scramble_risk": 0.0,
+            "depth_headroom_risk": 0.0,
         }
 
     cp = df_eval["cp_loss"].astype(float)
@@ -152,6 +165,67 @@ def build_signal_context(df_eval: pd.DataFrame, summary: Dict[str, Any], severe_
     if "endgame_phase" in df_eval.columns:
         endgame_risk = _mean_for_mask(df_eval, df_eval["endgame_phase"] == 1)
 
+    mobility_risk = 0.0
+    if "mobility_delta" in df_eval.columns:
+        cramped = _mean_for_mask(df_eval, df_eval["mobility_delta"] <= -1)
+        fluid = _mean_for_mask(df_eval, df_eval["mobility_delta"] >= 1)
+        mobility_risk = max(0.0, cramped - fluid)
+
+    pawn_structure_delta = 0.0
+    for col, threshold in (
+        ("isolated_pawns", 1),
+        ("doubled_pawns", 1),
+        ("backward_pawns", 1),
+        ("pawn_islands", 3),
+    ):
+        if col not in df_eval.columns:
+            continue
+        hi = _mean_for_mask(df_eval, df_eval[col] >= threshold)
+        lo = _mean_for_mask(df_eval, df_eval[col] < threshold)
+        pawn_structure_delta = max(pawn_structure_delta, hi - lo)
+
+    threat_risk = 0.0
+    if "threatened_delta" in df_eval.columns:
+        high_pressure = _mean_for_mask(df_eval, df_eval["threatened_delta"] >= 1)
+        calm = _mean_for_mask(df_eval, df_eval["threatened_delta"] <= 0)
+        threat_risk = max(threat_risk, high_pressure - calm)
+    if "threatened_ours" in df_eval.columns:
+        under_attack = _mean_for_mask(df_eval, df_eval["threatened_ours"] >= 2)
+        stable = _mean_for_mask(df_eval, df_eval["threatened_ours"] == 0)
+        threat_risk = max(threat_risk, under_attack - stable)
+    if "opponent_checks_after" in df_eval.columns:
+        forcing = _mean_for_mask(df_eval, df_eval["opponent_checks_after"] >= 1)
+        quiet = _mean_for_mask(df_eval, df_eval["opponent_checks_after"] == 0)
+        threat_risk = max(threat_risk, forcing - quiet)
+
+    endgame_conversion_risk = 0.0
+    if "endgame_phase" in df_eval.columns:
+        advantaged_mask = df_eval["endgame_phase"] == 1
+        if "material_cp" in df_eval.columns:
+            advantaged_mask = advantaged_mask & (df_eval["material_cp"] >= 60)
+        neutral_mask = df_eval["endgame_phase"] == 0
+        converted = _mean_for_mask(df_eval, advantaged_mask)
+        non_endgame = _mean_for_mask(df_eval, neutral_mask)
+        endgame_conversion_risk = max(0.0, converted - non_endgame, endgame_risk)
+    else:
+        endgame_conversion_risk = endgame_risk
+
+    time_scramble_risk = 0.0
+    if "time_pressure" in df_eval.columns:
+        pressured = _mean_for_mask(df_eval, df_eval["time_pressure"] >= 1)
+        calm = _mean_for_mask(df_eval, df_eval["time_pressure"] == 0)
+        time_scramble_risk = max(0.0, pressured - calm)
+    elif "remaining_ms" in df_eval.columns:
+        pressured = _mean_for_mask(df_eval, df_eval["remaining_ms"] <= 10_000)
+        calm = _mean_for_mask(df_eval, df_eval["remaining_ms"] >= 60_000)
+        time_scramble_risk = max(0.0, pressured - calm)
+
+    depth_headroom_risk = 0.0
+    if "search_depth_gap" in df_eval.columns:
+        constrained = _mean_for_mask(df_eval, df_eval["search_depth_gap"] >= 2)
+        unconstrained = _mean_for_mask(df_eval, df_eval["search_depth_gap"] <= 0)
+        depth_headroom_risk = max(0.0, constrained - unconstrained)
+
     avg_cp_loss_risk = _clamp(max(0.0, avg_cp_loss) / 220.0, 0.0, 1.0)
     severe_rate_risk = _clamp(severe_rate / 0.25, 0.0, 1.0)
     miss_risk = _clamp(miss_rate / 0.80, 0.0, 1.0)
@@ -163,8 +237,17 @@ def build_signal_context(df_eval: pd.DataFrame, summary: Dict[str, Any], severe_
     opening_risk_n = _clamp(max(0.0, opening_risk) / 220.0, 0.0, 1.0)
     development_risk_n = _clamp(development_risk / 180.0, 0.0, 1.0)
     endgame_risk_n = _clamp(max(0.0, endgame_risk) / 220.0, 0.0, 1.0)
-
+    mobility_risk_n = _clamp(max(0.0, mobility_risk) / 180.0, 0.0, 1.0)
+    pawn_structure_risk_n = _clamp(max(0.0, pawn_structure_delta) / 160.0, 0.0, 1.0)
+    threat_risk_n = _clamp(max(0.0, threat_risk) / 180.0, 0.0, 1.0)
+    endgame_conversion_risk_n = _clamp(max(0.0, endgame_conversion_risk) / 220.0, 0.0, 1.0)
+    time_scramble_risk_n = _clamp(max(0.0, time_scramble_risk) / 180.0, 0.0, 1.0)
     instability = _clamp(0.55 * miss_risk + 0.25 * severe_rate_risk + 0.20 * avg_cp_loss_risk, 0.0, 1.0)
+    depth_headroom_risk_n = _clamp(
+        max(0.0, depth_headroom_risk, 0.65 * instability + 0.35 * miss_risk),
+        0.0,
+        1.0,
+    )
 
     return {
         "avg_cp_loss_risk": avg_cp_loss_risk,
@@ -179,6 +262,12 @@ def build_signal_context(df_eval: pd.DataFrame, summary: Dict[str, Any], severe_
         "opening_risk": opening_risk_n,
         "development_risk": development_risk_n,
         "endgame_risk": endgame_risk_n,
+        "mobility_risk": mobility_risk_n,
+        "pawn_structure_risk": pawn_structure_risk_n,
+        "threat_risk": threat_risk_n,
+        "endgame_conversion_risk": endgame_conversion_risk_n,
+        "time_scramble_risk": time_scramble_risk_n,
+        "depth_headroom_risk": depth_headroom_risk_n,
     }
 
 
@@ -218,6 +307,7 @@ def _group_pressures(param_rows: List[Dict[str, Any]]) -> Dict[str, float]:
 
 def _build_parameter_rows(
     constants: Dict[str, float],
+    config_values: Dict[str, float],
     registry: Dict[str, Any],
     signal_context: Dict[str, float],
     importance_norm: Dict[str, float],
@@ -226,7 +316,12 @@ def _build_parameter_rows(
     rows: List[Dict[str, Any]] = []
     for spec in registry.get("parameters", []):
         name = spec["name"]
-        cur = constants.get(name)
+        source = str(spec.get("source", "engine_constant"))
+        current_key = str(spec.get("current_key", name))
+        source_map = constants if source == "engine_constant" else config_values
+        cur = source_map.get(current_key)
+        if cur is None:
+            cur = spec.get("default_current")
         if cur is None:
             continue
 
@@ -264,6 +359,48 @@ def _build_parameter_rows(
                 + 0.30 * signal_context.get("development_risk", 0.0)
                 + 0.15 * signal_context.get("king_file_risk", 0.0)
             )
+        elif group == "pawn_structure":
+            group_score = (
+                0.50 * signal_context.get("pawn_structure_risk", 0.0)
+                + 0.25 * signal_context.get("opening_risk", 0.0)
+                + 0.25 * signal_context.get("endgame_conversion_risk", 0.0)
+            )
+        elif group == "piece_activity":
+            group_score = (
+                0.50 * signal_context.get("mobility_risk", 0.0)
+                + 0.30 * signal_context.get("threat_risk", 0.0)
+                + 0.20 * signal_context.get("instability_risk", 0.0)
+            )
+        elif group == "threat_eval":
+            group_score = (
+                0.45 * signal_context.get("threat_risk", 0.0)
+                + 0.30 * signal_context.get("hanging_risk_delta", 0.0)
+                + 0.25 * signal_context.get("check_risk_delta", 0.0)
+            )
+        elif group == "endgame_conversion":
+            group_score = (
+                0.55 * signal_context.get("endgame_conversion_risk", 0.0)
+                + 0.25 * signal_context.get("endgame_risk", 0.0)
+                + 0.20 * signal_context.get("avg_cp_loss_risk", 0.0)
+            )
+        elif group == "root_regression":
+            group_score = (
+                0.45 * signal_context.get("instability_risk", 0.0)
+                + 0.30 * signal_context.get("depth_headroom_risk", 0.0)
+                + 0.25 * signal_context.get("bestmove_miss_rate", 0.0)
+            )
+        elif group == "lichess_time":
+            group_score = (
+                0.45 * signal_context.get("time_scramble_risk", 0.0)
+                + 0.30 * signal_context.get("instability_risk", 0.0)
+                + 0.25 * signal_context.get("endgame_conversion_risk", 0.0)
+            )
+        elif group == "lichess_depth":
+            group_score = (
+                0.50 * signal_context.get("depth_headroom_risk", 0.0)
+                + 0.30 * signal_context.get("bestmove_miss_rate", 0.0)
+                + 0.20 * signal_context.get("opening_risk", 0.0)
+            )
         else:
             group_score = signal_context.get("avg_cp_loss_risk", 0.0)
 
@@ -279,6 +416,8 @@ def _build_parameter_rows(
             {
                 "name": name,
                 "group": group,
+                "source": source,
+                "current_key": current_key,
                 "type": spec.get("type", "float"),
                 "direction": spec.get("direction", "increase"),
                 "current": float(cur),
@@ -340,6 +479,8 @@ def _candidate_from_rows(
             {
                 "name": row["name"],
                 "group": row["group"],
+                "source": row.get("source", "engine_constant"),
+                "current_key": row.get("current_key", row["name"]),
                 "old": cur,
                 "new": float(updates[row["name"]]),
                 "delta": float(updates[row["name"]] - cur),
@@ -421,15 +562,18 @@ def optimize_constants_from_registry(
     low_volume_relax_factor: float = 0.65,
     min_holdout_group_pressure: float = 0.035,
     min_holdout_alignment: float = 0.30,
+    config_values: Dict[str, float] | None = None,
 ) -> Dict[str, Any]:
     registry = load_parameter_registry(registry_path)
     importance_norm = normalize_feature_importance(feature_importance)
+    config_values = {} if config_values is None else dict(config_values)
 
     signal_context_train = build_signal_context(df_train_eval, summary_train, severe_cp_loss)
     signal_context_holdout = build_signal_context(df_holdout_eval, summary_holdout, severe_cp_loss)
 
     param_rows = _build_parameter_rows(
         constants,
+        config_values,
         registry,
         signal_context_train,
         importance_norm,
@@ -439,6 +583,7 @@ def optimize_constants_from_registry(
 
     holdout_rows = _build_parameter_rows(
         constants,
+        config_values,
         registry,
         signal_context_holdout,
         importance_norm,
@@ -521,6 +666,17 @@ def optimize_constants_from_registry(
         }
     )
 
+    proposed_constant_updates = {
+        row["name"]: float(selected["updates"][row["name"]])
+        for row in selected.get("details", [])
+        if row.get("source") == "engine_constant" and row.get("name") in selected.get("updates", {})
+    }
+    proposed_config_updates = {
+        row["name"]: float(selected["updates"][row["name"]])
+        for row in selected.get("details", [])
+        if row.get("source") == "external_config" and row.get("name") in selected.get("updates", {})
+    }
+
     return {
         "registry": registry,
         "importance_norm": importance_norm,
@@ -536,5 +692,7 @@ def optimize_constants_from_registry(
         "parameter_rows": param_rows,
         "candidate_results": candidate_results,
         "selected_candidate": selected,
-        "proposed_updates": dict(selected.get("updates", {})),
+        "proposed_updates": proposed_constant_updates,
+        "proposed_constant_updates": proposed_constant_updates,
+        "proposed_config_updates": proposed_config_updates,
     }

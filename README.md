@@ -49,6 +49,7 @@ Master pipeline wrappers:
 ```bash
 ./DO_LOCATION_MODIFIER.sh
 ./DO_PARAMATER_EXTRACTION.sh
+./DO_DATA_SCIENCE.sh
 ./DO_ENGINE_PIPELINE.sh
 ./DO_GIGA_DATA_PROCESSING.sh
 ./DO_GIGA_DATA_PROCESSING.sh --month 2026-01 --batch-months 3
@@ -57,6 +58,7 @@ Master pipeline wrappers:
 
 - `DO_LOCATION_MODIFIER.sh` runs ingest + location modifier training + validation.
 - `DO_PARAMATER_EXTRACTION.sh` runs ingest + engine training notebook and emits a migration bundle.
+- `DO_DATA_SCIENCE.sh` is the only wrapper that clears consumed OWN-URL logs by default; the standard wrappers retain URLs for reproducibility.
 - `DO_ENGINE_PIPELINE.sh` runs parameter extraction, applies the newest patch when present, and validates via `perl -c` + `perft`.
 - `DO_GIGA_DATA_PROCESSING.sh` runs the combined location + parameter + engine patch pipeline in one command.
   In `--month` mode it defaults to `--no-own-urls`; add `--with-own-urls` to include URL-log ingestion.
@@ -139,6 +141,10 @@ To ingest your own game URLs from `data/lichess_game_urls.log`:
 ```bash
 scripts/data_ingress.sh OWN-URLS
 ```
+
+The standard analytics wrappers retain `data/lichess_game_urls.log` by default.
+Use `./DO_DATA_SCIENCE.sh` when you explicitly want consumed URLs cleared after
+ingest.
 
 To run both sources in one pass:
 

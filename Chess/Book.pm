@@ -55,7 +55,7 @@ my $BOOK_POLICY = _env_choice(
 my $BOOK_TOP_N = _env_int('CHESS_BOOK_TOP_N', 3, 1);
 my $BOOK_MAX_PLIES = _env_int('CHESS_BOOK_MAX_PLIES', 0, 0);
 my $BOOK_MAX_FULLMOVE = _env_int('CHESS_BOOK_MAX_FULLMOVE', 0, 0);
-my $BOOK_USE_STYLE_OVERLAY = _env_flag('CHESS_BOOK_USE_STYLE_OVERLAY', 1);
+my $BOOK_USE_STYLE_OVERLAY = _env_flag('CHESS_BOOK_USE_STYLE_OVERLAY', 0);
 
 sub _book_path {
   return $ENV{CHESS_BOOK_PATH} if defined $ENV{CHESS_BOOK_PATH} && length $ENV{CHESS_BOOK_PATH};
