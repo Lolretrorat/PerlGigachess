@@ -3,7 +3,7 @@ use strict;
 use warnings;
 
 use Chess::Constant;
-use Chess::MoveGen ();
+# Chess::MovePicker loaded via require to avoid circular dependency
 use Chess::Zobrist qw(
   zobrist_empty_key
   zobrist_is_key
@@ -26,6 +26,14 @@ use constant 1.03 {
   PIECE_COUNT => 8,
   STATE_KEY => 9,
   FEN_KEY => 10,
+  INCR_MATERIAL => 11,
+  INCR_PST_MG => 12,
+  INCR_PST_EG => 13,
+  INCR_PHASE => 14,
+  INCR_PIECE_VALUES => 15,
+  INCR_SQUARE_OF_IDX_CB => 16,
+  INCR_LOCATION_BONUS_CB => 17,
+  INCR_PST_FLIP_CB => 18,
   UNDO_TURN => 0,
   UNDO_CASTLE_SELF_KING => 1,
   UNDO_CASTLE_SELF_QUEEN => 2,
@@ -46,6 +54,10 @@ use constant 1.03 {
   UNDO_CAPTURED_IDX => 17,
   UNDO_IS_EN_PASSANT => 18,
   UNDO_SPECIAL => 19,
+  UNDO_INCR_MATERIAL => 20,
+  UNDO_INCR_PST_MG => 21,
+  UNDO_INCR_PST_EG => 22,
+  UNDO_INCR_PHASE => 23,
 };
 
 use constant BOARD_IDXS => (
@@ -155,6 +167,7 @@ sub set_fen {
   $self->[PIECE_COUNT] = $piece_count;
   $self->[STATE_KEY] = _compute_zobrist_key($self);
   $self->[FEN_KEY] = undef;
+  _recompute_incremental_eval_components($self);
 }
 
 # Return a FEN string representing the current game state
@@ -388,6 +401,69 @@ sub _flip_board_in_place {
   }
 }
 
+sub _incremental_piece_terms {
+  my ($self, $piece, $idx) = @_;
+  return (0, 0, 0, 0) unless defined $piece;
+  my $abs_piece = abs($piece);
+  return (0, 0, 0, 0) unless $abs_piece >= PAWN && $abs_piece <= KING;
+
+  my $piece_values = $self->[INCR_PIECE_VALUES];
+  my $material = (ref($piece_values) eq 'HASH') ? ($piece_values->{$piece} // 0) : 0;
+
+  my $pst_mg = 0;
+  my $pst_eg = 0;
+  my $square_of_idx_cb = $self->[INCR_SQUARE_OF_IDX_CB];
+  my $location_bonus_cb = $self->[INCR_LOCATION_BONUS_CB];
+  if (defined $square_of_idx_cb && defined $location_bonus_cb) {
+    my $sq = $square_of_idx_cb->($idx);
+    if (defined $sq) {
+      my $pst = $location_bonus_cb->($piece, $sq, $material) // 0;
+      $pst_mg = $pst;
+      $pst_eg = int(($pst * 0.50) + ($pst < 0 ? -0.5 : 0.5));
+    }
+  }
+
+  my $phase = 0;
+  if ($abs_piece >= 1 && $abs_piece <= 6) {
+    my @phase_weight = (0, 0, 1, 1, 2, 4, 0);
+    $phase = $phase_weight[$abs_piece] // 0;
+  }
+
+  return ($material, $pst_mg, $pst_eg, $phase);
+}
+
+sub _recompute_incremental_eval_components {
+  my ($self) = @_;
+  my $piece_values = $self->[INCR_PIECE_VALUES];
+  my $square_of_idx_cb = $self->[INCR_SQUARE_OF_IDX_CB];
+  my $location_bonus_cb = $self->[INCR_LOCATION_BONUS_CB];
+  unless (ref($piece_values) eq 'HASH'
+    && defined $square_of_idx_cb
+    && defined $location_bonus_cb) {
+    $self->[INCR_MATERIAL] = undef;
+    $self->[INCR_PST_MG] = undef;
+    $self->[INCR_PST_EG] = undef;
+    $self->[INCR_PHASE] = undef;
+    return;
+  }
+
+  my ($material, $pst_mg, $pst_eg, $phase) = (0, 0, 0, 0);
+  for my $idx (BOARD_IDXS) {
+    my $piece = $self->[BOARD][$idx] // 0;
+    next unless $piece;
+    my ($m, $mg, $eg, $p) = _incremental_piece_terms($self, $piece, $idx);
+    $material += $m;
+    $pst_mg += $mg;
+    $pst_eg += $eg;
+    $phase += $p;
+  }
+
+  $self->[INCR_MATERIAL] = $material;
+  $self->[INCR_PST_MG] = $pst_mg;
+  $self->[INCR_PST_EG] = $pst_eg;
+  $self->[INCR_PHASE] = $phase;
+}
+
 sub _clone_state {
   my ($self) = @_;
   my @board = @{$self->[BOARD]};
@@ -414,6 +490,14 @@ sub _clone_state {
     $self->[PIECE_COUNT],
     $self->[STATE_KEY],
     $self->[FEN_KEY],
+    $self->[INCR_MATERIAL],
+    $self->[INCR_PST_MG],
+    $self->[INCR_PST_EG],
+    $self->[INCR_PHASE],
+    $self->[INCR_PIECE_VALUES],
+    $self->[INCR_SQUARE_OF_IDX_CB],
+    $self->[INCR_LOCATION_BONUS_CB],
+    $self->[INCR_PST_FLIP_CB],
   ], ref($self);
 }
 
@@ -467,6 +551,10 @@ sub _do_move_in_place {
   my $moving_piece_idx = _internal_piece_to_zobrist_piece($from_piece, $turn);
   my $captured_piece = $to_piece;
   my $captured_idx = $move->[1];
+  my $incremental_material = $self->[INCR_MATERIAL];
+  my $incremental_pst_mg = $self->[INCR_PST_MG];
+  my $incremental_pst_eg = $self->[INCR_PST_EG];
+  my $incremental_phase = $self->[INCR_PHASE];
 
   my $undo = [
     $self->[TURN] ? 1 : 0,
@@ -489,6 +577,10 @@ sub _do_move_in_place {
     $captured_idx,
     0,
     $move->[3],
+    $incremental_material,
+    $incremental_pst_mg,
+    $incremental_pst_eg,
+    $incremental_phase,
   ];
 
   if ($from_piece == PAWN
@@ -532,6 +624,41 @@ sub _do_move_in_place {
     }
   }
 
+  my $placed_piece = defined $move->[2] ? $move->[2] : $from_piece;
+  if (defined $incremental_material
+      || defined $incremental_pst_mg
+      || defined $incremental_pst_eg
+      || defined $incremental_phase) {
+    my ($from_m, $from_mg, $from_eg, $from_phase) = _incremental_piece_terms($self, $from_piece, $move->[0]);
+    my ($to_m, $to_mg, $to_eg, $to_phase) = _incremental_piece_terms($self, $placed_piece, $move->[1]);
+    $incremental_material = ($incremental_material // 0) - $from_m + $to_m if defined $incremental_material;
+    $incremental_pst_mg = ($incremental_pst_mg // 0) - $from_mg + $to_mg if defined $incremental_pst_mg;
+    $incremental_pst_eg = ($incremental_pst_eg // 0) - $from_eg + $to_eg if defined $incremental_pst_eg;
+    $incremental_phase = ($incremental_phase // 0) - $from_phase + $to_phase if defined $incremental_phase;
+
+    if ($is_capture && defined $captured_piece && $captured_piece != EMPTY) {
+      my ($cap_m, $cap_mg, $cap_eg, $cap_phase) = _incremental_piece_terms($self, $captured_piece, $captured_idx);
+      $incremental_material -= $cap_m if defined $incremental_material;
+      $incremental_pst_mg -= $cap_mg if defined $incremental_pst_mg;
+      $incremental_pst_eg -= $cap_eg if defined $incremental_pst_eg;
+      $incremental_phase -= $cap_phase if defined $incremental_phase;
+    }
+
+    if (defined $move->[3]) {
+      if ($move->[3] == CASTLE_KING) {
+        my (undef, $rook_from_mg, $rook_from_eg) = _incremental_piece_terms($self, ROOK, 28);
+        my (undef, $rook_to_mg, $rook_to_eg) = _incremental_piece_terms($self, ROOK, 26);
+        $incremental_pst_mg = ($incremental_pst_mg // 0) - $rook_from_mg + $rook_to_mg if defined $incremental_pst_mg;
+        $incremental_pst_eg = ($incremental_pst_eg // 0) - $rook_from_eg + $rook_to_eg if defined $incremental_pst_eg;
+      } elsif ($move->[3] == CASTLE_QUEEN) {
+        my (undef, $rook_from_mg, $rook_from_eg) = _incremental_piece_terms($self, ROOK, 21);
+        my (undef, $rook_to_mg, $rook_to_eg) = _incremental_piece_terms($self, ROOK, 24);
+        $incremental_pst_mg = ($incremental_pst_mg // 0) - $rook_from_mg + $rook_to_mg if defined $incremental_pst_mg;
+        $incremental_pst_eg = ($incremental_pst_eg // 0) - $rook_from_eg + $rook_to_eg if defined $incremental_pst_eg;
+      }
+    }
+  }
+
   @{$board}[$move->[0], $move->[1]] = (EMPTY, $move->[2] || $from_piece);
   $piece_count-- if $is_capture && !$is_en_passant;
   $own_king_idx = $move->[1] if $from_piece == KING;
@@ -542,6 +669,32 @@ sub _do_move_in_place {
   }
 
   _flip_board_in_place($board);
+
+  my $new_incremental_material;
+  my $new_incremental_pst_mg;
+  my $new_incremental_pst_eg;
+  my $new_incremental_phase;
+  if (defined $incremental_material) {
+    $new_incremental_material = -$incremental_material;
+  }
+  if (defined $incremental_phase) {
+    $new_incremental_phase = $incremental_phase;
+  }
+  if (defined $incremental_pst_mg && defined $incremental_pst_eg) {
+    my $flip_cb = $self->[INCR_PST_FLIP_CB];
+    if (defined $flip_cb) {
+      my ($flipped_mg, $flipped_eg) = $flip_cb->($incremental_pst_mg, $incremental_pst_eg);
+      $new_incremental_pst_mg = $flipped_mg if defined $flipped_mg;
+      $new_incremental_pst_eg = $flipped_eg if defined $flipped_eg;
+    }
+    if (!defined $new_incremental_pst_mg || !defined $new_incremental_pst_eg) {
+      _recompute_incremental_eval_components($self);
+      $new_incremental_pst_mg = $self->[INCR_PST_MG];
+      $new_incremental_pst_eg = $self->[INCR_PST_EG];
+      $new_incremental_phase = $self->[INCR_PHASE] unless defined $new_incremental_phase;
+      $new_incremental_material = $self->[INCR_MATERIAL] unless defined $new_incremental_material;
+    }
+  }
 
   my @next_to_move_castle = (
     $self->[CASTLE][1][CASTLE_KING] ? 1 : 0,
@@ -589,7 +742,6 @@ sub _do_move_in_place {
       $new_state_key ^= zobrist_piece_token($captured_piece_idx, $captured_square);
     }
   }
-  my $placed_piece = defined $move->[2] ? $move->[2] : $from_piece;
   my $placed_piece_idx = _internal_piece_to_zobrist_piece($placed_piece, $turn);
   if (defined $placed_piece_idx && defined $to_square) {
     $new_state_key ^= zobrist_piece_token($placed_piece_idx, $to_square);
@@ -637,6 +789,10 @@ sub _do_move_in_place {
   $self->[PIECE_COUNT] = $piece_count;
   $self->[STATE_KEY] = $new_state_key;
   $self->[FEN_KEY] = undef;
+  $self->[INCR_MATERIAL] = $new_incremental_material;
+  $self->[INCR_PST_MG] = $new_incremental_pst_mg;
+  $self->[INCR_PST_EG] = $new_incremental_pst_eg;
+  $self->[INCR_PHASE] = $new_incremental_phase;
 
   return $undo;
 }
@@ -677,8 +833,51 @@ sub _undo_move_in_place {
   $self->[PIECE_COUNT] = $undo->[UNDO_PIECE_COUNT];
   $self->[STATE_KEY] = $undo->[UNDO_STATE_KEY];
   $self->[FEN_KEY] = $undo->[UNDO_FEN_KEY];
+  $self->[INCR_MATERIAL] = $undo->[UNDO_INCR_MATERIAL];
+  $self->[INCR_PST_MG] = $undo->[UNDO_INCR_PST_MG];
+  $self->[INCR_PST_EG] = $undo->[UNDO_INCR_PST_EG];
+  $self->[INCR_PHASE] = $undo->[UNDO_INCR_PHASE];
 
   return 1;
+}
+
+sub enable_incremental_eval {
+  my ($self, $opts) = @_;
+  $opts ||= {};
+  my $piece_values = $opts->{piece_values};
+  my $square_of_idx_cb = $opts->{square_of_idx_cb};
+  my $location_bonus_cb = $opts->{location_bonus_cb};
+  return undef unless ref($piece_values) eq 'HASH';
+  return undef unless defined $square_of_idx_cb && defined $location_bonus_cb;
+  $self->[INCR_PIECE_VALUES] = $piece_values;
+  $self->[INCR_SQUARE_OF_IDX_CB] = $square_of_idx_cb;
+  $self->[INCR_LOCATION_BONUS_CB] = $location_bonus_cb;
+  $self->[INCR_PST_FLIP_CB] = $opts->{flip_pst_cb};
+  _recompute_incremental_eval_components($self);
+  return $self;
+}
+
+sub disable_incremental_eval {
+  my ($self) = @_;
+  $self->[INCR_MATERIAL] = undef;
+  $self->[INCR_PST_MG] = undef;
+  $self->[INCR_PST_EG] = undef;
+  $self->[INCR_PHASE] = undef;
+  $self->[INCR_PIECE_VALUES] = undef;
+  $self->[INCR_SQUARE_OF_IDX_CB] = undef;
+  $self->[INCR_LOCATION_BONUS_CB] = undef;
+  $self->[INCR_PST_FLIP_CB] = undef;
+  return $self;
+}
+
+sub incremental_eval_components {
+  my ($self) = @_;
+  my %out;
+  $out{material} = $self->[INCR_MATERIAL] if defined $self->[INCR_MATERIAL];
+  $out{pst_mg} = $self->[INCR_PST_MG] if defined $self->[INCR_PST_MG];
+  $out{pst_eg} = $self->[INCR_PST_EG] if defined $self->[INCR_PST_EG];
+  $out{phase} = $self->[INCR_PHASE] if defined $self->[INCR_PHASE];
+  return %out ? \%out : undef;
 }
 
 
@@ -689,15 +888,22 @@ sub make_move {
   return $next;
 }
 
+sub clone {
+  my ($self) = @_;
+  return _clone_state($self);
+}
+
 sub generate_moves
 {
   my ($self) = @_;
-  return @{Chess::MoveGen::generate_moves($self, 'legal')};
+  require Chess::MovePicker;
+  return @{Chess::MovePicker::generate_moves($self, 'legal')};
 }
 
 sub generate_moves_by_type {
   my ($self, $type) = @_;
-  return Chess::MoveGen::generate_moves($self, $type);
+  require Chess::MovePicker;
+  return Chess::MovePicker::generate_moves($self, $type);
 }
 
 # Immutable-state compatibility helpers for do/undo style callers.

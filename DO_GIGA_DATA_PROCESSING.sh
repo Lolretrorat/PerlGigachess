@@ -9,6 +9,8 @@ RUN_LOCATION_VALIDATION=1
 BATCH_MONTHS=1
 EXPLICIT_MONTH=""
 USE_OWN_URLS=0
+CONSUME_OWN_URLS=0
+FORCE_NO_OWN_URLS=0
 
 require_value() {
   local flag="$1"
@@ -53,6 +55,8 @@ Options:
   --batch-months <int>            Run month ingest/training for N months in a row
                                   ending at --month YYYY-MM (default: 1)
   --with-own-urls                 Keep OWN-URLS ingestion enabled when using --month
+  --consume-own-urls              Clear processed OWN-URL entries after ingest
+                                  This is the explicit URL-consuming wrapper mode
   --skip-location-validation      Skip DO_LOCATION_MODIFIER.sh --skip-ingress pass
   -h, --help                      Show this message
 
@@ -92,6 +96,19 @@ while [[ $# -gt 0 ]]; do
       USE_OWN_URLS=1
       shift
       ;;
+    --consume-own-urls|--clear-url-log)
+      CONSUME_OWN_URLS=1
+      shift
+      ;;
+    --keep-url-log)
+      CONSUME_OWN_URLS=0
+      shift
+      ;;
+    --no-own-urls)
+      FORCE_NO_OWN_URLS=1
+      engine_args+=("$1")
+      shift
+      ;;
     --skip-ingress)
       echo "--skip-ingress is not allowed for DO_GIGA_DATA_PROCESSING.sh." >&2
       echo "Use DO_ENGINE_PIPELINE.sh directly if you need to skip ingress." >&2
@@ -124,7 +141,17 @@ if [[ "$BATCH_MONTHS" -gt 1 ]] && [[ -z "$EXPLICIT_MONTH" ]]; then
 fi
 
 if [[ -n "$EXPLICIT_MONTH" && "$USE_OWN_URLS" -eq 0 ]]; then
+  FORCE_NO_OWN_URLS=1
   engine_args+=(--no-own-urls)
+fi
+
+if [[ "$CONSUME_OWN_URLS" -eq 1 ]]; then
+  if [[ "$FORCE_NO_OWN_URLS" -eq 1 ]]; then
+    echo "--consume-own-urls requires OWN-URLS ingestion." >&2
+    echo "Add --with-own-urls in --month mode or remove --no-own-urls." >&2
+    exit 1
+  fi
+  engine_args+=(--clear-url-log)
 fi
 
 run_engine_for_month() {

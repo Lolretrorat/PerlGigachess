@@ -1,0 +1,8 @@
+{
+    "chat.tools.terminal.autoApprove": {
+        "/^perl -I/home/josh/code/PerlGigachess -c /home/josh/code/PerlGigachess/Chess/Engine\\.pm 2>&1 \\| tail -3$/": {
+            "approve": true,
+            "matchCommandLine": true
+        }
+    }
+}

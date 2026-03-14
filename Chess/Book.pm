@@ -45,7 +45,7 @@ my $BOOK_BAYES_GAMES  = _env_num('CHESS_BOOK_BAYES_GAMES', 8.0, 0.0, 1000.0);
 my $BOOK_QUALITY_WEIGHT = _env_num('CHESS_BOOK_QUALITY_WEIGHT', 0.82, 0.0, 1.0);
 my $BOOK_POLICY = _env_choice(
   'CHESS_BOOK_POLICY',
-  'best',
+  'weighted_random',
   {
     best => 1,
     weighted_random => 1,
@@ -55,7 +55,7 @@ my $BOOK_POLICY = _env_choice(
 my $BOOK_TOP_N = _env_int('CHESS_BOOK_TOP_N', 3, 1);
 my $BOOK_MAX_PLIES = _env_int('CHESS_BOOK_MAX_PLIES', 0, 0);
 my $BOOK_MAX_FULLMOVE = _env_int('CHESS_BOOK_MAX_FULLMOVE', 0, 0);
-my $BOOK_USE_STYLE_OVERLAY = _env_flag('CHESS_BOOK_USE_STYLE_OVERLAY', 1);
+my $BOOK_USE_STYLE_OVERLAY = _env_flag('CHESS_BOOK_USE_STYLE_OVERLAY', 0);
 
 sub _book_path {
   return $ENV{CHESS_BOOK_PATH} if defined $ENV{CHESS_BOOK_PATH} && length $ENV{CHESS_BOOK_PATH};
@@ -523,6 +523,16 @@ sub _selection_pool {
   my $top = $entries->[0];
   my $floor = ($top->{_book_score} // 0) - 0.02;
   my @near_top = grep { ($_->{_book_score} // 0) >= $floor } @$entries;
+
+  # Keep a little diversity when one line is clearly best by still considering
+  # a small top-N slice for weighted policies.
+  if (@near_top < 2 && @$entries > 1) {
+    my $fallback_take = $BOOK_TOP_N;
+    $fallback_take = 2 if !defined $fallback_take || $fallback_take < 2;
+    $fallback_take = @$entries if $fallback_take > @$entries;
+    return @$entries[0 .. ($fallback_take - 1)];
+  }
+
   my $take = $BOOK_TOP_N;
   $take = 1 if !defined $take || $take < 1;
   $take = @near_top if $take > @near_top;
