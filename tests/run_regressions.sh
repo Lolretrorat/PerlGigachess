@@ -17,11 +17,16 @@ SKIP_BOOK_POLICY=0
 SKIP_LICHESS_TIME=0
 SKIP_PDP_QUEEN=0
 SKIP_REP_GUARD=0
+SKIP_QSEARCH_IN_CHECK=0
+SKIP_SEARCH_REPETITION=0
+SKIP_MODULE_UNIT=0
 SKIP_UNGUARDED_PLAN=0
 SKIP_PROMO_CHECK=0
 SKIP_XXGZ_REBUILD=0
 SKIP_PROTOCOL=0
 SKIP_IMMEDIATE_STOP=0
+SKIP_SEARCHMOVES=0
+SKIP_DATA_RETENTION=0
 
 usage() {
   cat <<'USAGE'
@@ -43,11 +48,16 @@ Options:
   --skip-lichess-time      Skip lichess bot time/depth profile regression check
   --skip-pdp-queen         Skip PDPgjgTd random queen-capture regression check
   --skip-rep-guard         Skip repetition guard quiet-move regression check
+  --skip-qsearch-check     Skip qsearch in-check mate/evasion regression check
+  --skip-search-repetition Skip search repetition threefold-only regression check
+  --skip-module-unit       Skip module-level unit regressions (state/TT/picker/time/etc.)
   --skip-unguarded-plan    Skip unguarded-material capture-plan regression check
   --skip-promo-check       Skip promotion-with-check regression check
   --skip-xxgz-rebuild      Skip xXgzD7zW state-rebuild regression check
   --skip-protocol          Skip UCI protocol contract regression check
   --skip-immediate-stop    Skip immediate go/stop legal-bestmove regression check
+  --skip-searchmoves       Skip UCI searchmoves filtering regression check
+  --skip-data-retention    Skip analytics URL-retention policy regression check
   -h, --help               Show help
 USAGE
 }
@@ -124,6 +134,18 @@ while [[ $# -gt 0 ]]; do
       SKIP_REP_GUARD=1
       shift
       ;;
+    --skip-qsearch-check)
+      SKIP_QSEARCH_IN_CHECK=1
+      shift
+      ;;
+    --skip-search-repetition)
+      SKIP_SEARCH_REPETITION=1
+      shift
+      ;;
+    --skip-module-unit)
+      SKIP_MODULE_UNIT=1
+      shift
+      ;;
     --skip-unguarded-plan)
       SKIP_UNGUARDED_PLAN=1
       shift
@@ -142,6 +164,14 @@ while [[ $# -gt 0 ]]; do
       ;;
     --skip-immediate-stop)
       SKIP_IMMEDIATE_STOP=1
+      shift
+      ;;
+    --skip-searchmoves)
+      SKIP_SEARCHMOVES=1
+      shift
+      ;;
+    --skip-data-retention)
+      SKIP_DATA_RETENTION=1
       shift
       ;;
     -h|--help)
@@ -179,6 +209,13 @@ else
   echo "==> Skipping OWN-URL parser guard"
 fi
 
+if [[ "$SKIP_DATA_RETENTION" -eq 0 ]]; then
+  echo "==> Analytics URL-retention policy guard"
+  (cd "$ROOT_DIR" && bash tests/regression_data_ingress_retention_policy.sh)
+else
+  echo "==> Skipping analytics URL-retention policy guard"
+fi
+
 if [[ "$SKIP_BOOK_UNDERPROMO" -eq 0 ]]; then
   echo "==> Opening-book underpromotion SAN guard"
   (cd "$ROOT_DIR" && bash tests/regression_book_underpromotion.sh)
@@ -200,6 +237,12 @@ else
   echo "==> Skipping lichess time/depth profile guard"
 fi
 
+echo "==> Engine tuning registry sync guard"
+(cd "$ROOT_DIR" && bash tests/regression_engine_registry_sync.sh)
+
+echo "==> Engine recommendation safeguard guard"
+(cd "$ROOT_DIR" && bash tests/regression_engine_recommendation_thresholds.sh)
+
 if [[ "$SKIP_PDP_QUEEN" -eq 0 ]]; then
   echo "==> PDPgjgTd guard (avoid random queen capture)"
   (cd "$ROOT_DIR" && perl tests/regression_pdpgjgtd_queen_capture.pl)
@@ -212,8 +255,43 @@ if [[ "$SKIP_REP_GUARD" -eq 0 ]]; then
   (cd "$ROOT_DIR" && perl tests/regression_repetition_guard_quiet_move.pl)
   echo "==> Repetition guard jlPas6bb bishop-sac override check"
   (cd "$ROOT_DIR" && perl tests/regression_repetition_guard_jlpas6bb.pl)
+  echo "==> Repetition guard black-side scoring check"
+  (cd "$ROOT_DIR" && perl tests/regression_repetition_guard_black_side.pl)
 else
   echo "==> Skipping repetition guard quiet-move check"
+fi
+
+if [[ "$SKIP_QSEARCH_IN_CHECK" -eq 0 ]]; then
+  echo "==> Qsearch in-check mate/evasion guard"
+  (cd "$ROOT_DIR" && perl tests/regression_qsearch_in_check.pl)
+else
+  echo "==> Skipping qsearch in-check mate/evasion guard"
+fi
+
+if [[ "$SKIP_SEARCH_REPETITION" -eq 0 ]]; then
+  echo "==> Search repetition threefold-only guard"
+  (cd "$ROOT_DIR" && perl tests/regression_search_threefold_only.pl)
+else
+  echo "==> Skipping search repetition threefold-only guard"
+fi
+
+if [[ "$SKIP_MODULE_UNIT" -eq 0 ]]; then
+  echo "==> State core unit guard"
+  (cd "$ROOT_DIR" && perl tests/regression_state_core.pl)
+  echo "==> Transposition table unit guard"
+  (cd "$ROOT_DIR" && perl tests/regression_transposition_table.pl)
+  echo "==> Move picker unit guard"
+  (cd "$ROOT_DIR" && perl tests/regression_move_picker.pl)
+  echo "==> Table util unit guard"
+  (cd "$ROOT_DIR" && perl tests/regression_table_util_core.pl)
+  echo "==> Time manager unit guard"
+  (cd "$ROOT_DIR" && perl tests/regression_time_manager.pl)
+  echo "==> Zobrist token unit guard"
+  (cd "$ROOT_DIR" && perl tests/regression_zobrist_tokens.pl)
+  echo "==> Search root-stats unit guard"
+  (cd "$ROOT_DIR" && perl tests/regression_search_root_stats.pl)
+else
+  echo "==> Skipping module-level unit guards"
 fi
 
 if [[ "$SKIP_UNGUARDED_PLAN" -eq 0 ]]; then
@@ -249,6 +327,13 @@ if [[ "$SKIP_IMMEDIATE_STOP" -eq 0 ]]; then
   (cd "$ROOT_DIR" && perl tests/regression_uci_immediate_stop_legal.pl)
 else
   echo "==> Skipping UCI immediate-stop legal-bestmove guard"
+fi
+
+if [[ "$SKIP_SEARCHMOVES" -eq 0 ]]; then
+  echo "==> UCI searchmoves filter guard"
+  (cd "$ROOT_DIR" && perl tests/regression_uci_searchmoves.pl)
+else
+  echo "==> Skipping UCI searchmoves filter guard"
 fi
 
 if [[ "$SKIP_PERFT" -eq 0 ]]; then

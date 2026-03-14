@@ -21,6 +21,9 @@ scripts/data_ingress.sh LICHESS-DB-PGNS 2025-02
 ```
 
 Append mode records ingested sources in `data/lichess_ingest_manifest.json`.
+OWN-URL analytics should retain `data/lichess_game_urls.log` by default; only
+the explicit `DO_GIGA_DATA_PROCESSING.sh --consume-own-urls` path should clear
+consumed URLs.
 
 ## Feature Pipeline
 1. Parse PGNs with `python-chess` via `analysis/game_feature_extract.ipynb` (or let `analysis/location_modifer_training.ipynb` call it automatically when `BUILD_SHARDS_FROM_PGN=True`):

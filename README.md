@@ -7,6 +7,11 @@ points:
 - `tests/perft.pl` — perft validation driver (`perft.pl` remains as a compatibility shim).
 - `lichess.pl` — Bot API bridge that lets the engine play on lichess.org.
 
+## Contributing and License
+
+- Contribution guidelines: [CONTRIBUTING.md](CONTRIBUTING.md)
+- License: [GNU GPL v3.0](LICENSE)
+
 ## Development Environment
 
 Dependencies are isolated with a Python virtual environment and a local Perl
@@ -46,14 +51,16 @@ Master pipeline wrappers:
 ./DO_PARAMATER_EXTRACTION.sh
 ./DO_ENGINE_PIPELINE.sh
 ./DO_GIGA_DATA_PROCESSING.sh
+./DO_GIGA_DATA_PROCESSING.sh --consume-own-urls
 ./DO_GIGA_DATA_PROCESSING.sh --month 2026-01 --batch-months 3
-./DO_GIGA_DATA_PROCESSING.sh --month 2026-01 --batch-months 3 --with-own-urls
+./DO_GIGA_DATA_PROCESSING.sh --month 2026-01 --batch-months 3 --with-own-urls --consume-own-urls
 ```
 
 - `DO_LOCATION_MODIFIER.sh` runs ingest + location modifier training + validation.
 - `DO_PARAMATER_EXTRACTION.sh` runs ingest + engine training notebook and emits a migration bundle.
 - `DO_ENGINE_PIPELINE.sh` runs parameter extraction, applies the newest patch when present, and validates via `perl -c` + `perft`.
 - `DO_GIGA_DATA_PROCESSING.sh` runs the combined location + parameter + engine patch pipeline in one command.
+  Add `--consume-own-urls` when you want processed OWN-URL entries cleared after ingest.
   In `--month` mode it defaults to `--no-own-urls`; add `--with-own-urls` to include URL-log ingestion.
 
 Regression tests live under `tests/`:
@@ -71,13 +78,13 @@ perl tests/regression_hyhMjQD2_kg8.pl --depth 3 --movetime 10000
    requests succeed.
 3. Store the token in a `.env` file (same directory as the scripts):
    ```
-   LICHESS_TOKEN=lip_<TOKEN>
+   LICHESS_TOKEN=<token>
    ```
    The script reads `.env` on startup and also respects any variable already set
    in the process environment.
 4. Launch the bridge (you can still `export` to override values temporarily):
    ```bash
-   export LICHESS_TOKEN=lip_abc123...
+   export LICHESS_TOKEN=<token>
    perl lichess.pl
    ```
 
@@ -134,6 +141,10 @@ To ingest your own game URLs from `data/lichess_game_urls.log`:
 ```bash
 scripts/data_ingress.sh OWN-URLS
 ```
+
+The standard analytics wrappers retain `data/lichess_game_urls.log` by default.
+Use `./DO_GIGA_DATA_PROCESSING.sh --consume-own-urls` when you explicitly want
+processed URLs cleared after ingest.
 
 To run both sources in one pass:
 

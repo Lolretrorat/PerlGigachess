@@ -888,6 +888,11 @@ sub make_move {
   return $next;
 }
 
+sub clone {
+  my ($self) = @_;
+  return _clone_state($self);
+}
+
 sub generate_moves
 {
   my ($self) = @_;
