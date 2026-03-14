@@ -1,6 +1,6 @@
 {
-  "version": 1,
-  "description": "Bounded hyperparameter registry for Engine.pm auto-tuning",
+  "version": 2,
+  "description": "Bounded hyperparameter registry for Engine heuristics and lichess runtime config tuning",
   "parameters": [
     {
       "name": "UNSAFE_CAPTURE_HANGING_BONUS",
@@ -502,6 +502,400 @@
         "check_risk_delta": 0.2
       },
       "simple_meaning": "Penalty for staying uncastled; higher encourages castling earlier."
+    },
+    {
+      "name": "PAWN_DOUBLED_PENALTY",
+      "group": "pawn_structure",
+      "type": "int",
+      "min": 1,
+      "max": 10,
+      "step": 1,
+      "max_step_change": 3,
+      "direction": "increase",
+      "base_weight": 0.8,
+      "feature_weights": {
+        "opening_phase": 0.2,
+        "endgame_phase": 0.15,
+        "material_cp": 0.1,
+        "legal_moves": 0.1
+      },
+      "signal_weights": {
+        "pawn_structure_risk": 0.6,
+        "avg_cp_loss_risk": 0.2,
+        "endgame_conversion_risk": 0.2
+      },
+      "default_current": 3,
+      "simple_meaning": "Penalty for doubled pawns; higher punishes damaged pawn structure more."
+    },
+    {
+      "name": "PAWN_ISOLATED_PENALTY",
+      "group": "pawn_structure",
+      "type": "int",
+      "min": 1,
+      "max": 10,
+      "step": 1,
+      "max_step_change": 2,
+      "direction": "increase",
+      "base_weight": 0.75,
+      "feature_weights": {
+        "opening_phase": 0.25,
+        "mobility_delta": 0.2,
+        "legal_moves": 0.15
+      },
+      "signal_weights": {
+        "pawn_structure_risk": 0.55,
+        "opening_risk": 0.25,
+        "endgame_conversion_risk": 0.2
+      },
+      "default_current": 4,
+      "simple_meaning": "Penalty for isolated pawns; higher prefers keeping pawn chains and support."
+    },
+    {
+      "name": "KNIGHT_MOBILITY_BONUS",
+      "group": "piece_activity",
+      "type": "int",
+      "min": 0,
+      "max": 4,
+      "step": 1,
+      "max_step_change": 2,
+      "direction": "increase",
+      "base_weight": 0.7,
+      "feature_weights": {
+        "mobility_delta": 0.5,
+        "legal_moves": 0.25,
+        "opening_phase": 0.15
+      },
+      "signal_weights": {
+        "mobility_risk": 0.55,
+        "threat_risk": 0.25,
+        "instability_risk": 0.2
+      },
+      "default_current": 1,
+      "simple_meaning": "Bonus per safe knight move; higher rewards active knight placement."
+    },
+    {
+      "name": "ROOK_OPEN_FILE_BONUS",
+      "group": "piece_activity",
+      "type": "int",
+      "min": 0,
+      "max": 12,
+      "step": 1,
+      "max_step_change": 3,
+      "direction": "increase",
+      "base_weight": 0.75,
+      "feature_weights": {
+        "mobility_delta": 0.35,
+        "legal_moves": 0.2,
+        "center_control_delta": 0.15,
+        "endgame_phase": 0.15
+      },
+      "signal_weights": {
+        "mobility_risk": 0.45,
+        "threat_risk": 0.2,
+        "endgame_conversion_risk": 0.35
+      },
+      "default_current": 6,
+      "simple_meaning": "Bonus for rooks on open files; higher pushes rooks onto active files sooner."
+    },
+    {
+      "name": "THREAT_ATTACK_BONUS",
+      "group": "threat_eval",
+      "type": "int",
+      "min": 0,
+      "max": 16,
+      "step": 1,
+      "max_step_change": 4,
+      "direction": "increase",
+      "base_weight": 0.85,
+      "feature_weights": {
+        "threatened_ours": 0.3,
+        "threatened_delta": 0.35,
+        "opponent_checks_after": 0.2,
+        "king_ring_attacked": 0.15
+      },
+      "signal_weights": {
+        "threat_risk": 0.45,
+        "hanging_risk_delta": 0.3,
+        "check_risk_delta": 0.25
+      },
+      "default_current": 4,
+      "simple_meaning": "Bonus for safe pressure against loose enemy pieces; higher makes tactical threats matter more."
+    },
+    {
+      "name": "ENDGAME_PASSED_PAWN_BONUS",
+      "group": "endgame_conversion",
+      "type": "int",
+      "min": 0,
+      "max": 12,
+      "step": 1,
+      "max_step_change": 4,
+      "direction": "increase",
+      "base_weight": 0.7,
+      "feature_weights": {
+        "endgame_phase": 0.45,
+        "material_cp": 0.2,
+        "legal_moves": 0.15
+      },
+      "signal_weights": {
+        "endgame_conversion_risk": 0.55,
+        "endgame_risk": 0.25,
+        "avg_cp_loss_risk": 0.2
+      },
+      "default_current": 3,
+      "simple_meaning": "Bonus for king-supported passed pawns in endgames; higher improves conversion technique."
+    },
+    {
+      "name": "ROOT_SCORE_DROP_THRESHOLD_CP",
+      "group": "root_regression",
+      "type": "int",
+      "min": 10,
+      "max": 180,
+      "step": 5,
+      "max_step_change": 4,
+      "direction": "decrease",
+      "base_weight": 0.7,
+      "feature_weights": {
+        "search_depth_gap": 0.45,
+        "threatened_delta": 0.2,
+        "opponent_checks_after": 0.15,
+        "legal_moves": 0.1
+      },
+      "signal_weights": {
+        "instability_risk": 0.45,
+        "depth_headroom_risk": 0.3,
+        "bestmove_miss_rate": 0.25
+      },
+      "default_current": 45,
+      "simple_meaning": "Score-drop threshold before a root line is penalized; lower reacts faster to collapsing principal variations."
+    },
+    {
+      "name": "ROOT_SCORE_DROP_PENALTY_SCALE",
+      "group": "root_regression",
+      "type": "float",
+      "min": 0.10,
+      "max": 1.50,
+      "step": 0.05,
+      "max_step_change": 4,
+      "direction": "increase",
+      "base_weight": 0.75,
+      "feature_weights": {
+        "search_depth_gap": 0.45,
+        "threatened_delta": 0.2,
+        "opponent_checks_after": 0.15,
+        "legal_moves": 0.1
+      },
+      "signal_weights": {
+        "instability_risk": 0.45,
+        "depth_headroom_risk": 0.3,
+        "bestmove_miss_rate": 0.25
+      },
+      "default_current": 0.45,
+      "simple_meaning": "Penalty scale for root lines that lose evaluation across iterations; higher demotes unstable candidate moves more strongly."
+    },
+    {
+      "name": "LICHESS_DEPTH_TARGET_BULLET",
+      "group": "lichess_depth",
+      "source": "external_config",
+      "current_key": "LICHESS_DEPTH_TARGET_BULLET",
+      "type": "int",
+      "min": 6,
+      "max": 14,
+      "step": 1,
+      "max_step_change": 2,
+      "direction": "decrease",
+      "base_weight": 0.45,
+      "feature_weights": {
+        "legal_moves": 0.3,
+        "mobility_delta": 0.2,
+        "opponent_checks_after": 0.2,
+        "opening_phase": 0.3
+      },
+      "signal_weights": {
+        "depth_headroom_risk": 0.45,
+        "time_scramble_risk": 0.35,
+        "instability_risk": 0.2
+      },
+      "default_current": 10,
+      "simple_meaning": "Target search depth for bullet games; lower can be preferable under severe time pressure."
+    },
+    {
+      "name": "LICHESS_DEPTH_TARGET_BLITZ",
+      "group": "lichess_depth",
+      "source": "external_config",
+      "current_key": "LICHESS_DEPTH_TARGET_BLITZ",
+      "type": "int",
+      "min": 8,
+      "max": 16,
+      "step": 1,
+      "max_step_change": 2,
+      "direction": "increase",
+      "base_weight": 0.7,
+      "feature_weights": {
+        "legal_moves": 0.25,
+        "mobility_delta": 0.25,
+        "opponent_checks_after": 0.2,
+        "opening_phase": 0.2
+      },
+      "signal_weights": {
+        "depth_headroom_risk": 0.45,
+        "time_scramble_risk": 0.25,
+        "instability_risk": 0.3
+      },
+      "default_current": 12,
+      "simple_meaning": "Target search depth for blitz games; higher seeks more stable tactics when the clock permits."
+    },
+    {
+      "name": "LICHESS_DEPTH_TARGET_RAPID",
+      "group": "lichess_depth",
+      "source": "external_config",
+      "current_key": "LICHESS_DEPTH_TARGET_RAPID",
+      "type": "int",
+      "min": 8,
+      "max": 18,
+      "step": 1,
+      "max_step_change": 3,
+      "direction": "increase",
+      "base_weight": 0.9,
+      "feature_weights": {
+        "legal_moves": 0.2,
+        "mobility_delta": 0.25,
+        "opponent_checks_after": 0.2,
+        "best_matches_played": 0.35
+      },
+      "signal_weights": {
+        "depth_headroom_risk": 0.55,
+        "bestmove_miss_rate": 0.25,
+        "instability_risk": 0.2
+      },
+      "default_current": 14,
+      "simple_meaning": "Target search depth for rapid games; higher uses the extra clock to reach more stable decisions."
+    },
+    {
+      "name": "LICHESS_DEPTH_TARGET_CLASSICAL",
+      "group": "lichess_depth",
+      "source": "external_config",
+      "current_key": "LICHESS_DEPTH_TARGET_CLASSICAL",
+      "type": "int",
+      "min": 10,
+      "max": 20,
+      "step": 1,
+      "max_step_change": 3,
+      "direction": "increase",
+      "base_weight": 0.85,
+      "feature_weights": {
+        "legal_moves": 0.2,
+        "mobility_delta": 0.2,
+        "endgame_phase": 0.25,
+        "best_matches_played": 0.25
+      },
+      "signal_weights": {
+        "depth_headroom_risk": 0.5,
+        "bestmove_miss_rate": 0.25,
+        "endgame_conversion_risk": 0.25
+      },
+      "default_current": 16,
+      "simple_meaning": "Target search depth for classical games; higher spends the larger clock on deeper, steadier search."
+    },
+    {
+      "name": "LICHESS_RETHINK_DEPTH_BUMP",
+      "group": "lichess_depth",
+      "source": "external_config",
+      "current_key": "LICHESS_RETHINK_DEPTH_BUMP",
+      "type": "int",
+      "min": 0,
+      "max": 4,
+      "step": 1,
+      "max_step_change": 1,
+      "direction": "increase",
+      "base_weight": 0.55,
+      "feature_weights": {
+        "search_depth_gap": 0.45,
+        "opponent_checks_after": 0.2,
+        "threatened_delta": 0.15,
+        "legal_moves": 0.1
+      },
+      "signal_weights": {
+        "depth_headroom_risk": 0.45,
+        "instability_risk": 0.35,
+        "threat_risk": 0.2
+      },
+      "default_current": 1,
+      "simple_meaning": "Extra depth added during forced re-thinks; higher probes unstable positions more deeply before committing."
+    },
+    {
+      "name": "LICHESS_PANIC_30S_CAP_MS",
+      "group": "lichess_time",
+      "source": "external_config",
+      "current_key": "LICHESS_PANIC_30S_CAP_MS",
+      "type": "int",
+      "min": 300,
+      "max": 4000,
+      "step": 50,
+      "max_step_change": 6,
+      "direction": "decrease",
+      "base_weight": 0.6,
+      "feature_weights": {
+        "opponent_checks_after": 0.2,
+        "legal_moves": 0.2,
+        "opening_phase": 0.1
+      },
+      "signal_weights": {
+        "time_scramble_risk": 0.55,
+        "instability_risk": 0.25,
+        "endgame_conversion_risk": 0.2
+      },
+      "default_current": 2200,
+      "simple_meaning": "Cap on think time when the bot has around 30 seconds left; lower preserves clock safety."
+    },
+    {
+      "name": "LICHESS_PANIC_10S_CAP_MS",
+      "group": "lichess_time",
+      "source": "external_config",
+      "current_key": "LICHESS_PANIC_10S_CAP_MS",
+      "type": "int",
+      "min": 80,
+      "max": 1600,
+      "step": 20,
+      "max_step_change": 5,
+      "direction": "decrease",
+      "base_weight": 0.75,
+      "feature_weights": {
+        "opponent_checks_after": 0.25,
+        "legal_moves": 0.2,
+        "king_ring_attacked": 0.15
+      },
+      "signal_weights": {
+        "time_scramble_risk": 0.6,
+        "check_risk_delta": 0.2,
+        "instability_risk": 0.2
+      },
+      "default_current": 900,
+      "simple_meaning": "Cap on think time below 10 seconds; lower avoids flagging in fast scrambles."
+    },
+    {
+      "name": "LICHESS_POST_BOOK_THINK_MULT",
+      "group": "lichess_time",
+      "source": "external_config",
+      "current_key": "LICHESS_POST_BOOK_THINK_MULT",
+      "type": "float",
+      "min": 1.0,
+      "max": 1.8,
+      "step": 0.05,
+      "max_step_change": 3,
+      "direction": "increase",
+      "base_weight": 0.55,
+      "feature_weights": {
+        "book_differs_nobook": 0.45,
+        "opening_phase": 0.2,
+        "best_matches_played": 0.15
+      },
+      "signal_weights": {
+        "depth_headroom_risk": 0.4,
+        "opening_risk": 0.3,
+        "instability_risk": 0.3
+      },
+      "default_current": 1.12,
+      "simple_meaning": "Extra think multiplier right after leaving book; higher invests more time in the transition to engine play."
     }
   ]
 }

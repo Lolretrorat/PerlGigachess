@@ -12,7 +12,7 @@ LICHESS_MONTH=""
 
 OWN_URL_LOG="$ROOT_DIR/data/lichess_game_urls.log"
 OWN_PGN_OUTPUT="$ROOT_DIR/data/lichess_games_export.pgn"
-CLEAR_OWN_URL_LOG=1
+CLEAR_OWN_URL_LOG=0
 
 DEFAULT_TMP_DIR="${PERLGIGACHESS_TMP_DIR:-/mnt/throughput/perlgigachess-tmp}"
 TMP_DIR="$DEFAULT_TMP_DIR"
@@ -43,7 +43,8 @@ Options:
   --month <YYYY-MM>               Also ingest Lichess monthly dump via LICHESS-DB-PGNS
   --own-url-log <path>            URL log path (default: data/lichess_game_urls.log)
   --own-pgn-output <path>         OWN-URLS PGN output path
-  --keep-url-log                  Do not clear URL log after OWN-URLS ingest
+  --clear-url-log                 Clear URL log after OWN-URLS ingest
+  --keep-url-log                  Deprecated no-op; URLs are retained by default
   --tmp-dir <dir>                 Temp directory for ingest (default: $PERLGIGACHESS_TMP_DIR or /mnt/throughput/perlgigachess-tmp)
   --keep-download                 Keep monthly archive download
   --allow-duplicate-source        Allow duplicate monthly ingest source
@@ -96,6 +97,10 @@ while [[ $# -gt 0 ]]; do
       require_value "--own-pgn-output" "${2:-}"
       OWN_PGN_OUTPUT="${2:-}"
       shift 2
+      ;;
+    --clear-url-log)
+      CLEAR_OWN_URL_LOG=1
+      shift
       ;;
     --keep-url-log)
       CLEAR_OWN_URL_LOG=0
