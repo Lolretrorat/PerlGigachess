@@ -42,7 +42,6 @@ use Chess::EvalTerms qw(
   has_non_pawn_material
   make_null_move_state
 );
-use Chess::MoveOrder;
 use Chess::Search qw(
   reset_root_search_stats
   finalize_root_search_stats
@@ -53,8 +52,7 @@ use Chess::Search qw(
 );
 
 use Chess::Book;
-use Chess::MoveGen ();
-use Chess::MovePicker;
+use Chess::MovePicker qw(generate_moves collect_legal_moves);
 
 use List::Util qw(max min);
 
@@ -75,7 +73,7 @@ my $transposition_table = Chess::TranspositionTable->new(
 my %eval_cache;
 my %piece_values = %{piece_values()};
 my @board_indices = Chess::TableUtil::board_indices();
-my $move_order = Chess::MoveOrder->new(
+my $move_order = Chess::MovePicker::MoveOrder->new(
   piece_values => \%piece_values,
   location_modifier_percent_cb => \&location_modifier_percent,
   square_of_idx_cb => \&square_of_idx,
@@ -1191,7 +1189,7 @@ sub _new_move_picker {
     move_key_cb => \&_move_key,
     exclude_move_keys => \%exclude_move_keys,
   };
-  my $legal_moves = Chess::MoveGen::generate_moves($state, 'legal', $move_gen_opts);
+  my $legal_moves = generate_moves($state, 'legal', $move_gen_opts);
 
   return Chess::MovePicker->new(
     state => $state,
@@ -1570,7 +1568,7 @@ sub _quiesce {
     return $alpha if $alpha >= $beta || $depth >= $search_quiesce_limit;
   }
 
-  my $legal_groups = Chess::MoveGen::collect_legal_moves($state);
+  my $legal_groups = collect_legal_moves($state);
   my $captures = $legal_groups->{captures};
   my $quiets = $legal_groups->{quiets};
   $captures = [] unless ref($captures) eq 'ARRAY';
