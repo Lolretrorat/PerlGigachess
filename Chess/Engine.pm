@@ -100,7 +100,7 @@ sub new {
 
   my %self;
   $self{state} = shift || die "Cannot instantiate Chess::Engine without a Chess::State";
-  $self{depth} = shift || 6; # bigger number more thinky
+  $self{depth} = shift || 8; # bigger number more thinky
   my $opts = shift;
   my $workers = 1;
   if (defined $opts) {
@@ -1051,14 +1051,10 @@ sub _king_aggression_score {
 }
 
 sub _is_king_safety_critical_move {
-  my ($state, $move, $new_state, $own_king_danger) = @_;
-  my $board = $state->[Chess::State::BOARD];
-  my $from_piece = abs($board->[$move->[0]] // 0);
+  my ($from_piece, $move, $new_state, $own_king_danger, $king_idx, $ring_ref) = @_;
   return 1 if $from_piece == KING;
   return 1 if $new_state->is_checked;
 
-  my $king_idx = $state->[Chess::State::KING_IDX];
-  $king_idx = _find_piece_idx($board, KING) unless defined $king_idx;
   return 1 if defined $own_king_danger && $own_king_danger >= LMR_KING_DANGER_THRESHOLD;
   return 0 unless defined $king_idx;
 
@@ -1067,17 +1063,15 @@ sub _is_king_safety_critical_move {
     return 1;
   }
 
-  my @ring = _king_ring_indices($board, $king_idx);
-  my %ring = map { $_ => 1 } @ring;
-  return 1 if $ring{$move->[0]} || $ring{$move->[1]};
+  if (ref($ring_ref) eq 'HASH') {
+    return 1 if $ring_ref->{$move->[0]} || $ring_ref->{$move->[1]};
+  }
 
   return 0;
 }
 
 sub _is_tactical_queen_move {
-  my ($state, $move, $new_state, $is_capture) = @_;
-  my $board = $state->[Chess::State::BOARD];
-  my $from_piece = abs($board->[$move->[0]] // 0);
+  my ($from_piece, $new_state, $is_capture) = @_;
   return 0 unless $from_piece == QUEEN;
 
   # Captures and direct checks are already tactical by definition.
@@ -1173,17 +1167,12 @@ sub _ordered_moves {
 }
 
 sub _new_move_picker {
-  my ($state, $ply, $tt_move_key, $prev_move_key) = @_;
+  my ($state, $ply, $tt_move_key, $prev_move_key, $tt_move) = @_;
   my $killer_move_keys = $move_order->{killer_moves}[$ply] || [];
-  my $countermove_key = defined $prev_move_key ? $move_order->{counter_moves}{$prev_move_key} : undef;
-  my %exclude_move_keys;
-  my @tt_moves;
-  if (defined $tt_move_key) {
-    my $tt_move = _find_move_by_key($state, $tt_move_key);
-    if (defined $tt_move) {
-      push @tt_moves, $tt_move;
-      $exclude_move_keys{$tt_move_key} = 1;
-    }
+  my $countermove_key = defined $prev_move_key ? $move_order->{counter_moves}[$prev_move_key] : undef;
+
+  if (defined $tt_move && !defined $tt_move_key) {
+    $tt_move_key = _move_key($tt_move);
   }
 
   my $move_gen_opts = {
@@ -1210,23 +1199,6 @@ sub _new_move_picker {
     score_cb => sub {
       my ($move, $move_key, $is_capture) = @_;
       return _move_order_score($state, $move, $move_key, $is_capture, $ply, $tt_move_key, $prev_move_key);
-    },
-  );
-}
-
-sub _new_quiesce_capture_picker {
-  my ($state) = @_;
-  return Chess::MovePicker->new(
-    state => $state,
-    moves => $state->generate_moves_by_type('captures'),
-    see_order_weight => SEE_ORDER_WEIGHT,
-    see_bad_capture_threshold => SEE_BAD_CAPTURE_THRESHOLD,
-    see_prune_threshold => QUIESCE_SEE_PRUNE_THRESHOLD,
-    move_key_cb => \&_move_key,
-    is_capture_cb => sub { return 1; },
-    score_cb => sub {
-      my ($move, $move_key, $is_capture) = @_;
-      return _move_order_score($state, $move, $move_key, $is_capture, 0);
     },
   );
 }
@@ -1533,7 +1505,9 @@ sub _find_move_by_key {
   my ($state, $target_key) = @_;
   return unless defined $target_key;
 
-  for my $move (@{$state->generate_pseudo_moves}) {
+  my $pseudo = $state->generate_pseudo_moves;
+  my @undo_stack;
+  for my $move (@{$pseudo}) {
     next unless _move_key($move) == $target_key;
     my @undo_stack;
     next unless defined $state->do_move($move, \@undo_stack);
@@ -1567,7 +1541,14 @@ sub _quiesce {
     return $alpha if $alpha >= $beta || $depth >= $search_quiesce_limit;
   }
 
+  my $legal_groups = Chess::MoveGen::collect_legal_moves($state);
+  my $captures = $legal_groups->{captures};
+  my $quiets = $legal_groups->{quiets};
+  $captures = [] unless ref($captures) eq 'ARRAY';
+  $quiets = [] unless ref($quiets) eq 'ARRAY';
+
   my @forcing;
+  my @undo_stack;
 
   if ($in_check) {
     my $evasion_picker = _new_move_picker($state, 0, undef, undef);
@@ -1696,11 +1677,13 @@ sub _search {
 
   my $key = _state_key($state);
   my $tt_entry = $transposition_table->probe($key, ply => $ply, mate_score => MATE_SCORE);
+  my $tt_move_key = $tt_entry ? $tt_entry->{best_move_key} : undef;
+  my $tt_move;
 
   if ($tt_entry && $tt_entry->{depth} >= $depth) {
     my $tt_score = $tt_entry->{score};
     if ($tt_entry->{flag} == TT_FLAG_EXACT) {
-      return ($tt_score, _find_move_by_key($state, $tt_entry->{best_move_key}));
+      return ($tt_score, ($ply == 0 ? _find_move_by_key($state, $tt_move_key) : undef));
     }
     if ($tt_entry->{flag} == TT_FLAG_LOWER) {
       $alpha = max($alpha, $tt_score);
@@ -1708,14 +1691,13 @@ sub _search {
       $beta = min($beta, $tt_score);
     }
     if ($alpha >= $beta) {
-      return ($tt_score, _find_move_by_key($state, $tt_entry->{best_move_key}));
+      return ($tt_score, ($ply == 0 ? _find_move_by_key($state, $tt_move_key) : undef));
     }
   }
 
   my $alpha_orig = $alpha;
   my $beta_orig = $beta;
   my $is_pv = ($beta - $alpha) > 1 ? 1 : 0;
-  my $tt_move_key = $tt_entry ? $tt_entry->{best_move_key} : undef;
   my $best_value = -INF_SCORE;
   my $best_move;
   my $best_move_key;
@@ -1766,7 +1748,14 @@ sub _search {
       my (undef, $iid_move) = _search(
         $state, $iid_depth, $alpha, $beta, $ply, $prev_move_key, $prev_was_null, $rep_counts
       );
-      $tt_move_key = _move_key($iid_move) if defined $iid_move;
+      if (defined $iid_move) {
+        $tt_move = $iid_move;
+        $tt_move_key = _move_key($iid_move);
+      }
+      if (!defined $tt_move_key) {
+        my $iid_tt_entry = $transposition_table->probe($key, ply => $ply, mate_score => MATE_SCORE);
+        $tt_move_key = $iid_tt_entry->{best_move_key} if $iid_tt_entry;
+      }
     }
   }
 
@@ -1794,7 +1783,12 @@ sub _search {
     }
   }
 
-  my $move_picker = _new_move_picker($state, $ply, $tt_move_key, $prev_move_key);
+  my $parent_board = $state->[Chess::State::BOARD];
+  my $king_idx = $state->[Chess::State::KING_IDX];
+  $king_idx = _find_piece_idx($parent_board, KING) unless defined $king_idx;
+  my %king_ring = map { $_ => 1 } _king_ring_indices($parent_board, $king_idx);
+  my @undo_stack;
+  my $move_picker = _new_move_picker($state, $ply, $tt_move_key, $prev_move_key, $tt_move);
   while (my $entry = $move_picker->next_move) {
     my ($move, $child_prev_move_key, $is_capture) = @{$entry}[1, 2, 3];
     my $board = $state->[Chess::State::BOARD];
@@ -1854,6 +1848,7 @@ sub _search {
       && !$king_safety_critical
       && !$tactical_queen_move)
     {
+      $state->undo_move(\@undo_stack);
       $move_index++;
       $state->undo_move(\@undo_stack);
       next;
@@ -1887,6 +1882,23 @@ sub _search {
         $reduced_depth = 0 if $reduced_depth < 0;
         ($value) = _search($state, $reduced_depth, -$alpha - 1, -$alpha, $ply + 1, $child_prev_move_key, 0, $rep_counts);
         $value = -$value;
+      } else {
+        my $reduction = 0;
+        if (! $in_check
+          && $depth >= 4
+          && $move_index >= 3
+          && !defined $move->[2]
+          && !defined $move->[3]
+          && ! $is_capture
+          && ! $gives_check
+          && ! $quiet_hanging_move
+          && ! $king_safety_critical
+          && ! $tactical_queen_move
+          && $own_king_danger < LMR_KING_DANGER_THRESHOLD)
+        {
+          $reduction = 1;
+          $reduction = 2 if $depth >= 6 && $move_index >= 8;
+        }
 
         if ($value > $alpha) {
           ($value) = _search($state, $depth - 1, -$alpha - 1, -$alpha, $ply + 1, $child_prev_move_key, 0, $rep_counts);
@@ -1894,6 +1906,10 @@ sub _search {
           if ($value > $alpha && $value < $beta) {
             ($value) = _search($state, $depth - 1, -$beta, -$alpha, $ply + 1, $child_prev_move_key, 0, $rep_counts);
             $value = -$value;
+            if ($value > $alpha && $value < $beta) {
+              ($value) = _search($state, $depth - 1, -$beta, -$alpha, $ply + 1, $child_prev_move_key, 0, $rep_counts);
+              $value = -$value;
+            }
           }
         }
       } else {
@@ -1902,10 +1918,17 @@ sub _search {
         if ($value > $alpha && $value < $beta) {
           ($value) = _search($state, $depth - 1, -$beta, -$alpha, $ply + 1, $child_prev_move_key, 0, $rep_counts);
           $value = -$value;
+          if ($value > $alpha && $value < $beta) {
+            ($value) = _search($state, $depth - 1, -$beta, -$alpha, $ply + 1, $child_prev_move_key, 0, $rep_counts);
+            $value = -$value;
+          }
         }
       }
-    }
+      1;
+    };
     _rep_pop_key($rep_counts, $child_rep_key);
+    $state->undo_move(\@undo_stack);
+    die $@ unless $ok;
     $move_index++;
     if ($quiet_hanging_move) {
       $value -= _hanging_move_penalty($state, $move);
@@ -2021,15 +2044,17 @@ sub think {
     ? _normalize_worker_count($think_opts{workers})
     : _normalize_worker_count($self->{workers});
   my $requested_multipv = _normalize_multipv($think_opts{multipv});
+  my $strict_depth = $think_opts{strict_depth} ? 1 : 0;
 
   my $target_depth = max(1, $self->{depth});
-  $target_depth += MID_ENDGAME_DEPTH_BOOST if $piece_count <= MID_ENDGAME_PIECE_THRESHOLD;
-  $target_depth += DEEP_ENDGAME_DEPTH_BOOST if $piece_count <= DEEP_ENDGAME_PIECE_THRESHOLD;
-  $target_depth = min(20, $target_depth);
-  my $max_depth = min(20, $target_depth + EXTRA_DEPTH_ON_UNSTABLE);
-  if ($think_opts{strict_depth}) {
-    $max_depth = $target_depth;
+  if (!$strict_depth) {
+    $target_depth += MID_ENDGAME_DEPTH_BOOST if $piece_count <= MID_ENDGAME_PIECE_THRESHOLD;
+    $target_depth += DEEP_ENDGAME_DEPTH_BOOST if $piece_count <= DEEP_ENDGAME_PIECE_THRESHOLD;
   }
+  $target_depth = min(20, $target_depth);
+  my $max_depth = $strict_depth
+    ? $target_depth
+    : min(20, $target_depth + EXTRA_DEPTH_ON_UNSTABLE);
   my $easy_move_depth = max(EASY_MOVE_MIN_DEPTH, min($target_depth, EASY_MOVE_DEPTH_CAP));
   if ($piece_count <= MID_ENDGAME_PIECE_THRESHOLD) {
     $easy_move_depth = min($target_depth, $easy_move_depth + MID_ENDGAME_EASY_MOVE_EXTRA_DEPTH);
@@ -2085,14 +2110,14 @@ sub think {
         $aspiration_expansions++;
         $alpha = max(-INF_SCORE, $alpha - $window);
         $window *= 2;
-        last if $last_completed_depth && _time_up_soft();
+        last if !$strict_depth && $last_completed_depth && _time_up_soft();
         next;
       }
       if ($score >= $beta) {
         $aspiration_expansions++;
         $beta = min(INF_SCORE, $beta + $window);
         $window *= 2;
-        last if $last_completed_depth && _time_up_soft();
+        last if !$strict_depth && $last_completed_depth && _time_up_soft();
         next;
       }
 
@@ -2156,7 +2181,8 @@ sub think {
       eval { $on_update->($depth, $iteration_score, $best_move, $update); };
     }
 
-    if ($time_policy->{has_clock}
+    if (!$strict_depth
+      && $time_policy->{has_clock}
       && $forced_or_easy_root
       && !$critical_position
       && $depth >= max(3, $easy_move_depth - 1)
@@ -2201,7 +2227,7 @@ sub think {
       }
     }
 
-    if ($time_policy->{has_clock} && $depth >= $easy_move_depth) {
+    if (!$strict_depth && $time_policy->{has_clock} && $depth >= $easy_move_depth) {
       my $easy_move = !$critical_position
         && $stable_best_hits >= 2
         && $score_delta <= SCORE_STABILITY_DELTA
@@ -2210,6 +2236,9 @@ sub think {
     }
 
     if ($depth >= $target_depth) {
+      if ($strict_depth) {
+        last;
+      }
       last if $stability_hits >= 1;
       last if _time_up_soft();
     }

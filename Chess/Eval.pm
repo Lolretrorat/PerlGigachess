@@ -20,11 +20,25 @@ sub evaluate_position {
   my $location_bonus_cb = $opts->{location_bonus_cb};
   my $strategic_cb = $opts->{strategic_cb};
   my $has_pst = defined $square_of_idx_cb && defined $location_bonus_cb;
-  my $phase = 0;
+  my $incremental = $opts->{incremental};
+  if ((!defined $incremental || ref($incremental) ne 'HASH')
+      && ref($state)
+      && $state->can('incremental_eval_components')) {
+    $incremental = $state->incremental_eval_components();
+  }
+  $incremental = {} unless ref($incremental) eq 'HASH';
 
-  my $material = 0;
-  my $pst_mg = 0;
-  my $pst_eg = 0;
+  my $material = $incremental->{material};
+  my $pst_mg = $incremental->{pst_mg};
+  my $pst_eg = $incremental->{pst_eg};
+  my $phase = $incremental->{phase};
+  my $need_material = !defined $material;
+  my $need_pst = !defined $pst_mg || !defined $pst_eg;
+  my $need_phase = !defined $phase;
+  $material = 0 if $need_material;
+  $pst_mg = 0 if !defined $pst_mg;
+  $pst_eg = 0 if !defined $pst_eg;
+  $phase = 0 if $need_phase;
 
   my %ctx = (
     piece_count => 0,
@@ -45,7 +59,7 @@ sub evaluate_position {
     my $abs_piece = abs($piece);
     if ($abs_piece >= 1 && $abs_piece <= 6) {
       $ctx{piece_count}++;
-      $phase += ($phase_weight[$abs_piece] // 0);
+      $phase += ($phase_weight[$abs_piece] // 0) if $need_phase;
     }
     if ($abs_piece >= 1 && $abs_piece <= 5) {
       if ($piece > 0) {
@@ -69,10 +83,11 @@ sub evaluate_position {
     }
 
     my $base = $piece_values->{$piece} // 0;
-    next unless $base;
-    $material += $base;
+    if ($need_material) {
+      $material += $base if $base;
+    }
 
-    next unless $has_pst;
+    next unless $need_pst && $has_pst && $base;
     my $sq = $square_of_idx_cb->($idx);
     next unless defined $sq;
     my $pst = $location_bonus_cb->($piece, $sq, $base) // 0;
