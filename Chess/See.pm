@@ -62,7 +62,9 @@ sub evaluate_capture {
     my ($attacker_idx, $attacker_piece) = _least_valuable_attacker(\@occ, $to, $side);
     last unless defined $attacker_idx;
     $depth++;
-    $gain[$depth] = _piece_abs_value($attacker_piece) - $gain[$depth - 1];
+    # Gain is the value of the piece being captured (on target square),
+    # minus what we could gain by stopping the exchange here
+    $gain[$depth] = _piece_abs_value($occ[$to]) - $gain[$depth - 1];
     $occ[$attacker_idx] = EMPTY;
     $occ[$to] = $attacker_piece;
     $side = -$side;
