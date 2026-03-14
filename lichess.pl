@@ -212,11 +212,11 @@ my %socket_read_buffers;
 my $http_request_sock;
 my $http_request_sock_pid = $$;
 my %speed_depth_targets = (
-  bullet    => _env_int_range('LICHESS_DEPTH_TARGET_BULLET', 10, 1, 20),
-  blitz     => _env_int_range('LICHESS_DEPTH_TARGET_BLITZ', 12, 1, 20),
-  rapid     => _env_int_range('LICHESS_DEPTH_TARGET_RAPID', 14, 1, 20),
-  classical => _env_int_range('LICHESS_DEPTH_TARGET_CLASSICAL', 16, 1, 20),
-  unlimited => _env_int_range('LICHESS_DEPTH_TARGET_UNLIMITED', 18, 1, 20),
+  bullet    => _env_int_range('LICHESS_DEPTH_TARGET_BULLET', 11, 1, 20),
+  blitz     => _env_int_range('LICHESS_DEPTH_TARGET_BLITZ', 13, 1, 20),
+  rapid     => _env_int_range('LICHESS_DEPTH_TARGET_RAPID', 15, 1, 20),
+  classical => _env_int_range('LICHESS_DEPTH_TARGET_CLASSICAL', 17, 1, 20),
+  unlimited => _env_int_range('LICHESS_DEPTH_TARGET_UNLIMITED', 19, 1, 20),
 );
 my %speed_horizon_targets = (
   bullet    => _env_int_range('LICHESS_MOVESTOGO_TARGET_BULLET', 72, 8, 100),
