@@ -34,6 +34,24 @@ use Chess::State;
 use Chess::Engine ();
 use Chess::Book ();
 use Chess::TableUtil qw(canonical_fen_key);
+
+BEGIN {
+  my $env_path = "$FindBin::RealBin/.env";
+  if (-e $env_path) {
+    open my $fh, '<', $env_path or die "Unable to open $env_path: $!";
+    while (my $line = <$fh>) {
+      $line =~ s/[\r\n]+$//;
+      next if $line =~ /^\s*#/;
+      next unless length $line;
+      if ($line =~ /^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)\s*$/) {
+        my ($key, $val) = ($1, $2);
+        $val =~ s/^['"]// && $val =~ s/['"]$//;
+        $ENV{$key} = $val unless exists $ENV{$key};
+      }
+    }
+    close $fh;
+  }
+}
 use Chess::TimeConfig;
 
 eval {
@@ -2589,44 +2607,32 @@ sub compute_bestmove {
     $depth = 20 if $depth > 20;
     $go = "go depth $depth";
   } else {
-    my ($remaining_ms) = _clock_for_side_ms($game);
-    my $use_clock_go = defined $remaining_ms
-      && !defined $opts->{movetime_multiplier}
-      && !defined $opts->{movetime_floor_ms};
-
-    if ($use_clock_go) {
-      my $go_depth = defined $bumped_depth
-        ? _bumped_engine_depth_for_game($game, $bumped_depth)
-        : undef;
-      $go = _clock_go_command_for_game($game, $state, $go_depth);
+    my $movetime = _movetime_for_game_ms($game, $state);
+    if (defined $opts->{movetime_multiplier} && $opts->{movetime_multiplier} =~ /^\d+(?:\.\d+)?$/) {
+      my $mult = $opts->{movetime_multiplier} + 0;
+      $mult = 1.0 if $mult < 1.0;
+      $mult = 3.0 if $mult > 3.0;
+      my $boosted = int($movetime * $mult);
+      my ($clock_ms, $inc_ms) = _clock_for_side_ms($game);
+      if (defined $clock_ms && defined $inc_ms) {
+        my $cap = int(($clock_ms * 0.45) + ($inc_ms * 2));
+        $cap = $clock_ms - 200 if $cap > ($clock_ms - 200);
+        $cap = 80 if $cap < 80;
+        $boosted = $cap if $boosted > $cap;
+      }
+      $movetime = $boosted if $boosted > $movetime;
+    }
+    if (defined $opts->{movetime_floor_ms} && $opts->{movetime_floor_ms} =~ /^\d+$/) {
+      my $floor = int($opts->{movetime_floor_ms});
+      $movetime = $floor if $floor > $movetime;
+    }
+    my $go_depth = defined $bumped_depth
+      ? _bumped_engine_depth_for_game($game, $bumped_depth)
+      : undef;
+    if (defined $go_depth) {
+      $go = "go depth $go_depth movetime $movetime";
     } else {
-      my $movetime = _movetime_for_game_ms($game, $state);
-      if (defined $opts->{movetime_multiplier} && $opts->{movetime_multiplier} =~ /^\d+(?:\.\d+)?$/) {
-        my $mult = $opts->{movetime_multiplier} + 0;
-        $mult = 1.0 if $mult < 1.0;
-        $mult = 3.0 if $mult > 3.0;
-        my $boosted = int($movetime * $mult);
-        my ($clock_ms, $inc_ms) = _clock_for_side_ms($game);
-        if (defined $clock_ms && defined $inc_ms) {
-          my $cap = int(($clock_ms * 0.45) + ($inc_ms * 2));
-          $cap = $clock_ms - 200 if $cap > ($clock_ms - 200);
-          $cap = 80 if $cap < 80;
-          $boosted = $cap if $boosted > $cap;
-        }
-        $movetime = $boosted if $boosted > $movetime;
-      }
-      if (defined $opts->{movetime_floor_ms} && $opts->{movetime_floor_ms} =~ /^\d+$/) {
-        my $floor = int($opts->{movetime_floor_ms});
-        $movetime = $floor if $floor > $movetime;
-      }
-      my $go_depth = defined $bumped_depth
-        ? _bumped_engine_depth_for_game($game, $bumped_depth)
-        : undef;
-      if (defined $go_depth) {
-        $go = "go depth $go_depth movetime $movetime";
-      } else {
-        $go = "go movetime $movetime";
-      }
+      $go = "go movetime $movetime";
     }
   }
   print {$engine_in} "$go\n";

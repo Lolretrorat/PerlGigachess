@@ -2,9 +2,8 @@ package Chess::TimeConfig;
 use strict;
 use warnings;
 
-# Centralized time/think multiplier configuration for the engine.
-# These settings control how the engine allocates thinking time during games.
-# Environment variables use the CHESS_ prefix for consistency with other modules.
+# Centralized time/think multiplier configuration for the gigachess.
+# These settings control how the engine allocates thinking time during various time controls.
 
 sub _env_int {
   my ($name, $default, $min, $max) = @_;
