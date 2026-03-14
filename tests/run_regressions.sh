@@ -250,6 +250,9 @@ else
   echo "==> Skipping PDPgjgTd queen-capture guard"
 fi
 
+echo "==> SEE qrlijiqK guard (Qxd3 losing capture)"
+(cd "$ROOT_DIR" && perl tests/regression_see_qxd3_losing_capture.pl)
+
 if [[ "$SKIP_REP_GUARD" -eq 0 ]]; then
   echo "==> Repetition guard quiet-move check"
   (cd "$ROOT_DIR" && perl tests/regression_repetition_guard_quiet_move.pl)
