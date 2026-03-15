@@ -22,6 +22,8 @@ my $now = 100.0;
   ok($tm->has_budget, 'start_budget_ms enables the budget');
   ok(!$tm->soft_deadline_reached, 'soft deadline not reached immediately');
   ok(!$tm->hard_deadline_reached, 'hard deadline not reached immediately');
+  is($tm->soft_time_left_ms, 10, 'soft_time_left_ms reports the remaining soft budget');
+  is($tm->hard_time_left_ms, 20, 'hard_time_left_ms reports the remaining hard budget');
 
   ok(!$tm->tick_node_and_hard_deadline_reached, 'first tick does not check deadline');
   ok(!$tm->tick_node_and_hard_deadline_reached, 'second tick does not check deadline');
@@ -37,6 +39,7 @@ my $now = 100.0;
   ok(!$tm->soft_deadline_reached, 'capped soft deadline still lies in the future');
   $now = 200.011;
   ok($tm->soft_deadline_reached, 'soft deadline trips at the capped value');
+  is($tm->soft_time_left_ms, 0, 'soft_time_left_ms floors at zero after expiry');
 
   $tm->start_budget_ms(0, 0);
   ok(!$tm->has_budget, 'invalid budgets reset the manager');

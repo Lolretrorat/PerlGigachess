@@ -11,6 +11,12 @@ use Chess::See;
 use Chess::TimeManager;
 use Chess::Eval qw(evaluate_position);
 use Chess::Heuristics qw(:engine);
+use Chess::Plan qw(
+  is_quiet_plan_move
+  pressure_score_for_side
+  quiet_move_order_bonus
+  state_plan_tags
+);
 use Chess::EvalTerms qw(
   piece_values
   flip_idx
@@ -22,6 +28,7 @@ use Chess::EvalTerms qw(
   development_score
   passed_pawn_score
   hanging_piece_score
+  threatened_material_summary
   least_attacker_value
   is_quiet_hanging_move
   hanging_move_penalty
@@ -81,6 +88,7 @@ my $move_order = Chess::MovePicker::MoveOrder->new(
   square_of_idx_cb => \&square_of_idx,
   unsafe_capture_penalty_cb => \&unsafe_capture_penalty,
   capture_plan_order_bonus_cb => \&capture_plan_order_bonus,
+  quiet_plan_order_bonus_cb => \&_quiet_plan_order_bonus,
   promotion_check_order_bonus_cb => \&promotion_check_order_bonus,
   is_sac_candidate_move_cb => \&is_sac_candidate_move_in_state,
   piece_count_cb => \&piece_count,
@@ -94,6 +102,7 @@ my $search_time_abort = "__TIMEUP__";
 my $eval_cache_tag = 'core';
 my %root_regression_prev_scores;
 my %root_regression_current_scores;
+my $root_plan_tags = [];
 
 sub new {
   my $class = shift;
@@ -548,8 +557,6 @@ sub _is_knight_outpost {
 sub _development_score {
   my ($board, $opts) = @_;
   $opts ||= {};
-  my $score = 0;
-
   my $piece_count = $opts->{piece_count};
   if (!defined $piece_count) {
     $piece_count = 0;
@@ -558,20 +565,44 @@ sub _development_score {
       $piece_count++ if $abs_piece >= PAWN && $abs_piece <= KING;
     }
   }
+
+  return _development_score_for_side($board, 1, $piece_count)
+    - _development_score_for_side($board, -1, $piece_count);
+}
+
+sub _development_score_for_side {
+  my ($board, $side_sign, $piece_count) = @_;
+  return 0 unless $side_sign == 1 || $side_sign == -1;
+
+  my $score = 0;
   my $king_walk_phase = 0;
   if ($piece_count > MID_ENDGAME_PIECE_THRESHOLD) {
     my $phase_span = max(1, OPENING_PIECE_COUNT_THRESHOLD - MID_ENDGAME_PIECE_THRESHOLD);
     $king_walk_phase = _clamp(($piece_count - MID_ENDGAME_PIECE_THRESHOLD) / $phase_span, 0, 1);
   }
 
-  my $king_idx = exists $opts->{king_idx} ? $opts->{king_idx} : _find_piece_idx($board, KING);
-  my $is_castled = defined $king_idx && ($king_idx == 23 || $king_idx == 27);
+  my $king_piece = $side_sign * KING;
+  my $queen_piece = $side_sign * QUEEN;
+  my $rook_piece = $side_sign * ROOK;
+  my $opp_queen_piece = -$side_sign * QUEEN;
+
+  my ($king_home, $queen_home, $castle_a, $castle_b, $rook_homes, $knight_homes, $bishop_homes)
+    = $side_sign > 0
+      ? (25, 24, 23, 27, [21, 28], [22, 27], [23, 26])
+      : (95, 94, 93, 97, [91, 98], [92, 97], [93, 96]);
+
+  my $king_idx = _find_piece_idx($board, $king_piece);
+  return 0 unless defined $king_idx;
+
+  my $is_castled = ($king_idx == $castle_a || $king_idx == $castle_b) ? 1 : 0;
   my $uncastled = defined $king_idx && !$is_castled;
   my $undeveloped_minors = 0;
-  $undeveloped_minors++ if ($board->[22] // 0) == KNIGHT;
-  $undeveloped_minors++ if ($board->[27] // 0) == KNIGHT;
-  $undeveloped_minors++ if ($board->[23] // 0) == BISHOP;
-  $undeveloped_minors++ if ($board->[26] // 0) == BISHOP;
+  for my $home (@{$knight_homes}) {
+    $undeveloped_minors++ if ($board->[$home] // 0) == ($side_sign * KNIGHT);
+  }
+  for my $home (@{$bishop_homes}) {
+    $undeveloped_minors++ if ($board->[$home] // 0) == ($side_sign * BISHOP);
+  }
 
   $score -= $undeveloped_minors * DEVELOPMENT_MINOR_PENALTY;
   if ($piece_count >= OPENING_PIECE_COUNT_THRESHOLD) {
@@ -579,39 +610,33 @@ sub _development_score {
   }
 
   if ($uncastled && $undeveloped_minors > 0) {
-    my $rook_count = $opts->{rook_count};
-    my $rook_home_count = $opts->{rook_home_count};
-    if (!defined $rook_count || !defined $rook_home_count) {
-      $rook_count = 0;
-      $rook_home_count = 0;
-      for my $idx (@board_indices) {
-        next unless ($board->[$idx] // 0) == ROOK;
-        $rook_count++;
-        $rook_home_count++ if $idx == 21 || $idx == 28;
-      }
+    my ($rook_count, $rook_home_count) = (0, 0);
+    for my $idx (@board_indices) {
+      next unless ($board->[$idx] // 0) == $rook_piece;
+      $rook_count++;
+      $rook_home_count++ if grep { $_ == $idx } @{$rook_homes};
     }
     my $moved_rooks = max(0, $rook_count - $rook_home_count);
     $score -= EARLY_ROOK_MOVE_PENALTY * $moved_rooks if $moved_rooks;
 
-    my $queen_idx = exists $opts->{queen_idx} ? $opts->{queen_idx} : _find_piece_idx($board, QUEEN);
-    if (defined $queen_idx && $queen_idx != 24 && $undeveloped_minors >= 2) {
+    my $queen_idx = _find_piece_idx($board, $queen_piece);
+    if (defined $queen_idx && $queen_idx != $queen_home && $undeveloped_minors >= 2) {
       $score -= EARLY_QUEEN_MOVE_PENALTY;
     }
   }
 
-  if ($uncastled && $king_idx != 25 && $king_walk_phase > 0) {
+  if ($uncastled && $king_idx != $king_home && $king_walk_phase > 0) {
     my $file = _file_of_idx($king_idx);
     my $rank = _rank_of_idx($king_idx);
+    my $advance_steps = $side_sign > 0 ? max(0, $rank - 1) : max(0, 8 - $rank);
     my $walk_penalty = EARLY_KING_WALK_HOME_PENALTY;
     $walk_penalty += EARLY_KING_WALK_EXPOSED_FILE_PENALTY if $file >= 3 && $file <= 6;
     $walk_penalty += EARLY_KING_WALK_CENTRAL_FILE_PENALTY if $file >= 4 && $file <= 6;
-    $walk_penalty += EARLY_KING_WALK_ADVANCED_RANK_PENALTY if $rank >= 2;
+    $walk_penalty += EARLY_KING_WALK_ADVANCED_RANK_PENALTY if $advance_steps >= 1;
     $score -= int($walk_penalty * $king_walk_phase + 0.5);
   }
 
-  my $opponent_has_queen = exists $opts->{opponent_has_queen}
-    ? ($opts->{opponent_has_queen} ? 1 : 0)
-    : (defined _find_piece_idx($board, OPP_QUEEN) ? 1 : 0);
+  my $opponent_has_queen = defined _find_piece_idx($board, $opp_queen_piece) ? 1 : 0;
   if ($uncastled && $opponent_has_queen) {
     $score -= UNCASTLED_KING_PENALTY;
     my $file = _file_of_idx($king_idx);
@@ -749,33 +774,12 @@ sub _piece_activity_score {
 
 sub _threat_score {
   my ($board, $attack_cache, $our_king_idx, $opp_king_idx) = @_;
-  my $score = 0;
-
-  for my $idx (@board_indices) {
-    my $piece = $board->[$idx] // 0;
-    next unless $piece;
-    my $abs_piece = abs($piece);
-    next if $abs_piece == KING || $abs_piece == PAWN;
-    my $penalty = HANGING_PIECE_PENALTY->{$abs_piece} // 0;
-    my $delta = THREAT_ATTACK_BONUS + int($penalty / 2);
-
-    if ($piece < 0) {
-      next unless _is_square_attacked_by_side($board, $idx, 1, $attack_cache);
-      my $least = _least_attacker_value($board, $idx, 1);
-      my $victim = abs($piece_values{$piece} // 0);
-      my $defended = _is_square_attacked_by_side($board, $idx, -1, $attack_cache) ? 1 : 0;
-      if (!$defended || (defined $least && $least <= $victim)) {
-        $score += $delta;
-      }
-    } else {
-      next unless _is_square_attacked_by_side($board, $idx, -1, $attack_cache);
-      my $least = _least_attacker_value($board, $idx, -1);
-      my $victim = abs($piece_values{$piece} // 0);
-      my $defended = _is_square_attacked_by_side($board, $idx, 1, $attack_cache) ? 1 : 0;
-      if (!$defended || (defined $least && $least <= $victim)) {
-        $score -= $delta;
-      }
-    }
+  my $score = pressure_score_for_side($board, 1, -1, $attack_cache)
+    - pressure_score_for_side($board, -1, 1, $attack_cache);
+  my $summary = threatened_material_summary($board, $attack_cache);
+  if (ref($summary) eq 'HASH') {
+    my $delta = $summary->{threatened_delta} // 0;
+    $score += int($delta / THREATENED_PAWN_PENALTY) if $delta;
   }
 
   if (defined $opp_king_idx && _is_square_attacked_by_side($board, $opp_king_idx, 1, $attack_cache)) {
@@ -837,6 +841,11 @@ sub _hanging_piece_score {
   }
 
   return $score;
+}
+
+sub _threatened_material_summary {
+  my ($board, $attack_cache) = @_;
+  return threatened_material_summary($board, $attack_cache);
 }
 
 sub _least_attacker_value {
@@ -1037,8 +1046,17 @@ sub _king_aggression_for_piece {
   my ($board, $king_piece, $enemy_piece_count) = @_;
   return 0 unless defined $enemy_piece_count;
   return 0 if $enemy_piece_count >= KING_AGGRESSION_ENEMY_PIECE_START;
+  my $king_idx = _find_piece_idx($board, $king_piece);
+  return 0 unless defined $king_idx;
+
   my $phase = (KING_AGGRESSION_ENEMY_PIECE_START - $enemy_piece_count) / KING_AGGRESSION_ENEMY_PIECE_START;
-  return int(KING_AGGRESSION_RANK_BONUS * $phase + 0.5);
+  my $rank = _rank_of_idx($king_idx);
+  my $file = _file_of_idx($king_idx);
+  my $advance = $king_piece > 0 ? max(0, $rank - 1) : max(0, 8 - $rank);
+  my $center = max(0, 4 - int(abs(4.5 - $file) + abs(4.5 - $rank)));
+  my $activity = $advance + $center;
+  return 0 unless $activity > 0;
+  return int(($activity * $phase * KING_AGGRESSION_RANK_BONUS / 2) + 0.5);
 }
 
 sub _king_aggression_score {
@@ -1130,6 +1148,49 @@ sub _unsafe_capture_penalty {
   return $penalty;
 }
 
+sub _quiet_move_threat_flags {
+  my ($parent_board, $threat_summary_before, $enemy_king_danger_before, $new_state);
+  if (ref($_[0]) eq 'ARRAY') {
+    ($parent_board, $threat_summary_before, $enemy_king_danger_before, $new_state) = @_;
+  } else {
+    ($threat_summary_before, $enemy_king_danger_before, $new_state) = @_;
+  }
+  return (0, 0)
+    unless ref($threat_summary_before) eq 'HASH'
+      && defined $new_state;
+
+  my %post_attack_cache;
+  my $new_board = $new_state->[Chess::State::BOARD];
+  my $threat_summary_after = _threatened_material_summary($new_board, \%post_attack_cache);
+
+  my $our_threatened_before = $threat_summary_before->{threatened_ours} // 0;
+  my $their_threatened_before = $threat_summary_before->{threatened_theirs} // 0;
+  my $our_threatened_after = $threat_summary_after->{threatened_theirs} // 0;
+  my $their_threatened_after = $threat_summary_after->{threatened_ours} // 0;
+
+  my $threat_relief = $our_threatened_before - $our_threatened_after;
+  my $threat_pressure = $their_threatened_after - $their_threatened_before;
+  if (ref($parent_board) eq 'ARRAY') {
+    my $pressure_before = pressure_score_for_side($parent_board, 1, -1);
+    my $pressure_after = pressure_score_for_side($new_board, -1, 1, \%post_attack_cache);
+    my $pressure_relief_before = pressure_score_for_side($parent_board, -1, 1);
+    my $pressure_relief_after = pressure_score_for_side($new_board, 1, -1, \%post_attack_cache);
+
+    $threat_relief = max($threat_relief, $pressure_relief_before - $pressure_relief_after);
+    $threat_pressure = max($threat_pressure, $pressure_after - $pressure_before);
+  }
+  my $enemy_king_danger_after = _king_danger_for_piece($new_board, KING, \%post_attack_cache);
+  my $king_pressure = $enemy_king_danger_after - ($enemy_king_danger_before // 0);
+
+  my $is_threat_response = $threat_relief >= THREAT_RESPONSE_DELTA_THRESHOLD ? 1 : 0;
+  my $is_strategic_threat = (
+    $threat_pressure >= STRATEGIC_THREAT_DELTA_THRESHOLD
+      || $king_pressure >= STRATEGIC_THREAT_KING_DANGER_DELTA
+  ) ? 1 : 0;
+
+  return ($is_threat_response, $is_strategic_threat);
+}
+
 sub _capture_plan_order_bonus {
   my ($board, $move, $from_piece, $to_piece) = @_;
   return 0 unless $to_piece < 0;
@@ -1148,6 +1209,24 @@ sub _capture_plan_order_bonus {
   }
 
   return $bonus;
+}
+
+sub _root_plan_tags_apply_at_ply {
+  my ($ply) = @_;
+  return 0 unless defined $ply && $ply =~ /^\d+$/;
+  return 0 if $ply > 2;
+  return ($ply % 2) == 0 ? 1 : 0;
+}
+
+sub _quiet_plan_order_bonus {
+  my ($state, $move, $from_piece, $ply, $opts) = @_;
+  my $plan_tags = [];
+  if (ref($root_plan_tags) eq 'ARRAY' && _root_plan_tags_apply_at_ply($ply)) {
+    $plan_tags = $root_plan_tags;
+  }
+  return quiet_move_order_bonus($state, $move, {
+    plan_tags => $plan_tags,
+  });
 }
 
 sub _promotion_check_order_bonus {
@@ -1509,6 +1588,74 @@ sub _check_time_or_abort {
   die $search_time_abort if $search_time_manager->tick_node_and_hard_deadline_reached();
 }
 
+sub _volatility_pressure_score {
+  my ($opts) = @_;
+  $opts = {} unless ref($opts) eq 'HASH';
+
+  my $pressure = 0;
+  my $has_instability_signal = ($opts->{volatile} // 0)
+    || ($opts->{near_tie_root} // 0)
+    || (($opts->{aspiration_expansions} // 0) >= 1)
+    || (($opts->{score_delta} // 0) > (SCORE_STABILITY_DELTA * 2));
+  $pressure++ if $opts->{volatile};
+  $pressure++ if $opts->{near_tie_root};
+  $pressure++ if ($opts->{aspiration_expansions} // 0) >= 2;
+  $pressure++ if $has_instability_signal
+    && !($opts->{forced_or_easy_root} // 0)
+    && ($opts->{stable_best_hits} // 0) < 1;
+  $pressure++ if ($opts->{score_delta} // 0) > (SCORE_STABILITY_DELTA * 6);
+  return $pressure;
+}
+
+sub _volatility_extension_ms {
+  my ($time_policy, $volatility_pressure, $slack_ms) = @_;
+  return 0 unless ref($time_policy) eq 'HASH' && $time_policy->{has_clock};
+  return 0 if $time_policy->{panic_level};
+  return 0 unless defined $volatility_pressure && $volatility_pressure >= 2;
+  return 0 unless ($time_policy->{budget_ms} // 0) >= VOLATILITY_LONG_THINK_MIN_BUDGET_MS;
+
+  $slack_ms = int($slack_ms // 0);
+  return 0 if $slack_ms <= TIME_MOVE_OVERHEAD_MS;
+
+  my $pressure_scale = $volatility_pressure / 2;
+  my $extra_ms = int(($time_policy->{budget_ms} // 0) * VOLATILITY_LONG_THINK_EXTRA_SHARE * $pressure_scale);
+  my $slack_cap = max(0, $slack_ms - TIME_MOVE_OVERHEAD_MS);
+  $extra_ms = min($extra_ms, VOLATILITY_LONG_THINK_MAX_MS, $slack_cap);
+  return $extra_ms > 0 ? $extra_ms : 0;
+}
+
+sub _is_mate_like_score {
+  my ($score) = @_;
+  return 0 unless defined $score;
+  return abs(int($score)) >= (MATE_SCORE - 256) ? 1 : 0;
+}
+
+sub _mate_refinement_extension_ms {
+  my ($time_policy, $score, $slack_ms) = @_;
+  return 0 unless ref($time_policy) eq 'HASH' && $time_policy->{has_clock};
+  return 0 if $time_policy->{panic_level};
+  return 0 unless defined $score && int($score) > 0;
+  return 0 unless _is_mate_like_score($score);
+  return 0 unless ($time_policy->{budget_ms} // 0) >= MATE_REFINEMENT_MIN_BUDGET_MS;
+
+  $slack_ms = int($slack_ms // 0);
+  return 0 if $slack_ms <= TIME_MOVE_OVERHEAD_MS;
+
+  my $extra_ms = int(($time_policy->{budget_ms} // 0) * MATE_REFINEMENT_EXTRA_TIME_SHARE);
+  my $slack_cap = max(0, $slack_ms - TIME_MOVE_OVERHEAD_MS);
+  $extra_ms = min($extra_ms, MATE_REFINEMENT_MAX_MS, $slack_cap);
+  return $extra_ms > 0 ? $extra_ms : 0;
+}
+
+sub _can_stop_after_target_depth {
+  my ($critical_position, $stability_hits, $stable_best_hits, $score) = @_;
+  return 0 if $critical_position;
+  return 0 if _is_mate_like_score($score);
+  return 0 unless ($stability_hits // 0) >= 1;
+  return 0 unless ($stable_best_hits // 0) >= 1;
+  return 1;
+}
+
 sub _state_key {
   my ($state) = @_;
   my $cached = $state->[Chess::State::STATE_KEY];
@@ -1570,8 +1717,9 @@ sub _collect_root_pv_lines {
 }
 
 sub _quiesce {
-  my ($state, $alpha, $beta, $depth) = @_;
+  my ($state, $alpha, $beta, $depth, $ply) = @_;
   $depth //= 0;
+  $ply //= 0;
   _check_time_or_abort();
 
   my $in_check = $state->is_checked ? 1 : 0;
@@ -1630,7 +1778,7 @@ sub _quiesce {
       }
     }
   }
-  return $in_check ? -MATE_SCORE : $alpha unless @forcing;
+  return $in_check ? (-MATE_SCORE + $ply) : $alpha unless @forcing;
 
   my @ordered = _sort_scored_desc(@forcing);
 
@@ -1649,7 +1797,7 @@ sub _quiesce {
     next unless defined $state->do_move($move, \@undo_stack);
     my $score = ($in_check && $depth >= $search_quiesce_limit)
       ? -_evaluate_board($state)
-      : -_quiesce($state, -$beta, -$alpha, $depth + 1);
+      : -_quiesce($state, -$beta, -$alpha, $depth + 1, $ply + 1);
     $state->undo_move(\@undo_stack);
     if ($score > $alpha) {
       $alpha = $score;
@@ -1676,6 +1824,7 @@ sub _evaluate_board {
     strategic_cb => sub {
       my ($board, $ctx, $attack_cache) = @_;
       my $extra = 0;
+      my $threat_summary = _threatened_material_summary($board, $attack_cache);
       $extra += _development_score($board, {
         piece_count => $ctx->{piece_count},
         king_idx => $ctx->{our_king_idx},
@@ -1688,6 +1837,7 @@ sub _evaluate_board {
       $extra += _pawn_structure_score($board);
       $extra += _piece_activity_score($board, $attack_cache);
       $extra += _hanging_piece_score($board, $attack_cache);
+      $extra += int((($threat_summary->{threatened_delta} // 0) + (($threat_summary->{threatened_theirs_count} // 0) - ($threat_summary->{threatened_ours_count} // 0))) / 2);
       $extra += _king_danger_score($board, $attack_cache, $ctx->{our_king_idx}, $ctx->{opp_king_idx});
       $extra += _threat_score($board, $attack_cache, $ctx->{our_king_idx}, $ctx->{opp_king_idx});
       $extra += _king_aggression_score($board, $ctx->{friendly_non_king}, $ctx->{enemy_non_king});
@@ -1721,7 +1871,7 @@ sub _search {
   }
 
   if ($depth <= 0) {
-    return (_quiesce($state, $alpha, $beta, 0), undef);
+    return (_quiesce($state, $alpha, $beta, 0, $ply), undef);
   }
 
   my $key = _state_key($state);
@@ -1793,7 +1943,7 @@ sub _search {
     && defined $static_eval
     && $static_eval < $alpha - RAZORING_MARGIN_BASE - RAZORING_MARGIN_DEPTH * $depth * $depth)
   {
-    return (_quiesce($state, $alpha, $beta, 0), undef);
+    return (_quiesce($state, $alpha, $beta, 0, $ply), undef);
   }
 
   if (!defined $tt_move_key
@@ -1882,7 +2032,7 @@ sub _search {
       next unless defined $state->do_move($move, \@undo_stack);
 
       # Do qsearch first to verify the capture holds
-      my $qvalue = -_quiesce($state, -$probcut_beta, -$probcut_beta + 1, 0);
+      my $qvalue = -_quiesce($state, -$probcut_beta, -$probcut_beta + 1, 0, $ply + 1);
 
       if ($qvalue >= $probcut_beta && $probcut_depth > 0) {
         # Verify with reduced search
@@ -1905,6 +2055,9 @@ sub _search {
   my $king_idx = $state->[Chess::State::KING_IDX];
   $king_idx = _find_piece_idx($parent_board, KING) unless defined $king_idx;
   my %king_ring = map { $_ => 1 } _king_ring_indices($parent_board, $king_idx);
+  my %threat_attack_cache;
+  my $threat_summary_before = _threatened_material_summary($parent_board, \%threat_attack_cache);
+  my $enemy_king_danger_before = _king_danger_for_piece($parent_board, OPP_KING, \%threat_attack_cache);
   my @undo_stack;
   my $move_picker = _new_move_picker($state, $ply, $tt_move_key, $prev_move_key, $tt_move, $prev_piece, $prev_to);
   while (my $entry = $move_picker->next_move) {
@@ -1924,6 +2077,10 @@ sub _search {
     }
     my $board = $state->[Chess::State::BOARD];
     my $from_piece = abs($board->[$move->[0]] // 0);
+    my $quiet_plan_bonus = 0;
+    if (!$is_capture && !defined $move->[2]) {
+      $quiet_plan_bonus = _quiet_plan_order_bonus($state, $move, undef, $ply);
+    }
     my $king_safety_critical = 0;
     if ($from_piece == KING || (defined $own_king_danger && $own_king_danger >= LMR_KING_DANGER_THRESHOLD)) {
       $king_safety_critical = 1;
@@ -1946,6 +2103,13 @@ sub _search {
     my $gives_check = $state->is_checked ? 1 : 0;
     my $quiet_hanging_move = _is_quiet_hanging_move($state, $move, $is_capture);
     $king_safety_critical = 1 if $gives_check;
+    my $threat_response_move = 0;
+    my $strategic_threat_move = 0;
+    if (!$is_capture && !defined $move->[2] && !defined $move->[3] && !$gives_check) {
+      ($threat_response_move, $strategic_threat_move)
+        = _quiet_move_threat_flags($parent_board, $threat_summary_before, $enemy_king_danger_before, $state);
+    }
+    $strategic_threat_move = 1 if $quiet_plan_bonus >= 70;
     my $tactical_queen_move = 0;
     if ($queen_move) {
       if ($is_capture || $gives_check) {
@@ -1976,6 +2140,8 @@ sub _search {
       && !$is_capture
       && !$gives_check
       && !$quiet_hanging_move
+      && !$threat_response_move
+      && !$strategic_threat_move
       && !$king_safety_critical
       && !$tactical_queen_move)
     {
@@ -2001,6 +2167,8 @@ sub _search {
         && ! $is_capture
         && ! $gives_check
         && ! $quiet_hanging_move
+        && ! $threat_response_move
+        && ! $strategic_threat_move
         && ! $king_safety_critical
         && ! $tactical_queen_move
         && $own_king_danger < LMR_KING_DANGER_THRESHOLD)
@@ -2131,6 +2299,7 @@ sub think {
   my $use_book = exists $think_opts{use_book} ? ($think_opts{use_book} ? 1 : 0) : 1;
   my $root_state = ${$self->{state}};
   my $piece_count = _piece_count($root_state);
+  $root_plan_tags = [];
 
   if ($use_book && (my $book_move = Chess::Book::choose_move($root_state))) {
     return $book_move;
@@ -2141,6 +2310,8 @@ sub think {
     return $table_move;
   }
   my $state = $root_state->clone;
+  my $plan_tags = state_plan_tags($root_state);
+  $root_plan_tags = $plan_tags if ref($plan_tags) eq 'ARRAY' && @{$plan_tags};
 
   _decay_history();
   $move_order->reset_killers();
@@ -2175,6 +2346,8 @@ sub think {
   my $had_prev_score = 0;
   my $pawn_candidate_extension_used = 0;
   my $sac_candidate_extension_used = 0;
+  my $volatility_extensions_used = 0;
+  my $mate_refinement_extension_used = 0;
   _reset_root_regression_state();
 
   DEPTH_LOOP:
@@ -2269,13 +2442,23 @@ sub think {
       && $root_legal_moves >= 3
       && $root_gap <= ROOT_NEAR_TIE_DELTA;
     my $clear_best_root = defined $root_gap && $root_gap >= ROOT_CLEAR_BEST_DELTA;
+    my $mate_score_found = _is_mate_like_score($iteration_score);
     my $forced_or_easy_root = $root_legal_moves == 1
       || ($root_legal_moves >= 2 && $root_legal_moves <= 3
         && $clear_best_root
+        && !$mate_score_found
         && !$pv_changed
         && $aspiration_expansions == 0
         && $score_delta <= (SCORE_STABILITY_DELTA * 2));
     my $critical_position = $volatile || $near_tie_root;
+    my $volatility_pressure = _volatility_pressure_score({
+      volatile => $volatile,
+      near_tie_root => $near_tie_root,
+      aspiration_expansions => $aspiration_expansions,
+      forced_or_easy_root => $forced_or_easy_root,
+      stable_best_hits => $stable_best_hits,
+      score_delta => $score_delta,
+    });
 
     if ($had_prev_score && abs($iteration_score - $prev_score) <= SCORE_STABILITY_DELTA) {
       $stability_hits++;
@@ -2339,8 +2522,32 @@ sub think {
       }
     }
 
+    if (!$strict_depth
+      && $time_policy->{has_clock}
+      && !$time_policy->{panic_level}
+      && $volatility_extensions_used < VOLATILITY_LONG_THINK_MAX_EXTENSIONS
+      && $depth >= VOLATILITY_LONG_THINK_MIN_DEPTH)
+    {
+      my $slack_ms = $search_time_manager->hard_time_left_ms - $search_time_manager->soft_time_left_ms;
+      my $extra_ms = _volatility_extension_ms($time_policy, $volatility_pressure, $slack_ms);
+      if ($extra_ms > 0) {
+        _extend_soft_deadline($extra_ms);
+        $volatility_extensions_used++;
+      }
+    }
+
+    if ($time_policy->{has_clock} && !$mate_refinement_extension_used) {
+      my $slack_ms = $search_time_manager->hard_time_left_ms - $search_time_manager->soft_time_left_ms;
+      my $extra_ms = _mate_refinement_extension_ms($time_policy, $iteration_score, $slack_ms);
+      if ($extra_ms > 0) {
+        _extend_soft_deadline($extra_ms);
+        $mate_refinement_extension_used = 1;
+      }
+    }
+
     if (!$strict_depth && $time_policy->{has_clock} && $depth >= $easy_move_depth) {
       my $easy_move = !$critical_position
+        && !$mate_score_found
         && $stable_best_hits >= 2
         && $score_delta <= SCORE_STABILITY_DELTA
         && $aspiration_expansions == 0;
@@ -2351,7 +2558,7 @@ sub think {
       if ($strict_depth) {
         last;
       }
-      last if $stability_hits >= 1;
+      last if _can_stop_after_target_depth($critical_position, $stability_hits, $stable_best_hits, $iteration_score);
       last if _time_up_soft();
     }
   }

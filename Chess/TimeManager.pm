@@ -64,6 +64,20 @@ sub hard_deadline_reached {
   return _now() >= $self->{hard_deadline} ? 1 : 0;
 }
 
+sub soft_time_left_ms {
+  my ($self) = @_;
+  return 0 unless $self->{has_budget};
+  my $left_ms = int((($self->{soft_deadline} - _now()) * 1000.0) + 0.5);
+  return $left_ms > 0 ? $left_ms : 0;
+}
+
+sub hard_time_left_ms {
+  my ($self) = @_;
+  return 0 unless $self->{has_budget};
+  my $left_ms = int((($self->{hard_deadline} - _now()) * 1000.0) + 0.5);
+  return $left_ms > 0 ? $left_ms : 0;
+}
+
 sub extend_soft_budget_ms {
   my ($self, $extra_ms) = @_;
   return unless $self->{has_budget};

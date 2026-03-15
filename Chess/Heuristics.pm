@@ -83,6 +83,14 @@ use constant SAC_SCORE_DROP_CP => 259;                      # Score-drop thresho
 use constant SAC_CANDIDATE_MIN_BUDGET_MS => 140;            # Minimum budget before extending time on sac candidates; [FIXED VALUE].
 use constant SAC_EXTRA_TIME_SHARE => 0.10;                  # Budget share used for sac-candidate extension; [FIXED VALUE].
 use constant SAC_EXTRA_TIME_MAX_MS => 260;                  # Max milliseconds added for sac-candidate extension; [FIXED VALUE].
+use constant VOLATILITY_LONG_THINK_MIN_DEPTH => 4;          # Earliest depth where volatile positions may claim extra think time; [FIXED VALUE].
+use constant VOLATILITY_LONG_THINK_MIN_BUDGET_MS => 220;    # Minimum soft budget before volatile positions can request extra think time; [FIXED VALUE].
+use constant VOLATILITY_LONG_THINK_EXTRA_SHARE => 0.20;     # Share of the base budget granted to unclear/volatile positions; [FIXED VALUE].
+use constant VOLATILITY_LONG_THINK_MAX_MS => 320;           # Max soft-budget extension for a single volatility long-think grant; [FIXED VALUE].
+use constant VOLATILITY_LONG_THINK_MAX_EXTENSIONS => 2;     # Max volatility long-think grants in one root search; [FIXED VALUE].
+use constant MATE_REFINEMENT_MIN_BUDGET_MS => 180;          # Minimum soft budget before a forcing mate line can claim extra refinement time; [FIXED VALUE].
+use constant MATE_REFINEMENT_EXTRA_TIME_SHARE => 0.18;      # Budget share used to refine a forcing mate line for distance accuracy; [FIXED VALUE].
+use constant MATE_REFINEMENT_MAX_MS => 360;                 # Max soft-budget extension for mate-distance refinement; [FIXED VALUE].
 use constant ROOT_NEAR_TIE_DELTA => 10;                     # Root score gap considered a near tie; [FIXED VALUE].
 use constant ROOT_CLEAR_BEST_DELTA => 24;                   # Root score gap considered a clear best; [FIXED VALUE].
 use constant ROOT_SCORE_DROP_THRESHOLD_CP => 45;            # Root candidate score-drop threshold before applying a regression penalty; min=10 max=180.
@@ -167,6 +175,10 @@ use constant ROOK_SEMIOPEN_FILE_BONUS => 3;                 # Bonus for rooks on
 use constant ROOK_SEVENTH_RANK_BONUS => 4;                  # Bonus for active rooks on the seventh rank; min=0 max=12.
 use constant THREAT_ATTACK_BONUS => 4;                      # Bonus for safe attacks on loose or weakly defended enemy pieces; min=0 max=16.
 use constant THREAT_SAFE_CHECK_BONUS => 8;                  # Bonus for safe checking pressure in the static evaluation; min=0 max=24.
+use constant THREATENED_PAWN_PENALTY => 3;                  # Threat penalty for attacked pawns so quiet pawn-losing plans are visible; min=1 max=8.
+use constant THREAT_RESPONSE_DELTA_THRESHOLD => 3;          # Threat-delta threshold for preserving quiet defensive moves from pruning; min=1 max=12.
+use constant STRATEGIC_THREAT_DELTA_THRESHOLD => 3;         # Threat-delta threshold for preserving quiet pressure-building moves from pruning; min=1 max=12.
+use constant STRATEGIC_THREAT_KING_DANGER_DELTA => 2;       # King-danger delta threshold for treating a quiet move as a strategic threat; min=1 max=8.
 use constant KING_DANGER_ATTACK_UNIT_PENALTY => 2;          # Extra king-danger penalty per quality attacking unit near the king; min=0 max=8.
 use constant ENDGAME_KING_CENTER_BONUS => 2;                # Endgame bonus for centralizing the king; min=0 max=8.
 use constant ENDGAME_PASSED_PAWN_BONUS => 3;                # Endgame bonus for supporting our advanced passers / restraining enemy ones; min=0 max=12.
@@ -312,6 +324,14 @@ our @ENGINE_EXPORTS = qw(
   SAC_CANDIDATE_MIN_BUDGET_MS
   SAC_EXTRA_TIME_SHARE
   SAC_EXTRA_TIME_MAX_MS
+  VOLATILITY_LONG_THINK_MIN_DEPTH
+  VOLATILITY_LONG_THINK_MIN_BUDGET_MS
+  VOLATILITY_LONG_THINK_EXTRA_SHARE
+  VOLATILITY_LONG_THINK_MAX_MS
+  VOLATILITY_LONG_THINK_MAX_EXTENSIONS
+  MATE_REFINEMENT_MIN_BUDGET_MS
+  MATE_REFINEMENT_EXTRA_TIME_SHARE
+  MATE_REFINEMENT_MAX_MS
   ROOT_NEAR_TIE_DELTA
   ROOT_CLEAR_BEST_DELTA
   ROOT_SCORE_DROP_THRESHOLD_CP
@@ -396,6 +416,10 @@ our @ENGINE_EXPORTS = qw(
   ROOK_SEVENTH_RANK_BONUS
   THREAT_ATTACK_BONUS
   THREAT_SAFE_CHECK_BONUS
+  THREATENED_PAWN_PENALTY
+  THREAT_RESPONSE_DELTA_THRESHOLD
+  STRATEGIC_THREAT_DELTA_THRESHOLD
+  STRATEGIC_THREAT_KING_DANGER_DELTA
   KING_DANGER_ATTACK_UNIT_PENALTY
   ENDGAME_KING_CENTER_BONUS
   ENDGAME_PASSED_PAWN_BONUS

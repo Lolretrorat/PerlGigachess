@@ -266,7 +266,7 @@ sub encode_move
   {
     $from = 10 * (10 - $fields[1]) + ord($fields[0]) - ord('a') + 1;
     $to = 10 * (10 - $fields[3]) + ord($fields[2]) - ord('a') + 1;
-    $promo = defined($promo_piece) ? -$promo_piece : undef;
+    $promo = $promo_piece;
   } else {
     $from = 10 * ($fields[1] + 1) + ord($fields[0]) - ord('a') + 1;
     $to = 10 * ($fields[3] + 1) + ord($fields[2]) - ord('a') + 1;
@@ -294,7 +294,7 @@ sub decode_move
       10 - int($move->[0] / 10),
       ($move->[1] % 10) - 1 + ord 'a',
       10 - int($move->[1] / 10),
-      ($move->[2] ? lc($p2l{$move->[2]}) : ''));
+      ($move->[2] ? lc($p2l{abs($move->[2])}) : ''));
   }
 
   return sprintf('%c%1d%c%1d%s',
@@ -302,7 +302,7 @@ sub decode_move
     int($move->[0] / 10) - 1,
     ($move->[1] % 10) - 1 + ord 'a',
     int($move->[1] / 10) - 1,
-    ($move->[2] ? lc($p2l{$move->[2]}) : ''));
+    ($move->[2] ? lc($p2l{abs($move->[2])}) : ''));
 }
 
 sub _square_to_idx {

@@ -97,11 +97,11 @@ sub run_interactive {
       }
     } else {
       my $think_started_at = time();
-      my $book_move = Chess::Book::choose_move($state);
-      if ($book_move) {
+      my $book_entry = Chess::Book::choose_entry($state);
+      if ($book_entry && $book_entry->{move}) {
         my $delay_ms = _random_delay_ms($book_delay_min_ms, $book_delay_max_ms);
         sleep($delay_ms / 1000) if $delay_ms > 0;
-        $move = $book_move;
+        $move = $book_entry->{move};
       } else {
         $move = $engine->think(undef, { randomize_ties => 1 });
       }
@@ -109,6 +109,7 @@ sub run_interactive {
       my $remaining_delay_ms = $engine_delay_ms - $elapsed_ms;
       sleep($remaining_delay_ms / 1000) if $remaining_delay_ms > 0;
       print "> " . $state->decode_move($move) . "\n";
+      _print_book_plan_console($book_entry) if $book_entry && $book_entry->{move};
     }
 
     my $new_state = eval { $state->make_move($move) };
@@ -153,10 +154,12 @@ sub run_uci {
 
   my $finalize_active_search = sub {
     return unless $active_search;
-    my $bestmove = $active_search->{final_bestmove};
-    $bestmove = $active_search->{last_candidate} unless defined $bestmove;
-    $bestmove = $active_search->{stop_fallback} unless defined $bestmove;
-    $bestmove = '0000' unless defined $bestmove && $bestmove =~ /^[a-h][1-8][a-h][1-8][nbrq]?$/i;
+    my $bestmove = _legal_bestmove_for_state(
+      $state,
+      $active_search->{final_bestmove},
+      $active_search->{last_candidate},
+      $active_search->{stop_fallback},
+    );
     print "bestmove $bestmove\n";
     $cleanup_active_search->();
   };
@@ -164,9 +167,11 @@ sub run_uci {
   my $cancel_active_search = sub {
     my ($emit_bestmove, $reason) = @_;
     return unless $active_search;
-    my $fallback = $active_search->{last_candidate};
-    $fallback = $active_search->{stop_fallback} unless defined $fallback;
-    $fallback = '0000' unless defined $fallback && $fallback =~ /^[a-h][1-8][a-h][1-8][nbrq]?$/i;
+    my $fallback = _legal_bestmove_for_state(
+      $state,
+      $active_search->{last_candidate},
+      $active_search->{stop_fallback},
+    );
     kill 'TERM', $active_search->{pid};
     print "info string $reason\n" if $debug && defined $reason && length $reason;
     if ($emit_bestmove) {
@@ -402,11 +407,12 @@ sub _run_uci_go_search {
     return $forced_uci;
   }
   if (!$has_searchmoves && $own_book) {
-    my $book_move = Chess::Book::choose_move($state);
-    if ($book_move) {
+    my $book_entry = Chess::Book::choose_entry($state);
+    if ($book_entry && $book_entry->{move}) {
       my $delay_ms = _random_delay_ms($book_delay_min_ms, $book_delay_max_ms);
       sleep($delay_ms / 1000) if $delay_ms > 0;
-      my $book_uci = _decode_pv_move($state, $book_move) // '0000';
+      my $book_uci = _decode_pv_move($state, $book_entry->{move}) // '0000';
+      _emit_book_info_lines($book_entry);
       _report_search_candidate($report_fh, $book_uci);
       return $book_uci;
     }
@@ -434,7 +440,7 @@ sub _run_uci_go_search {
   $time_args{multipv} = $multi_pv;
   $time_args{use_book} = ($has_searchmoves || defined $go->{depth}) ? 0 : $own_book;
 
-  my $critical_mate_logged = 0;
+  my $last_mate_score_logged;
   my $critical_swing_logged = 0;
   my $last_cp_for_swing;
   my @latest_pv_lines;
@@ -460,12 +466,11 @@ sub _run_uci_go_search {
     }
     _report_search_candidate($report_fh, $candidate_for_stop);
 
-    if ($score_kind eq 'mate' && !$critical_mate_logged) {
-      my $mate_desc = $score_value > 0
-        ? "mate in $score_value"
-        : "opponent mate in " . abs($score_value);
-      print "info string Critical position: forcing line detected ($mate_desc); prioritizing tactical accuracy\n";
-      $critical_mate_logged = 1;
+    if ($score_kind eq 'mate') {
+      if (!defined $last_mate_score_logged || $last_mate_score_logged != $score_value) {
+        print "info string Critical position: forcing mate score $score_value detected at depth $cur_depth; refining exact line\n";
+        $last_mate_score_logged = $score_value;
+      }
     } elsif ($score_kind eq 'cp') {
       if (defined $last_cp_for_swing && !$critical_swing_logged) {
         my $swing = abs($score_value - $last_cp_for_swing);
@@ -557,6 +562,28 @@ sub _signed_cp {
   return sprintf('%+d', $v);
 }
 
+sub _is_legal_uci_move {
+  my ($state, $uci) = @_;
+  return 0 unless defined $uci && $uci =~ /^[a-h][1-8][a-h][1-8][nbrq]?$/i;
+  my $move = eval { $state->encode_move($uci) };
+  return 0 unless defined $move && !$@;
+  my $next_state = eval { $state->make_move($move) };
+  return defined $next_state && !$@ ? 1 : 0;
+}
+
+sub _legal_bestmove_for_state {
+  my ($state, @candidates) = @_;
+  for my $uci (@candidates) {
+    next unless _is_legal_uci_move($state, $uci);
+    return lc $uci;
+  }
+
+  my @legal = $state->generate_moves;
+  return '0000' unless @legal;
+  my $fallback = _decode_pv_move($state, $legal[0]);
+  return defined $fallback ? lc($fallback) : '0000';
+}
+
 sub _normalize_multipv {
   my ($value) = @_;
   $value = 1 unless defined $value && $value =~ /^-?\d+$/;
@@ -574,6 +601,42 @@ sub _decode_pv_move {
   my $uci = eval { $state->decode_move($mv) };
   return unless defined $uci && $uci =~ /^[a-h][1-8][a-h][1-8][nbrq]?$/i;
   return $uci;
+}
+
+sub _book_plan_summary {
+  my ($entry) = @_;
+  return unless ref($entry) eq 'HASH';
+  return $entry->{plan} if defined $entry->{plan} && length $entry->{plan};
+  if (ref($entry->{plans}) eq 'ARRAY' && @{$entry->{plans}}) {
+    return join('; ', @{$entry->{plans}});
+  }
+  return;
+}
+
+sub _emit_book_info_lines {
+  my ($entry) = @_;
+  return unless ref($entry) eq 'HASH';
+
+  if (defined $entry->{opening} && length $entry->{opening}) {
+    print "info string book opening: $entry->{opening}\n";
+  }
+  my $plan = _book_plan_summary($entry);
+  if (defined $plan && length $plan) {
+    print "info string book plan: $plan\n";
+  }
+}
+
+sub _print_book_plan_console {
+  my ($entry) = @_;
+  return unless ref($entry) eq 'HASH';
+
+  if (defined $entry->{opening} && length $entry->{opening}) {
+    print "  book: $entry->{opening}\n";
+  }
+  my $plan = _book_plan_summary($entry);
+  if (defined $plan && length $plan) {
+    print "  plan: $plan\n";
+  }
 }
 
 sub _build_uci_pv_lines {

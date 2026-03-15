@@ -52,6 +52,12 @@ sub _resolve_root_candidate_move {
   return $move;
 }
 
+sub _is_mate_like_score {
+  my ($score) = @_;
+  return 0 unless defined $score;
+  return abs(int($score)) >= (MATE_SCORE - 256) ? 1 : 0;
+}
+
 sub maybe_randomize_tied_root_move {
   my ($state, $best_move, $opts, $find_move_by_key_cb) = @_;
   return $best_move unless $opts && $opts->{randomize_ties};
@@ -65,6 +71,7 @@ sub maybe_randomize_tied_root_move {
   return $best_move unless ref($ranked) eq 'ARRAY' && @{$ranked} >= 2;
   my $best_score = $ranked->[0]{score};
   return $best_move unless defined $best_score;
+  return $best_move if _is_mate_like_score($best_score);
 
   my @near_tied;
   for my $candidate (@{$ranked}) {

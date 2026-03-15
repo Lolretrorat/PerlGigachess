@@ -8,6 +8,7 @@ use lib "$RealBin/..";
 
 use Test::More;
 
+use Chess::Heuristics qw(MATE_SCORE);
 use Chess::Search qw(
   finalize_root_search_stats
   has_sac_candidate_with_score_drop
@@ -92,6 +93,19 @@ is(
   maybe_randomize_tied_root_move($state, $move_a, { randomize_ties => 0 }, undef),
   $move_a,
   'tie randomization returns the best move unchanged when disabled'
+);
+
+reset_root_search_stats();
+$stats = root_search_stats();
+$stats->{root_candidates} = [
+  { score => MATE_SCORE - 1, move => $move_a, move_key => 1 },
+  { score => MATE_SCORE - 3, move => $move_b, move_key => 2 },
+];
+finalize_root_search_stats();
+is(
+  maybe_randomize_tied_root_move($state, $move_a, { randomize_ties => 1, tie_random_cp => 10 }, undef),
+  $move_a,
+  'mate-like root scores are not randomized away from the shortest mate'
 );
 
 done_testing();
