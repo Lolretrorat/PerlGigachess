@@ -95,5 +95,43 @@ my $clock_go = _clock_go_command_for_game(\%base_game, $state);
 die "Clock go command should carry time fields, got '$clock_go'\n"
   unless defined $clock_go && $clock_go =~ /^go wtime \d+ btime \d+ winc \d+ binc \d+(?: movestogo \d+)?$/;
 
+my $baseline_movetime = _movetime_for_game_ms(\%base_game, $state);
+my $elapsed_ms = int($baseline_movetime * 0.85);
+my $incremental_rethink = _incremental_rethink_movetime_ms(
+  \%base_game,
+  $state,
+  {
+    move => 'd3g3',
+    cp => 41,
+    elapsed_ms => $elapsed_ms,
+  },
+  1.60,
+);
+my $expected_rethink = int($baseline_movetime * 1.60) - $elapsed_ms;
+die "Incremental rethink should spend only the leftover delta, got '$incremental_rethink' expected '$expected_rethink'\n"
+  unless defined $incremental_rethink && $incremental_rethink == $expected_rethink;
+
+my $rethinking_out_text = "bestmove d3g3\n";
+my $rethinking_in_text = '';
+open my $rethinking_out, '<', \$rethinking_out_text or die "open rethinking_out scalar: $!\n";
+open my $rethinking_in,  '>', \$rethinking_in_text  or die "open rethinking_in scalar: $!\n";
+my $rethought = _rethink_with_multiplier(
+  \%base_game,
+  $rethinking_out,
+  $rethinking_in,
+  $state,
+  {
+    move => 'd3g3',
+    cp => 41,
+    elapsed_ms => $elapsed_ms,
+  },
+  1.60,
+  'time-profile',
+);
+die "Incremental rethink should return a move\n"
+  unless ref($rethought) eq 'HASH' && defined $rethought->{move};
+die "Incremental rethink should issue a smaller follow-up movetime, got '$rethinking_in_text'\n"
+  unless $rethinking_in_text =~ /\ngo movetime \Q$expected_rethink\E\n/;
+
 print "Lichess time-profile regression OK: blitz=$blitz rapid=$rapid classical=$classical rapid_panic_30=$rapid_panic_30 rapid_panic_10=$rapid_panic_10 go='$rapid_analysis->{go_cmd}'\n";
 PERL

@@ -96,7 +96,7 @@ use constant ROOT_CLEAR_BEST_DELTA => 24;                   # Root score gap con
 use constant ROOT_SCORE_DROP_THRESHOLD_CP => 45;            # Root candidate score-drop threshold before applying a regression penalty; min=10 max=180.
 use constant ROOT_SCORE_DROP_PENALTY_SCALE => 0.45;         # Penalty scale applied to root candidates whose score collapses between iterations; min=0.1 max=1.5.
 use constant ROOT_SCORE_DROP_MAX_PENALTY_CP => 120;         # Max root regression penalty applied to a collapsing candidate line; min=20 max=300.
-use constant ROOT_SCORE_DROP_MIN_DEPTH => 4;                # Minimum iterative depth before root regression penalties activate; min=2 max=10.
+use constant ROOT_SCORE_DROP_MIN_DEPTH => 3;                # Minimum iterative depth before root regression penalties activate; min=2 max=10.
 use constant DEVELOPMENT_MINOR_PENALTY => 4;                # Opening penalty per undeveloped minor piece; min=1 max=10.
 use constant EARLY_ROOK_MOVE_PENALTY => 3;                  # Opening penalty for early rook moves; min=1 max=10.
 use constant EARLY_QUEEN_MOVE_PENALTY => 6;                 # Opening penalty for early queen sorties; min=1 max=14.
@@ -147,6 +147,7 @@ use constant UNGUARDED_CAPTURE_ORDER_BONUS => 85;           # Move-order bonus f
 use constant UNGUARDED_CAPTURE_VIABLE_ORDER_BONUS => 45;    # Extra move-order bonus when exchange looks favorable; [FIXED VALUE].
 use constant KING_SHUFFLE_MIDGAME_MIN_PIECES => 18;         # Min material before king-shuffle ordering penalty applies; [FIXED VALUE].
 use constant KING_SHUFFLE_ORDER_PENALTY => 160;             # Move-order penalty for aimless king shuffles; [FIXED VALUE].
+use constant TACTICAL_QUEEN_ORDER_BONUS => 90;              # Move-order bonus for genuine quiet queen threats that pressure the enemy king shell; min=20 max=180.
 use constant PROMOTION_CHECK_ORDER_BONUS => 220;            # Move-order bonus for checking promotions; [FIXED VALUE].
 use constant SEE_ORDER_WEIGHT => 1;                         # Weight of SEE term in move ordering; [FIXED VALUE].
 use constant SEE_BAD_CAPTURE_THRESHOLD => 0;                # SEE threshold classifying captures as bad; [FIXED VALUE].
@@ -388,6 +389,7 @@ our @ENGINE_EXPORTS = qw(
   UNGUARDED_CAPTURE_VIABLE_ORDER_BONUS
   KING_SHUFFLE_MIDGAME_MIN_PIECES
   KING_SHUFFLE_ORDER_PENALTY
+  TACTICAL_QUEEN_ORDER_BONUS
   PROMOTION_CHECK_ORDER_BONUS
   SEE_ORDER_WEIGHT
   SEE_BAD_CAPTURE_THRESHOLD

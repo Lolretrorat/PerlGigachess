@@ -241,6 +241,37 @@ sub is_square_attacked_by_side {
   return 0;
 }
 
+sub _queen_attacks_square_from {
+  my ($board, $from_idx, $target_idx, $queen_piece) = @_;
+  return 0 unless ref($board) eq 'ARRAY';
+  return 0 unless defined $from_idx && defined $target_idx;
+  return 0 unless defined $queen_piece && abs($queen_piece) == QUEEN;
+  return 0 if $from_idx == $target_idx;
+
+  my $delta = $target_idx - $from_idx;
+  my $step;
+  if ($delta % 10 == 0) {
+    $step = $delta > 0 ? 10 : -10;
+  } elsif (int($target_idx / 10) == int($from_idx / 10)) {
+    $step = $delta > 0 ? 1 : -1;
+  } elsif ($delta % 11 == 0) {
+    $step = $delta > 0 ? 11 : -11;
+  } elsif ($delta % 9 == 0) {
+    $step = $delta > 0 ? 9 : -9;
+  } else {
+    return 0;
+  }
+
+  for (my $idx = $from_idx + $step; $idx != $target_idx; $idx += $step) {
+    my $piece = $board->[$idx] // OOB;
+    return 0 if $piece == OOB;
+    next unless $piece;
+    return 0;
+  }
+
+  return 1;
+}
+
 sub find_piece_idx {
   my ($board, $target_piece) = @_;
   for my $idx (@board_indices) {
@@ -692,9 +723,15 @@ sub is_tactical_queen_move {
   $enemy_king_idx = find_piece_idx($new_board, KING) unless defined $enemy_king_idx;
   return 0 unless defined $enemy_king_idx;
 
+  my $queen_idx = flip_idx($move->[1]);
+  my $queen_piece = $new_board->[$queen_idx] // 0;
+  return 0 unless abs($queen_piece) == QUEEN;
+  return 1 if _queen_attacks_square_from($new_board, $queen_idx, $enemy_king_idx, $queen_piece);
+
   my @ring = king_ring_indices($new_board, $enemy_king_idx);
   for my $sq ($enemy_king_idx, @ring) {
-    return 1 if is_square_attacked_by_side($new_board, $sq, -1);
+    next unless _queen_attacks_square_from($new_board, $queen_idx, $sq, $queen_piece);
+    return 1;
   }
 
   return 0;

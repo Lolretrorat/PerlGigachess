@@ -89,6 +89,7 @@ my $move_order = Chess::MovePicker::MoveOrder->new(
   unsafe_capture_penalty_cb => \&unsafe_capture_penalty,
   capture_plan_order_bonus_cb => \&capture_plan_order_bonus,
   quiet_plan_order_bonus_cb => \&_quiet_plan_order_bonus,
+  tactical_quiet_order_bonus_cb => \&_tactical_quiet_order_bonus,
   promotion_check_order_bonus_cb => \&promotion_check_order_bonus,
   is_sac_candidate_move_cb => \&is_sac_candidate_move_in_state,
   piece_count_cb => \&piece_count,
@@ -99,6 +100,8 @@ my $search_time_manager = Chess::TimeManager->new(
 );
 my $search_quiesce_limit = QUIESCE_MAX_DEPTH;
 my $search_time_abort = "__TIMEUP__";
+my $search_soft_abort = "__SOFTTIME__";
+my $search_allow_soft_abort = 0;
 my $eval_cache_tag = 'core';
 my %root_regression_prev_scores;
 my %root_regression_current_scores;
@@ -1089,22 +1092,43 @@ sub _is_king_safety_critical_move {
 }
 
 sub _is_tactical_queen_move {
-  my ($from_piece, $new_state, $is_capture) = @_;
+  my ($from_piece, $move, $new_state, $is_capture) = @_;
   return 0 unless $from_piece == QUEEN;
-
-  # Captures and direct checks are already tactical by definition.
   return 1 if $is_capture;
   return 1 if $new_state->is_checked;
 
-  # Preserve quiet queen moves that pressure enemy king/ring from LMR.
   my $new_board = $new_state->[Chess::State::BOARD];
+  my $queen_idx = _flip_idx($move->[1]);
+  my $queen_piece = $new_board->[$queen_idx] // 0;
+  return 0 unless abs($queen_piece) == QUEEN;
+
   my $enemy_king_idx = $new_state->[Chess::State::KING_IDX];
   $enemy_king_idx = _find_piece_idx($new_board, KING) unless defined $enemy_king_idx;
   return 0 unless defined $enemy_king_idx;
 
-  my @ring = _king_ring_indices($new_board, $enemy_king_idx);
-  for my $sq ($enemy_king_idx, @ring) {
-    return 1 if _is_square_attacked_by_side($new_board, $sq, -1);
+  my @targets = ($enemy_king_idx, _king_ring_indices($new_board, $enemy_king_idx));
+  TARGET:
+  for my $target (@targets) {
+    next unless defined $target && $target != $queen_idx;
+    my $delta = $target - $queen_idx;
+    my $step;
+    if ($delta % 10 == 0) {
+      $step = $delta > 0 ? 10 : -10;
+    } elsif (int($target / 10) == int($queen_idx / 10)) {
+      $step = $delta > 0 ? 1 : -1;
+    } elsif ($delta % 11 == 0) {
+      $step = $delta > 0 ? 11 : -11;
+    } elsif ($delta % 9 == 0) {
+      $step = $delta > 0 ? 9 : -9;
+    } else {
+      next TARGET;
+    }
+    for (my $idx = $queen_idx + $step; $idx != $target; $idx += $step) {
+      my $piece = $new_board->[$idx] // OOB;
+      next unless $piece;
+      next TARGET;
+    }
+    return 1;
   }
 
   return 0;
@@ -1227,6 +1251,17 @@ sub _quiet_plan_order_bonus {
   return quiet_move_order_bonus($state, $move, {
     plan_tags => $plan_tags,
   });
+}
+
+sub _tactical_quiet_order_bonus {
+  my ($state, $move, $from_piece, $ply, $opts) = @_;
+  return 0 unless defined $from_piece && abs($from_piece) == QUEEN;
+  return 0 if defined $move->[2] || defined $move->[3];
+  my $new_state = $state->make_move($move);
+  return 0 unless defined $new_state;
+  return _is_tactical_queen_move(abs($from_piece), $move, $new_state, 0)
+    ? TACTICAL_QUEEN_ORDER_BONUS
+    : 0;
 }
 
 sub _promotion_check_order_bonus {
@@ -1586,6 +1621,7 @@ sub _extend_soft_deadline {
 
 sub _check_time_or_abort {
   die $search_time_abort if $search_time_manager->tick_node_and_hard_deadline_reached();
+  die $search_soft_abort if $search_allow_soft_abort && $search_time_manager->soft_deadline_reached();
 }
 
 sub _volatility_pressure_score {
@@ -1716,6 +1752,22 @@ sub _collect_root_pv_lines {
   });
 }
 
+sub _should_search_quiesce_check {
+  my ($from_piece, $king_danger_before, $move, $new_state) = @_;
+  return 0 unless ref($new_state) && ref($move) eq 'ARRAY';
+
+  return 1 unless $from_piece == QUEEN;
+
+  my $new_board = $new_state->[Chess::State::BOARD];
+  my $dest_idx = _flip_idx($move->[1]);
+  my $attacked = _is_square_attacked_by_side($new_board, $dest_idx, 1) ? 1 : 0;
+  my $defended = _is_square_attacked_by_side($new_board, $dest_idx, -1) ? 1 : 0;
+  return 1 if !$attacked || $defended;
+
+  my $king_danger_after = _king_danger_for_piece($new_board, KING);
+  return ($king_danger_after - $king_danger_before) >= STRATEGIC_THREAT_KING_DANGER_DELTA ? 1 : 0;
+}
+
 sub _quiesce {
   my ($state, $alpha, $beta, $depth, $ply) = @_;
   $depth //= 0;
@@ -1728,12 +1780,6 @@ sub _quiesce {
     $alpha = max($alpha, $stand_pat);
     return $alpha if $alpha >= $beta || $depth >= $search_quiesce_limit;
   }
-
-  my $legal_groups = collect_legal_moves($state);
-  my $captures = $legal_groups->{captures};
-  my $quiets = $legal_groups->{quiets};
-  $captures = [] unless ref($captures) eq 'ARRAY';
-  $quiets = [] unless ref($quiets) eq 'ARRAY';
 
   my @forcing;
   my @undo_stack;
@@ -1765,11 +1811,17 @@ sub _quiesce {
 
       for my $move (@{$quiet_moves}) {
         next if defined $move->[2];
+        my $parent_board = $state->[Chess::State::BOARD];
+        my $from_piece = abs($parent_board->[$move->[0]] // 0);
+        my $king_danger_before = _king_danger_for_piece($parent_board, OPP_KING);
         my @undo_stack;
         next unless defined $state->do_move($move, \@undo_stack);
         my $is_check = $state->is_checked ? 1 : 0;
+        my $worth_searching = $is_check
+          ? _should_search_quiesce_check($from_piece, $king_danger_before, $move, $state)
+          : 0;
         $state->undo_move(\@undo_stack);
-        next unless $is_check;
+        next unless $is_check && $worth_searching;
         my $move_key = _move_key($move);
         push @forcing, [
           _move_order_score($state, $move, $move_key, 0, 0) + QUIESCE_CHECK_BONUS,
@@ -2110,25 +2162,9 @@ sub _search {
         = _quiet_move_threat_flags($parent_board, $threat_summary_before, $enemy_king_danger_before, $state);
     }
     $strategic_threat_move = 1 if $quiet_plan_bonus >= 70;
-    my $tactical_queen_move = 0;
-    if ($queen_move) {
-      if ($is_capture || $gives_check) {
-        $tactical_queen_move = 1;
-      } else {
-        my $new_board = $state->[Chess::State::BOARD];
-        my $enemy_king_idx = $state->[Chess::State::KING_IDX];
-        $enemy_king_idx = _find_piece_idx($new_board, KING) unless defined $enemy_king_idx;
-        if (defined $enemy_king_idx) {
-          my @ring = _king_ring_indices($new_board, $enemy_king_idx);
-          for my $sq ($enemy_king_idx, @ring) {
-            if (_is_square_attacked_by_side($new_board, $sq, -1)) {
-              $tactical_queen_move = 1;
-              last;
-            }
-          }
-        }
-      }
-    }
+    my $tactical_queen_move = $queen_move
+      ? _is_tactical_queen_move($from_piece, $move, $state, $is_capture)
+      : 0;
 
     $legal_moves++;
     if (!$in_check
@@ -2300,6 +2336,7 @@ sub think {
   my $root_state = ${$self->{state}};
   my $piece_count = _piece_count($root_state);
   $root_plan_tags = [];
+  $search_allow_soft_abort = 0;
 
   if ($use_book && (my $book_move = Chess::Book::choose_move($root_state))) {
     return $book_move;
@@ -2357,14 +2394,18 @@ sub think {
     my $iteration_score;
     my $iteration_move;
     my $aspiration_expansions = 0;
+    my $window_resolved = 0;
 
     # Aspiration window with iterative widening
     my $delta = ASPIRATION_WINDOW_INITIAL;
     my $avg = $prev_score // 0;
     my $alpha = ($depth >= 3) ? max(-INF_SCORE, $avg - $delta) : -INF_SCORE;
     my $beta = ($depth >= 3) ? min(INF_SCORE, $avg + $delta) : INF_SCORE;
+    my $used_full_window = ($alpha == -INF_SCORE && $beta == INF_SCORE) ? 1 : 0;
+    $search_allow_soft_abort = (!$strict_depth && $time_policy->{has_clock} && $last_completed_depth) ? 1 : 0;
 
     while (1) {
+      my $is_full_window = ($alpha == -INF_SCORE && $beta == INF_SCORE) ? 1 : 0;
       my ($score, $move);
       my $ok = eval {
         ($score, $move) = _search_root_with_workers($state, $depth, $alpha, $beta, $workers);
@@ -2372,7 +2413,7 @@ sub think {
       };
       if (! $ok) {
         my $err = $@;
-        if (defined $err && $err =~ /\Q$search_time_abort\E/) {
+        if (defined $err && ($err =~ /\Q$search_time_abort\E/ || $err =~ /\Q$search_soft_abort\E/)) {
           $state = $root_state->clone;
           last DEPTH_LOOP;
         }
@@ -2382,6 +2423,11 @@ sub think {
       $iteration_score = $score;
       $iteration_move = $move if defined $move;
 
+      if ($is_full_window) {
+        $window_resolved = 1;
+        last;
+      }
+
       if ($score <= $alpha) {
         # Fail low - widen window downward
         $aspiration_expansions++;
@@ -2389,8 +2435,12 @@ sub think {
         $alpha = max(-INF_SCORE, $score - $delta);
         $delta += int($delta / 3);
         last if !$strict_depth && $last_completed_depth && _time_up_soft();
-        last if $aspiration_expansions >= ASPIRATION_WINDOW_MAX_WIDEN;
-        last if $delta > INF_SCORE / 2;
+        if ($aspiration_expansions >= ASPIRATION_WINDOW_MAX_WIDEN || $delta > INF_SCORE / 2) {
+          last if $used_full_window;
+          $alpha = -INF_SCORE;
+          $beta = INF_SCORE;
+          $used_full_window = 1;
+        }
         next;
       }
       if ($score >= $beta) {
@@ -2400,16 +2450,22 @@ sub think {
         $beta = min(INF_SCORE, $score + $delta);
         $delta += int($delta / 3);
         last if !$strict_depth && $last_completed_depth && _time_up_soft();
-        last if $aspiration_expansions >= ASPIRATION_WINDOW_MAX_WIDEN;
-        last if $delta > INF_SCORE / 2;
+        if ($aspiration_expansions >= ASPIRATION_WINDOW_MAX_WIDEN || $delta > INF_SCORE / 2) {
+          last if $used_full_window;
+          $alpha = -INF_SCORE;
+          $beta = INF_SCORE;
+          $used_full_window = 1;
+        }
         next;
       }
 
       # Success - value within window
+      $window_resolved = 1;
       last;
     }
 
-    next unless defined $iteration_score;
+    $search_allow_soft_abort = 0;
+    next unless defined $iteration_score && $window_resolved;
     $last_completed_depth = $depth;
     $last_completed_score = $iteration_score;
     _commit_root_regression_depth();
@@ -2567,6 +2623,7 @@ sub think {
     my @legal = $state->generate_moves;
     $best_move = $legal[0] if @legal;
   }
+  $search_allow_soft_abort = 0;
   $best_move = _maybe_randomize_tied_root_move($state, $best_move, \%think_opts);
 
   $last_completed_score = _evaluate_board($state) unless defined $last_completed_score;

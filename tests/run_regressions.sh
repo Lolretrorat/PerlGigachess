@@ -274,6 +274,9 @@ else
   echo "==> Skipping lichess time/depth profile guard"
 fi
 
+echo "==> Engine soft-abort iterative-depth guard"
+(cd "$ROOT_DIR" && perl tests/regression_engine_soft_abort.pl)
+
 if [[ "$SKIP_ENGINE_REGISTRY" -eq 0 ]]; then
   echo "==> Engine tuning registry sync guard"
   (cd "$ROOT_DIR" && bash tests/regression_engine_registry_sync.sh)
@@ -315,6 +318,9 @@ if [[ "$SKIP_QSEARCH_IN_CHECK" -eq 0 ]]; then
 else
   echo "==> Skipping qsearch in-check mate/evasion guard"
 fi
+
+echo "==> YWUtX6DF opening queen-pressure guard"
+(cd "$ROOT_DIR" && perl tests/regression_ywutx6df_opening_search.pl)
 
 if [[ "$SKIP_SEARCH_REPETITION" -eq 0 ]]; then
   echo "==> Search repetition threefold-only guard"
