@@ -359,6 +359,8 @@ sub new {
     square_of_idx_cb             => $opts{square_of_idx_cb},
     unsafe_capture_penalty_cb    => $opts{unsafe_capture_penalty_cb},
     capture_plan_order_bonus_cb  => $opts{capture_plan_order_bonus_cb},
+    quiet_plan_order_bonus_cb    => $opts{quiet_plan_order_bonus_cb},
+    tactical_quiet_order_bonus_cb => $opts{tactical_quiet_order_bonus_cb},
     promotion_check_order_bonus_cb => $opts{promotion_check_order_bonus_cb},
     is_sac_candidate_move_cb     => $opts{is_sac_candidate_move_cb},
     piece_count_cb               => $opts{piece_count_cb},
@@ -520,6 +522,12 @@ sub score_move {
   }
 
   if (!$is_capture) {
+    if (ref($self->{quiet_plan_order_bonus_cb}) eq 'CODE') {
+      $score += $self->{quiet_plan_order_bonus_cb}->($state, $move, $from_piece, $ply, $opts);
+    }
+    if (ref($self->{tactical_quiet_order_bonus_cb}) eq 'CODE') {
+      $score += $self->{tactical_quiet_order_bonus_cb}->($state, $move, $from_piece, $ply, $opts);
+    }
     $score += $self->history_bonus($move_key);
     $score += $self->killer_bonus($move_key, $ply);
     $score += $self->countermove_bonus($move_key, $prev_move_key);

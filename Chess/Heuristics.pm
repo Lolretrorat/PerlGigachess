@@ -83,12 +83,20 @@ use constant SAC_SCORE_DROP_CP => 259;                      # Score-drop thresho
 use constant SAC_CANDIDATE_MIN_BUDGET_MS => 140;            # Minimum budget before extending time on sac candidates; [FIXED VALUE].
 use constant SAC_EXTRA_TIME_SHARE => 0.10;                  # Budget share used for sac-candidate extension; [FIXED VALUE].
 use constant SAC_EXTRA_TIME_MAX_MS => 260;                  # Max milliseconds added for sac-candidate extension; [FIXED VALUE].
+use constant VOLATILITY_LONG_THINK_MIN_DEPTH => 4;          # Earliest depth where volatile positions may claim extra think time; [FIXED VALUE].
+use constant VOLATILITY_LONG_THINK_MIN_BUDGET_MS => 220;    # Minimum soft budget before volatile positions can request extra think time; [FIXED VALUE].
+use constant VOLATILITY_LONG_THINK_EXTRA_SHARE => 0.20;     # Share of the base budget granted to unclear/volatile positions; [FIXED VALUE].
+use constant VOLATILITY_LONG_THINK_MAX_MS => 320;           # Max soft-budget extension for a single volatility long-think grant; [FIXED VALUE].
+use constant VOLATILITY_LONG_THINK_MAX_EXTENSIONS => 2;     # Max volatility long-think grants in one root search; [FIXED VALUE].
+use constant MATE_REFINEMENT_MIN_BUDGET_MS => 180;          # Minimum soft budget before a forcing mate line can claim extra refinement time; [FIXED VALUE].
+use constant MATE_REFINEMENT_EXTRA_TIME_SHARE => 0.18;      # Budget share used to refine a forcing mate line for distance accuracy; [FIXED VALUE].
+use constant MATE_REFINEMENT_MAX_MS => 360;                 # Max soft-budget extension for mate-distance refinement; [FIXED VALUE].
 use constant ROOT_NEAR_TIE_DELTA => 10;                     # Root score gap considered a near tie; [FIXED VALUE].
 use constant ROOT_CLEAR_BEST_DELTA => 24;                   # Root score gap considered a clear best; [FIXED VALUE].
 use constant ROOT_SCORE_DROP_THRESHOLD_CP => 45;            # Root candidate score-drop threshold before applying a regression penalty; min=10 max=180.
 use constant ROOT_SCORE_DROP_PENALTY_SCALE => 0.45;         # Penalty scale applied to root candidates whose score collapses between iterations; min=0.1 max=1.5.
 use constant ROOT_SCORE_DROP_MAX_PENALTY_CP => 120;         # Max root regression penalty applied to a collapsing candidate line; min=20 max=300.
-use constant ROOT_SCORE_DROP_MIN_DEPTH => 4;                # Minimum iterative depth before root regression penalties activate; min=2 max=10.
+use constant ROOT_SCORE_DROP_MIN_DEPTH => 3;                # Minimum iterative depth before root regression penalties activate; min=2 max=10.
 use constant DEVELOPMENT_MINOR_PENALTY => 4;                # Opening penalty per undeveloped minor piece; min=1 max=10.
 use constant EARLY_ROOK_MOVE_PENALTY => 3;                  # Opening penalty for early rook moves; min=1 max=10.
 use constant EARLY_QUEEN_MOVE_PENALTY => 6;                 # Opening penalty for early queen sorties; min=1 max=14.
@@ -139,6 +147,7 @@ use constant UNGUARDED_CAPTURE_ORDER_BONUS => 85;           # Move-order bonus f
 use constant UNGUARDED_CAPTURE_VIABLE_ORDER_BONUS => 45;    # Extra move-order bonus when exchange looks favorable; [FIXED VALUE].
 use constant KING_SHUFFLE_MIDGAME_MIN_PIECES => 18;         # Min material before king-shuffle ordering penalty applies; [FIXED VALUE].
 use constant KING_SHUFFLE_ORDER_PENALTY => 160;             # Move-order penalty for aimless king shuffles; [FIXED VALUE].
+use constant TACTICAL_QUEEN_ORDER_BONUS => 90;              # Move-order bonus for genuine quiet queen threats that pressure the enemy king shell; min=20 max=180.
 use constant PROMOTION_CHECK_ORDER_BONUS => 220;            # Move-order bonus for checking promotions; [FIXED VALUE].
 use constant SEE_ORDER_WEIGHT => 1;                         # Weight of SEE term in move ordering; [FIXED VALUE].
 use constant SEE_BAD_CAPTURE_THRESHOLD => 0;                # SEE threshold classifying captures as bad; [FIXED VALUE].
@@ -167,6 +176,10 @@ use constant ROOK_SEMIOPEN_FILE_BONUS => 3;                 # Bonus for rooks on
 use constant ROOK_SEVENTH_RANK_BONUS => 4;                  # Bonus for active rooks on the seventh rank; min=0 max=12.
 use constant THREAT_ATTACK_BONUS => 4;                      # Bonus for safe attacks on loose or weakly defended enemy pieces; min=0 max=16.
 use constant THREAT_SAFE_CHECK_BONUS => 8;                  # Bonus for safe checking pressure in the static evaluation; min=0 max=24.
+use constant THREATENED_PAWN_PENALTY => 3;                  # Threat penalty for attacked pawns so quiet pawn-losing plans are visible; min=1 max=8.
+use constant THREAT_RESPONSE_DELTA_THRESHOLD => 3;          # Threat-delta threshold for preserving quiet defensive moves from pruning; min=1 max=12.
+use constant STRATEGIC_THREAT_DELTA_THRESHOLD => 3;         # Threat-delta threshold for preserving quiet pressure-building moves from pruning; min=1 max=12.
+use constant STRATEGIC_THREAT_KING_DANGER_DELTA => 2;       # King-danger delta threshold for treating a quiet move as a strategic threat; min=1 max=8.
 use constant KING_DANGER_ATTACK_UNIT_PENALTY => 2;          # Extra king-danger penalty per quality attacking unit near the king; min=0 max=8.
 use constant ENDGAME_KING_CENTER_BONUS => 2;                # Endgame bonus for centralizing the king; min=0 max=8.
 use constant ENDGAME_PASSED_PAWN_BONUS => 3;                # Endgame bonus for supporting our advanced passers / restraining enemy ones; min=0 max=12.
@@ -312,6 +325,14 @@ our @ENGINE_EXPORTS = qw(
   SAC_CANDIDATE_MIN_BUDGET_MS
   SAC_EXTRA_TIME_SHARE
   SAC_EXTRA_TIME_MAX_MS
+  VOLATILITY_LONG_THINK_MIN_DEPTH
+  VOLATILITY_LONG_THINK_MIN_BUDGET_MS
+  VOLATILITY_LONG_THINK_EXTRA_SHARE
+  VOLATILITY_LONG_THINK_MAX_MS
+  VOLATILITY_LONG_THINK_MAX_EXTENSIONS
+  MATE_REFINEMENT_MIN_BUDGET_MS
+  MATE_REFINEMENT_EXTRA_TIME_SHARE
+  MATE_REFINEMENT_MAX_MS
   ROOT_NEAR_TIE_DELTA
   ROOT_CLEAR_BEST_DELTA
   ROOT_SCORE_DROP_THRESHOLD_CP
@@ -368,6 +389,7 @@ our @ENGINE_EXPORTS = qw(
   UNGUARDED_CAPTURE_VIABLE_ORDER_BONUS
   KING_SHUFFLE_MIDGAME_MIN_PIECES
   KING_SHUFFLE_ORDER_PENALTY
+  TACTICAL_QUEEN_ORDER_BONUS
   PROMOTION_CHECK_ORDER_BONUS
   SEE_ORDER_WEIGHT
   SEE_BAD_CAPTURE_THRESHOLD
@@ -396,6 +418,10 @@ our @ENGINE_EXPORTS = qw(
   ROOK_SEVENTH_RANK_BONUS
   THREAT_ATTACK_BONUS
   THREAT_SAFE_CHECK_BONUS
+  THREATENED_PAWN_PENALTY
+  THREAT_RESPONSE_DELTA_THRESHOLD
+  STRATEGIC_THREAT_DELTA_THRESHOLD
+  STRATEGIC_THREAT_KING_DANGER_DELTA
   KING_DANGER_ATTACK_UNIT_PENALTY
   ENDGAME_KING_CENTER_BONUS
   ENDGAME_PASSED_PAWN_BONUS

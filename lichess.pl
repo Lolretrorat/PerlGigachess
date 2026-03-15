@@ -1284,6 +1284,8 @@ sub _rethink_with_multiplier {
   return $analysis if (($analysis->{source} // '') eq 'tablebase');
   return $analysis if (($analysis->{source} // '') eq 'forced-mate');
   return $analysis unless defined $analysis->{move};
+  my $extra_ms = _incremental_rethink_movetime_ms($game, $state, $analysis, $multiplier);
+  return $analysis unless defined $extra_ms && $extra_ms > 0;
 
   my $extra = compute_bestmove(
     $game,
@@ -1291,7 +1293,7 @@ sub _rethink_with_multiplier {
     $engine_in,
     $state,
     {
-      movetime_multiplier => $multiplier,
+      movetime_override_ms => $extra_ms,
       depth_bump => $rethink_depth_bump,
       reason => $reason,
     },
@@ -2426,6 +2428,50 @@ sub _clock_go_command_for_game {
   return join(' ', @go);
 }
 
+sub _game_has_clock_go_data {
+  my ($game) = @_;
+  return 0 unless ref $game eq 'HASH';
+  return 0 unless defined $game->{wtime} && $game->{wtime} =~ /^\d+$/;
+  return 0 unless defined $game->{btime} && $game->{btime} =~ /^\d+$/;
+  return 1;
+}
+
+sub _incremental_rethink_movetime_ms {
+  my ($game, $state, $analysis, $multiplier, $floor_ms) = @_;
+  return unless ref $game eq 'HASH' && ref $analysis eq 'HASH';
+  return unless defined $analysis->{elapsed_ms} && $analysis->{elapsed_ms} =~ /^\d+$/;
+
+  my $elapsed_ms = int($analysis->{elapsed_ms});
+  return unless $elapsed_ms > 0;
+
+  my $baseline_ms = _movetime_for_game_ms($game, $state);
+  return unless defined $baseline_ms && $baseline_ms > 0;
+
+  $multiplier = 1.0 unless defined $multiplier && $multiplier =~ /^\d+(?:\.\d+)?$/;
+  $multiplier += 0;
+  $multiplier = 1.0 if $multiplier < 1.0;
+  $multiplier = 3.0 if $multiplier > 3.0;
+
+  my $target_total_ms = int($baseline_ms * $multiplier);
+  if (defined $floor_ms && $floor_ms =~ /^\d+$/) {
+    my $floor = int($floor_ms);
+    $target_total_ms = $floor if $floor > $target_total_ms;
+  }
+
+  my $extra_ms = $target_total_ms - $elapsed_ms;
+  return 0 if $extra_ms <= 0;
+
+  my ($clock_ms, $inc_ms) = _clock_for_side_ms($game);
+  if (defined $clock_ms && defined $inc_ms) {
+    my $cap = int(($clock_ms * 0.45) + ($inc_ms * 2));
+    $cap = $clock_ms - 200 if $cap > ($clock_ms - 200);
+    $cap = 80 if $cap < 80;
+    $extra_ms = $cap if $extra_ms > $cap;
+  }
+
+  return $extra_ms > 0 ? $extra_ms : 0;
+}
+
 sub _set_engine_depth {
   my ($game, $engine_out, $engine_in, $target, $reason) = @_;
   return unless ref $game eq 'HASH';
@@ -2610,32 +2656,44 @@ sub compute_bestmove {
     $depth = 20 if $depth > 20;
     $go = "go depth $depth";
   } else {
-    my $movetime = _movetime_for_game_ms($game, $state);
-    if (defined $opts->{movetime_multiplier} && $opts->{movetime_multiplier} =~ /^\d+(?:\.\d+)?$/) {
-      my $mult = $opts->{movetime_multiplier} + 0;
-      $mult = 1.0 if $mult < 1.0;
-      $mult = 3.0 if $mult > 3.0;
-      my $boosted = int($movetime * $mult);
-      my ($clock_ms, $inc_ms) = _clock_for_side_ms($game);
-      if (defined $clock_ms && defined $inc_ms) {
-        my $cap = int(($clock_ms * 0.45) + ($inc_ms * 2));
-        $cap = $clock_ms - 200 if $cap > ($clock_ms - 200);
-        $cap = 80 if $cap < 80;
-        $boosted = $cap if $boosted > $cap;
-      }
-      $movetime = $boosted if $boosted > $movetime;
-    }
-    if (defined $opts->{movetime_floor_ms} && $opts->{movetime_floor_ms} =~ /^\d+$/) {
-      my $floor = int($opts->{movetime_floor_ms});
-      $movetime = $floor if $floor > $movetime;
-    }
     my $go_depth = defined $bumped_depth
       ? _bumped_engine_depth_for_game($game, $bumped_depth)
       : undef;
-    if (defined $go_depth) {
-      $go = "go depth $go_depth movetime $movetime";
-    } else {
-      $go = "go movetime $movetime";
+    my $movetime_override_ms = $opts->{movetime_override_ms};
+    my $prefer_clock_go = !defined $movetime_override_ms
+      && !defined $opts->{movetime_multiplier}
+      && !defined $opts->{movetime_floor_ms}
+      && _game_has_clock_go_data($game);
+    if ($prefer_clock_go) {
+      $go = _clock_go_command_for_game($game, $state, $go_depth);
+    }
+    if (!defined $go || !length $go) {
+      my $movetime = defined $movetime_override_ms && $movetime_override_ms =~ /^\d+$/
+        ? int($movetime_override_ms)
+        : _movetime_for_game_ms($game, $state);
+      if (defined $opts->{movetime_multiplier} && $opts->{movetime_multiplier} =~ /^\d+(?:\.\d+)?$/) {
+        my $mult = $opts->{movetime_multiplier} + 0;
+        $mult = 1.0 if $mult < 1.0;
+        $mult = 3.0 if $mult > 3.0;
+        my $boosted = int($movetime * $mult);
+        my ($clock_ms, $inc_ms) = _clock_for_side_ms($game);
+        if (defined $clock_ms && defined $inc_ms) {
+          my $cap = int(($clock_ms * 0.45) + ($inc_ms * 2));
+          $cap = $clock_ms - 200 if $cap > ($clock_ms - 200);
+          $cap = 80 if $cap < 80;
+          $boosted = $cap if $boosted > $cap;
+        }
+        $movetime = $boosted if $boosted > $movetime;
+      }
+      if (defined $opts->{movetime_floor_ms} && $opts->{movetime_floor_ms} =~ /^\d+$/) {
+        my $floor = int($opts->{movetime_floor_ms});
+        $movetime = $floor if $floor > $movetime;
+      }
+      if (defined $go_depth) {
+        $go = "go depth $go_depth movetime $movetime";
+      } else {
+        $go = "go movetime $movetime";
+      }
     }
   }
   print {$engine_in} "$go\n";

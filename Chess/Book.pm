@@ -31,6 +31,12 @@ our %book = (
 
 my %fen_book;
 my %relaxed_fen_book;
+my %fen_book_meta;
+my %relaxed_fen_book_meta;
+my %overlay_fen_book;
+my %overlay_relaxed_fen_book;
+my %overlay_fen_book_meta;
+my %overlay_relaxed_fen_book_meta;
 my %legal_move_map_cache;
 my %ranked_legal_entries_cache;
 my $LEGAL_MOVE_MAP_CACHE_MAX = 20_000;
@@ -106,6 +112,8 @@ sub _book_paths {
 }
 
 sub _book_style_overlay_path {
+  return $ENV{CHESS_BOOK_STYLE_OVERLAY_PATH}
+    if defined $ENV{CHESS_BOOK_STYLE_OVERLAY_PATH} && length $ENV{CHESS_BOOK_STYLE_OVERLAY_PATH};
   return $book_style_overlay_path_cache if defined $book_style_overlay_path_cache;
   my $module_dir = dirname(__FILE__);
   my $root = File::Spec->catdir($module_dir, '..');
@@ -124,18 +132,39 @@ sub reload {
 sub _load_json_book {
   %fen_book = ();
   %relaxed_fen_book = ();
+  %fen_book_meta = ();
+  %relaxed_fen_book_meta = ();
+  %overlay_fen_book = ();
+  %overlay_relaxed_fen_book = ();
+  %overlay_fen_book_meta = ();
+  %overlay_relaxed_fen_book_meta = ();
   %ranked_legal_entries_cache = ();
 
   my @paths = _book_paths();
-  return unless @paths;
   foreach my $path (@paths) {
     _merge_json_book_path($path);
+  }
+  if (!$BOOK_USE_STYLE_OVERLAY) {
+    my $overlay = _book_style_overlay_path();
+    if (defined $overlay && length $overlay && -e $overlay) {
+      _merge_json_book_path(
+        $overlay,
+        \%overlay_fen_book,
+        \%overlay_relaxed_fen_book,
+        \%overlay_fen_book_meta,
+        \%overlay_relaxed_fen_book_meta,
+      );
+    }
   }
 }
 
 sub _merge_json_book_path {
-  my ($path) = @_;
+  my ($path, $fen_target, $relaxed_target, $fen_meta_target, $relaxed_meta_target) = @_;
   return unless defined $path && -e $path;
+  $fen_target ||= \%fen_book;
+  $relaxed_target ||= \%relaxed_fen_book;
+  $fen_meta_target ||= \%fen_book_meta;
+  $relaxed_meta_target ||= \%relaxed_fen_book_meta;
 
   my $json_text = do {
     open my $fh, '<', $path or return;
@@ -155,25 +184,86 @@ sub _merge_json_book_path {
     my $key = $entry->{key} || next;
     my $relaxed = relaxed_fen_key($key);
     my $moves = $entry->{moves} || [];
+    my $meta = _parse_book_metadata($entry);
     my @parsed = _parse_book_moves($moves);
     next unless @parsed;
 
     push @{ $pending_fen{$key} }, @parsed;
     push @{ $pending_relaxed{$relaxed} }, @parsed if defined $relaxed;
+    _merge_book_metadata_for_key($fen_meta_target, $key, $meta);
+    _merge_book_metadata_for_key($relaxed_meta_target, $relaxed, $meta) if defined $relaxed;
   }
 
   foreach my $merge_key (keys %pending_fen) {
-    _merge_book_entries(\%fen_book, $merge_key, $pending_fen{$merge_key});
+    _merge_book_entries($fen_target, $merge_key, $pending_fen{$merge_key});
   }
   foreach my $merge_key (keys %pending_relaxed) {
-    _merge_book_entries(\%relaxed_fen_book, $merge_key, $pending_relaxed{$merge_key});
+    _merge_book_entries($relaxed_target, $merge_key, $pending_relaxed{$merge_key});
   }
 }
 
 sub choose_move {
   my ($state) = @_;
+  my $entry = choose_entry($state);
+  return unless $entry;
+  return $entry->{move} if ref($entry) eq 'HASH';
+  return $entry;
+}
+
+sub choose_entry {
+  my ($state) = @_;
   return unless _book_depth_allowed($state);
-  return _lookup_fen_move($state) || _legacy_lookup($state);
+  return _lookup_fen_entry($state) || _legacy_lookup_entry($state);
+}
+
+sub lookup_plan {
+  my ($state, $move_or_uci) = @_;
+  return unless _book_depth_allowed($state);
+  my $entry = _lookup_fen_entry($state, $move_or_uci);
+  return unless ref($entry) eq 'HASH';
+
+  my %plan;
+  for my $field (qw(uci opening plan plan_id source source_key)) {
+    $plan{$field} = $entry->{$field} if defined $entry->{$field};
+  }
+  for my $field (qw(plan_tags plans)) {
+    next unless ref($entry->{$field}) eq 'ARRAY' && @{$entry->{$field}};
+    $plan{$field} = [ @{$entry->{$field}} ];
+  }
+  return unless %plan;
+  return \%plan;
+}
+
+sub plan_tags_for_state {
+  my ($state, $opts) = @_;
+  return [] unless _book_depth_allowed($state);
+  $opts = {} unless ref($opts) eq 'HASH';
+
+  my $limit = $opts->{top_n};
+  $limit = 2 unless defined $limit && $limit =~ /^\d+$/ && $limit > 0;
+
+  my %scores;
+  my $ctx = _lookup_fen_context($state);
+  _accumulate_plan_tags_from_context(\%scores, $ctx, $limit) if $ctx;
+
+  if (!$BOOK_USE_STYLE_OVERLAY) {
+    my $overlay_ctx = _lookup_fen_context_from(
+      $state,
+      \%overlay_fen_book,
+      \%overlay_relaxed_fen_book,
+      'overlay_fen',
+      'overlay_relaxed',
+    );
+    _accumulate_plan_tags_from_context(\%scores, $overlay_ctx, $limit) if $overlay_ctx;
+  }
+
+  return [] unless %scores;
+  return [
+    sort {
+      $scores{$b} <=> $scores{$a}
+        || $a cmp $b
+    } keys %scores
+  ];
 }
 
 sub _book_depth_allowed {
@@ -200,17 +290,46 @@ sub _state_ply {
   return (($fullmove - 1) * 2) + $turn;
 }
 
-sub _lookup_fen_move {
+sub _lookup_fen_entry {
+  my ($state, $move_or_uci) = @_;
+  my $ctx = _lookup_fen_context($state) or return;
+  my $choice;
+  my $requested_uci = _requested_book_uci($state, $move_or_uci);
+  if (defined $requested_uci) {
+    ($choice) = grep {
+      defined($_->{uci}) && $_->{uci} eq $requested_uci
+    } @{$ctx->{ranked}};
+    return unless $choice;
+  } else {
+    $choice = _select_ranked_entry($ctx->{ranked});
+    return unless $choice;
+  }
+
+  my $move = $ctx->{legal}{$choice->{uci}} or return;
+  return _compose_book_choice($choice, $ctx, $move);
+}
+
+sub _lookup_fen_context {
   my ($state) = @_;
+  return _lookup_fen_context_from($state, \%fen_book, \%relaxed_fen_book, 'fen', 'relaxed');
+}
+
+sub _lookup_fen_context_from {
+  my ($state, $fen_ref, $relaxed_ref, $fen_source, $relaxed_source) = @_;
+  $fen_ref ||= \%fen_book;
+  $relaxed_ref ||= \%relaxed_fen_book;
+  $fen_source ||= 'fen';
+  $relaxed_source ||= 'relaxed';
+
   my $key = canonical_fen_key($state);
-  my $entries = $fen_book{$key};
-  my $source = 'fen';
+  my $entries = $fen_ref->{$key};
+  my $source = $fen_source;
   my $source_key = $key;
   if (! $entries) {
     my $relaxed = relaxed_fen_key($key);
     if (defined $relaxed) {
-      $entries = $relaxed_fen_book{$relaxed};
-      $source = 'relaxed';
+      $entries = $relaxed_ref->{$relaxed};
+      $source = $relaxed_source;
       $source_key = $relaxed;
     }
   }
@@ -230,9 +349,13 @@ sub _lookup_fen_move {
   );
   return unless $ranked && @$ranked;
 
-  my $choice = _select_ranked_entry($ranked);
-  return unless $choice;
-  return $legal->{$choice->{uci}};
+  return {
+    key => $key,
+    source => $source,
+    source_key => $source_key,
+    ranked => $ranked,
+    legal => $legal,
+  };
 }
 
 sub _ranked_legal_entries_for_state {
@@ -287,14 +410,21 @@ sub _legal_move_map {
   return $result;
 }
 
-sub _legacy_lookup {
+sub _legacy_lookup_entry {
   my ($state) = @_;
   my $pos = join('', map { $Chess::Constant::p2l{$_} }
     @{$state->[Chess::State::BOARD]}[21 .. 28, 31 .. 38, 41 .. 48, 51 .. 58, 61 .. 68, 71 .. 78, 81 .. 88, 91 .. 98]);
 
   my $entry = $book{$pos} or return;
   my $index = int(rand(@$entry));
-  return $entry->[$index];
+  my $move = $entry->[$index];
+  return unless ref($move) eq 'ARRAY';
+  my $uci = eval { $state->decode_move($move) };
+  return {
+    move => $move,
+    uci => $uci,
+    source => 'legacy',
+  };
 }
 
 sub _parse_book_moves {
@@ -325,6 +455,7 @@ sub _parse_book_moves {
       $by_uci{$uci}{white}  += $white;
       $by_uci{$uci}{draw}   += $draw;
       $by_uci{$uci}{black}  += $black;
+      _merge_book_metadata($by_uci{$uci}, _parse_book_metadata($move));
     } elsif (!ref $move) {
       my $uci = normalize_uci_move($move);
       next unless defined $uci;
@@ -373,6 +504,7 @@ sub _merge_book_entries {
       $slot->{white}  += $white;
       $slot->{draw}   += $draw;
       $slot->{black}  += $black;
+      _merge_book_metadata($slot, $entry);
       $touched{$uci} = 1;
       next;
     }
@@ -395,6 +527,7 @@ sub _merge_book_entries {
     $new_slot->{white}  += $white;
     $new_slot->{draw}   += $draw;
     $new_slot->{black}  += $black;
+    _merge_book_metadata($new_slot, $entry);
     push @$current, $new_slot;
     $index_by_uci{$uci} = $#$current;
     $touched{$uci} = 1;
@@ -595,6 +728,144 @@ sub _side_to_move {
   my (undef, $turn) = split / /, $key;
   return 'black' if defined $turn && $turn eq 'b';
   return 'white';
+}
+
+sub _compose_book_choice {
+  my ($choice, $ctx, $move) = @_;
+  return unless ref($choice) eq 'HASH';
+  return unless ref($ctx) eq 'HASH';
+
+  my %entry = (
+    move => $move,
+    uci => $choice->{uci},
+    source => $ctx->{source},
+    source_key => $ctx->{source_key},
+  );
+  _merge_book_metadata(\%entry, _book_metadata_for_source($ctx->{source}, $ctx->{source_key}));
+  _merge_book_metadata(\%entry, $choice);
+  return \%entry;
+}
+
+sub _requested_book_uci {
+  my ($state, $move_or_uci) = @_;
+  return unless defined $move_or_uci;
+  if (ref($move_or_uci) eq 'ARRAY') {
+    return unless ref($state) eq 'Chess::State';
+    my $uci = eval { $state->decode_move($move_or_uci) };
+    return normalize_uci_move($uci);
+  }
+  return normalize_uci_move($move_or_uci);
+}
+
+sub _book_metadata_for_source {
+  my ($source, $key) = @_;
+  return unless defined $key;
+  return $fen_book_meta{$key} if defined $source && $source eq 'fen';
+  return $relaxed_fen_book_meta{$key} if defined $source && $source eq 'relaxed';
+  return $overlay_fen_book_meta{$key} if defined $source && $source eq 'overlay_fen';
+  return $overlay_relaxed_fen_book_meta{$key} if defined $source && $source eq 'overlay_relaxed';
+  return;
+}
+
+sub _parse_book_metadata {
+  my ($node) = @_;
+  return unless ref($node) eq 'HASH';
+
+  my %meta;
+  for my $field (qw(opening plan plan_id)) {
+    my $value = $node->{$field};
+    next unless defined $value;
+    $value =~ s/^\s+|\s+$//g;
+    next unless length $value;
+    $meta{$field} = $value;
+  }
+
+  for my $field (qw(plan_tags plans)) {
+    my $value = _normalize_string_list($node->{$field});
+    next unless $value && @{$value};
+    $meta{$field} = $value;
+  }
+
+  return unless %meta;
+  return \%meta;
+}
+
+sub _merge_book_metadata_for_key {
+  my ($target, $key, $meta) = @_;
+  return unless ref($target) eq 'HASH';
+  return unless defined $key && length $key;
+  return unless ref($meta) eq 'HASH' && %{$meta};
+  $target->{$key} ||= {};
+  _merge_book_metadata($target->{$key}, $meta);
+}
+
+sub _merge_book_metadata {
+  my ($target, $meta) = @_;
+  return unless ref($target) eq 'HASH';
+  return unless ref($meta) eq 'HASH' && %{$meta};
+
+  for my $field (qw(opening plan plan_id)) {
+    next unless defined $meta->{$field} && length $meta->{$field};
+    $target->{$field} = $meta->{$field};
+  }
+
+  for my $field (qw(plan_tags plans)) {
+    next unless ref($meta->{$field}) eq 'ARRAY' && @{$meta->{$field}};
+    my %seen = map { $_ => 1 } @{ $target->{$field} || [] };
+    for my $value (@{$meta->{$field}}) {
+      next unless defined $value && length $value;
+      next if $seen{$value}++;
+      push @{ $target->{$field} ||= [] }, $value;
+    }
+  }
+}
+
+sub _normalize_string_list {
+  my ($value) = @_;
+  return unless ref($value) eq 'ARRAY' && @{$value};
+  my @values;
+  my %seen;
+  for my $item (@{$value}) {
+    next unless defined $item;
+    $item =~ s/^\s+|\s+$//g;
+    next unless length $item;
+    next if $seen{$item}++;
+    push @values, $item;
+  }
+  return unless @values;
+  return \@values;
+}
+
+sub _accumulate_plan_tags {
+  my ($scores, $meta, $weight) = @_;
+  return unless ref($scores) eq 'HASH';
+  return unless ref($meta) eq 'HASH';
+  $weight = 1.0 unless defined $weight;
+
+  for my $field (qw(plan_tags plans)) {
+    next unless ref($meta->{$field}) eq 'ARRAY';
+    for my $value (@{$meta->{$field}}) {
+      next unless defined $value && length $value;
+      $scores->{$value} += $weight;
+    }
+  }
+}
+
+sub _accumulate_plan_tags_from_context {
+  my ($scores, $ctx, $limit) = @_;
+  return unless ref($scores) eq 'HASH';
+  return unless ref($ctx) eq 'HASH';
+  $limit = 2 unless defined $limit && $limit =~ /^\d+$/ && $limit > 0;
+
+  _accumulate_plan_tags($scores, _book_metadata_for_source($ctx->{source}, $ctx->{source_key}), 1.0);
+
+  my $taken = 0;
+  foreach my $entry (@{$ctx->{ranked} || []}) {
+    last if $taken >= $limit;
+    my $weight = 1.0 + ($entry->{_book_score} // 0);
+    _accumulate_plan_tags($scores, $entry, $weight);
+    $taken++;
+  }
 }
 
 sub _positive_num {

@@ -1,62 +1,279 @@
 [
   {
     "key": "rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq e6",
+    "opening": "Open Game",
+    "plan": "Develop quickly, keep d4 in reserve, and stay ready to transpose into the Scotch.",
+    "plans": [
+      "Nf3 before committing the c-pawn",
+      "prepare d4",
+      "castle quickly"
+    ],
     "moves": [
       { "uci": "g1f3", "played": 220000, "weight": 220000, "white": 188000, "draw": 22000, "black": 10000 }
     ]
   },
   {
     "key": "r1bqkbnr/pppp1ppp/2n5/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq -",
+    "opening": "Scotch Game",
+    "plan": "Open the center before Black settles and recapture on d4 with active pieces.",
+    "plans": [
+      "break with d4 immediately",
+      "keep pressure on e5 and c6",
+      "develop with tempo"
+    ],
     "moves": [
       { "uci": "d2d4", "played": 220000, "weight": 220000, "white": 188000, "draw": 22000, "black": 10000 }
     ]
   },
   {
     "key": "r1bqkbnr/pppp1ppp/2n5/4p3/3PP3/5N2/PPP2PPP/RNBQKB1R b KQkq d3",
+    "opening": "Scotch Game",
+    "plan": "Accept the central break, force White to prove compensation in an open position, and develop smoothly afterward.",
+    "plans": [
+      "accept on d4",
+      "develop with tempo against e4",
+      "keep ...Bc5 and ...Bb4 available"
+    ],
     "moves": [
       { "uci": "e5d4", "played": 180000, "weight": 180000, "white": 10000, "draw": 22000, "black": 148000 }
     ]
   },
   {
     "key": "r1bqkbnr/pppp1ppp/2n5/8/3pP3/5N2/PPP2PPP/RNBQKB1R w KQkq -",
+    "opening": "Scotch Game",
+    "plan": "Recover the pawn with the knight and keep the initiative flowing through piece activity.",
+    "plans": [
+      "Nxd4 with tempo",
+      "aim at c6 and f7",
+      "keep bishops active"
+    ],
     "moves": [
       { "uci": "f3d4", "played": 220000, "weight": 220000, "white": 188000, "draw": 22000, "black": 10000 }
     ]
   },
   {
     "key": "r1bqkbnr/pppp1ppp/2n5/8/3NP3/8/PPP2PPP/RNBQKB1R b KQkq -",
+    "opening": "Scotch Game",
+    "plan": "Develop with tempo against e4 and keep both ...Bc5 and ...Bb4 ready before White consolidates.",
+    "plans": [
+      "develop ...Nf6",
+      "pressure e4",
+      "choose between ...Bc5 and ...Bb4"
+    ],
     "moves": [
       { "uci": "g8f6", "played": 180000, "weight": 180000, "white": 10000, "draw": 22000, "black": 148000 }
     ]
   },
   {
     "key": "r1bqkb1r/pppp1ppp/2n2n2/8/3NP3/8/PPP2PPP/RNBQKB1R w KQkq -",
+    "opening": "Scotch Game",
+    "plan": "Damage Black's queenside structure early and play against the c-pawns in the resulting endgame-friendly structure.",
+    "plans": [
+      "trade on c6",
+      "play against doubled c-pawns",
+      "keep bishops flexible"
+    ],
     "moves": [
       { "uci": "d4c6", "played": 170000, "weight": 170000, "white": 144000, "draw": 16000, "black": 10000 }
     ]
   },
   {
     "key": "r1bqkb1r/pppp1ppp/2N2n2/8/4P3/8/PPP2PPP/RNBQKB1R b KQkq -",
+    "opening": "Scotch Game",
+    "plan": "Recapture toward the center, keep the bishop pair, and use the half-open b-file for play.",
+    "plans": [
+      "bxc6 toward the center",
+      "bishop pair with healthy activity",
+      "use the b-file"
+    ],
     "moves": [
       { "uci": "b7c6", "played": 170000, "weight": 170000, "white": 10000, "draw": 16000, "black": 144000 }
     ]
   },
   {
     "key": "rnbqkbnr/pppppppp/8/8/3P4/8/PPP1PPPP/RNBQKBNR b KQkq d3",
+    "opening": "Dutch Defense",
+    "plan": "Fight immediately for e4 and dark squares, then develop behind the advanced f-pawn.",
+    "plans": [
+      "...f5 for dark-square control",
+      "develop kingside quickly",
+      "counterplay before White builds a broad center"
+    ],
     "moves": [
       { "uci": "f7f5", "played": 240000, "weight": 240000, "white": 10000, "draw": 24000, "black": 206000 }
     ]
   },
   {
     "key": "rnbqkbnr/pppppppp/8/8/2P5/8/PP1PPPPP/RNBQKBNR b KQkq c3",
+    "opening": "Dutch Defense",
+    "plan": "Meet flank pressure with immediate central-dark-square control and a kingside setup behind the f-pawn.",
+    "plans": [
+      "...f5 against English move orders",
+      "fight for e4",
+      "keep Dutch structures available"
+    ],
     "moves": [
       { "uci": "f7f5", "played": 180000, "weight": 180000, "white": 9000, "draw": 18000, "black": 153000 }
     ]
   },
   {
     "key": "rnbqkbnr/pppppppp/8/8/8/5N2/PPPPPPPP/RNBQKB1R b KQkq -",
+    "opening": "Dutch Defense",
+    "plan": "Use the Dutch against flexible move orders so Black still dictates the dark-square battle.",
+    "plans": [
+      "...f5 versus Réti move orders",
+      "develop behind the f-pawn",
+      "aim for active kingside play"
+    ],
     "moves": [
       { "uci": "f7f5", "played": 180000, "weight": 180000, "white": 9000, "draw": 18000, "black": 153000 }
+    ]
+  },
+  {
+    "key": "rnbqkbnr/ppppp1pp/8/5p2/2PP4/8/PP2PPPP/RNBQKBNR b KQkq c3",
+    "opening": "Dutch Defense",
+    "plan": "Support the e4 grip with ...Nf6 and stay flexible between Classical, Stonewall, and Leningrad shells.",
+    "plans": [
+      "...Nf6 first",
+      "...e6 or ...g6 depending on White's setup",
+      "pressure e4"
+    ],
+    "moves": [
+      { "uci": "g8f6", "played": 210000, "weight": 210000, "white": 14000, "draw": 20000, "black": 176000 }
+    ]
+  },
+  {
+    "key": "rnbqkbnr/ppppp1pp/8/5p2/3P4/6P1/PPP1PP1P/RNBQKBNR b KQkq -",
+    "opening": "Dutch Defense",
+    "plan": "Meet the kingside fianchetto with ...Nf6 first and keep the choice between Classical and Leningrad structures.",
+    "plans": [
+      "...Nf6 before committing the kingside pawns",
+      "watch e4",
+      "transpose flexibly"
+    ],
+    "moves": [
+      { "uci": "g8f6", "played": 200000, "weight": 200000, "white": 13000, "draw": 18000, "black": 169000 }
+    ]
+  },
+  {
+    "key": "rnbqkbnr/ppppp1pp/8/5p2/3P4/5N2/PPP1PPPP/RNBQKB1R b KQkq -",
+    "opening": "Dutch Defense",
+    "plan": "Develop with ...Nf6, keep e4 under control, and only then choose the exact Dutch pawn shell.",
+    "plans": [
+      "...Nf6 with flexible pawn structure",
+      "fight for e4",
+      "prepare ...e6 or ...g6"
+    ],
+    "moves": [
+      { "uci": "g8f6", "played": 195000, "weight": 195000, "white": 14000, "draw": 17000, "black": 164000 }
+    ]
+  },
+  {
+    "key": "rnbqkb1r/ppppp1pp/5n2/5p2/3P4/6P1/PPP1PPBP/RNBQK1NR b KQkq -",
+    "opening": "Dutch Defense",
+    "plan": "Commit to a Leningrad shell with ...g6, ...Bg7, ...d6, and kingside counterplay once White has fianchettoed.",
+    "plans": [
+      "...g6 and ...Bg7",
+      "build a Leningrad center with ...d6",
+      "seek kingside counterplay"
+    ],
+    "moves": [
+      { "uci": "g7g6", "played": 205000, "weight": 205000, "white": 15000, "draw": 19000, "black": 171000 }
+    ]
+  },
+  {
+    "key": "r1bqkb1r/pppp1ppp/2n2n2/8/3NP3/2N5/PPP2PPP/R1BQKB1R b KQkq -",
+    "opening": "Scotch Four Knights",
+    "plan": "Pin c3 with ...Bb4, add pressure to e4, and force White to define the center before it stabilizes.",
+    "plans": [
+      "...Bb4 pin",
+      "pressure e4 and c3",
+      "keep the center fluid"
+    ],
+    "moves": [
+      { "uci": "f8b4", "played": 205000, "weight": 205000, "white": 17000, "draw": 20000, "black": 168000 }
+    ]
+  },
+  {
+    "key": "r1bqk1nr/pppp1ppp/2n5/2b5/3NP3/8/PPP2PPP/RNBQKB1R w KQkq -",
+    "opening": "Scotch Game",
+    "plan": "Rebuild the center with c3 and Be3 while keeping pressure on f7 and c6.",
+    "plans": [
+      "support d4 with c3",
+      "develop the dark-squared bishop",
+      "keep pressure on Black's center"
+    ],
+    "moves": [
+      { "uci": "c2c3", "played": 200000, "weight": 200000, "white": 171000, "draw": 17000, "black": 12000 }
+    ]
+  },
+  {
+    "key": "r1bqk2r/pppp1ppp/2n2n2/8/1b1NP3/2N5/PPP2PPP/R1BQKB1R w KQkq -",
+    "opening": "Scotch Four Knights",
+    "plan": "Trade on c6 to damage Black's queenside structure and leave the bishop on b4 with fewer targets.",
+    "plans": [
+      "Nxc6 to damage the structure",
+      "reduce Black's pressure on e4",
+      "play against c-pawns"
+    ],
+    "moves": [
+      { "uci": "d4c6", "played": 195000, "weight": 195000, "white": 165000, "draw": 17000, "black": 13000 }
+    ]
+  },
+  {
+    "key": "r1bqk1nr/p1pp1ppp/2p5/2b5/4P3/8/PPP2PPP/RNBQKB1R w KQkq -",
+    "opening": "Scotch Game",
+    "plan": "Set the bishop on c4, pressure f7 and c6, and castle before Black can untangle the doubled c-pawns.",
+    "plans": [
+      "develop bishops actively",
+      "pressure the weakened queenside",
+      "castle_kingside",
+      "pressure_center"
+    ],
+    "moves": [
+      { "uci": "f1c4", "played": 188000, "weight": 188000, "white": 159000, "draw": 16000, "black": 13000 }
+    ]
+  },
+  {
+    "key": "rnbq1rk1/ppppb1pp/4pn2/5p2/2PP4/5NP1/PP2PPBP/RNBQK2R w KQ -",
+    "opening": "Dutch Defense",
+    "plan": "Complete castling, keep the kingside fianchetto intact, and only then challenge Black's e6-f5 shell.",
+    "plans": [
+      "castle_kingside",
+      "fianchetto_king",
+      "pressure_center",
+      "develop_minors"
+    ],
+    "moves": [
+      { "uci": "e1g1", "played": 192000, "weight": 192000, "white": 165000, "draw": 15000, "black": 12000 }
+    ]
+  },
+  {
+    "key": "rnbqk2r/ppppb1pp/4pn2/5p2/3P4/5NP1/PPP1PPBP/RNBQ1RK1 b kq -",
+    "opening": "Dutch Defense",
+    "plan": "Castle to stabilize the king, then decide between a Classical ...d6 shell and a more dynamic ...Qe8 kingside plan.",
+    "plans": [
+      "castle_kingside",
+      "kingside_space",
+      "dark_square_control",
+      "pressure_center"
+    ],
+    "moves": [
+      { "uci": "e8g8", "played": 186000, "weight": 186000, "white": 13000, "draw": 17000, "black": 156000 }
+    ]
+  },
+  {
+    "key": "rnbqk2r/pppp2pp/4pn2/5p2/1bPP4/5NP1/PP2PP1P/RNBQKB1R w KQkq -",
+    "opening": "Dutch Defense",
+    "plan": "Block the check with Nbd2, keep the center intact, and use the extra queenside space to challenge Black's bishop.",
+    "plans": [
+      "develop_minors",
+      "pressure_center",
+      "queenside_pressure",
+      "castle_kingside"
+    ],
+    "moves": [
+      { "uci": "b1d2", "played": 176000, "weight": 176000, "white": 149000, "draw": 15000, "black": 12000 }
     ]
   }
 ]

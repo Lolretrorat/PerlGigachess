@@ -14,12 +14,16 @@ SKIP_PROMO=0
 SKIP_OWN_URLS=0
 SKIP_BOOK_UNDERPROMO=0
 SKIP_BOOK_POLICY=0
+SKIP_BOOK_PLAN=0
 SKIP_LICHESS_TIME=0
+SKIP_ENGINE_REGISTRY=0
+SKIP_ENGINE_RECOMMEND=0
 SKIP_PDP_QUEEN=0
 SKIP_REP_GUARD=0
 SKIP_QSEARCH_IN_CHECK=0
 SKIP_SEARCH_REPETITION=0
 SKIP_MODULE_UNIT=0
+SKIP_EVAL_THREAT_PLAN=0
 SKIP_UNGUARDED_PLAN=0
 SKIP_PROMO_CHECK=0
 SKIP_XXGZ_REBUILD=0
@@ -27,6 +31,7 @@ SKIP_PROTOCOL=0
 SKIP_IMMEDIATE_STOP=0
 SKIP_SEARCHMOVES=0
 SKIP_DATA_RETENTION=0
+SKIP_R9GKSIYT=0
 
 usage() {
   cat <<'USAGE'
@@ -45,12 +50,16 @@ Options:
   --skip-own-urls          Skip OWN-URL parser/ingest regression check
   --skip-book-underpromo   Skip opening-book SAN underpromotion regression check
   --skip-book-policy       Skip opening-book policy/depth/overlay regression check
+  --skip-book-plan         Skip opening-book plan metadata regression check
   --skip-lichess-time      Skip lichess bot time/depth profile regression check
+  --skip-engine-registry   Skip engine tuning registry sync regression check
+  --skip-engine-recommend  Skip engine recommendation threshold regression check
   --skip-pdp-queen         Skip PDPgjgTd random queen-capture regression check
   --skip-rep-guard         Skip repetition guard quiet-move regression check
   --skip-qsearch-check     Skip qsearch in-check mate/evasion regression check
   --skip-search-repetition Skip search repetition threefold-only regression check
   --skip-module-unit       Skip module-level unit regressions (state/TT/picker/time/etc.)
+  --skip-eval-threat-plan  Skip eval threat/planning integration regression check
   --skip-unguarded-plan    Skip unguarded-material capture-plan regression check
   --skip-promo-check       Skip promotion-with-check regression check
   --skip-xxgz-rebuild      Skip xXgzD7zW state-rebuild regression check
@@ -58,6 +67,7 @@ Options:
   --skip-immediate-stop    Skip immediate go/stop legal-bestmove regression check
   --skip-searchmoves       Skip UCI searchmoves filtering regression check
   --skip-data-retention    Skip analytics URL-retention policy regression check
+  --skip-r9gksiyt          Skip r9GKsIYt promotion/mate regression check
   -h, --help               Show help
 USAGE
 }
@@ -122,8 +132,20 @@ while [[ $# -gt 0 ]]; do
       SKIP_BOOK_POLICY=1
       shift
       ;;
+    --skip-book-plan)
+      SKIP_BOOK_PLAN=1
+      shift
+      ;;
     --skip-lichess-time)
       SKIP_LICHESS_TIME=1
+      shift
+      ;;
+    --skip-engine-registry)
+      SKIP_ENGINE_REGISTRY=1
+      shift
+      ;;
+    --skip-engine-recommend)
+      SKIP_ENGINE_RECOMMEND=1
       shift
       ;;
     --skip-pdp-queen)
@@ -144,6 +166,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --skip-module-unit)
       SKIP_MODULE_UNIT=1
+      shift
+      ;;
+    --skip-eval-threat-plan)
+      SKIP_EVAL_THREAT_PLAN=1
       shift
       ;;
     --skip-unguarded-plan)
@@ -172,6 +198,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --skip-data-retention)
       SKIP_DATA_RETENTION=1
+      shift
+      ;;
+    --skip-r9gksiyt)
+      SKIP_R9GKSIYT=1
       shift
       ;;
     -h|--help)
@@ -230,6 +260,13 @@ else
   echo "==> Skipping opening-book policy/depth/overlay guard"
 fi
 
+if [[ "$SKIP_BOOK_PLAN" -eq 0 ]]; then
+  echo "==> Opening-book plan metadata guard"
+  (cd "$ROOT_DIR" && bash tests/regression_book_plan_metadata.sh)
+else
+  echo "==> Skipping opening-book plan metadata guard"
+fi
+
 if [[ "$SKIP_LICHESS_TIME" -eq 0 ]]; then
   echo "==> Lichess time/depth profile guard"
   (cd "$ROOT_DIR" && bash tests/regression_lichess_time_profile.sh)
@@ -237,11 +274,22 @@ else
   echo "==> Skipping lichess time/depth profile guard"
 fi
 
-echo "==> Engine tuning registry sync guard"
-(cd "$ROOT_DIR" && bash tests/regression_engine_registry_sync.sh)
+echo "==> Engine soft-abort iterative-depth guard"
+(cd "$ROOT_DIR" && perl tests/regression_engine_soft_abort.pl)
 
-echo "==> Engine recommendation safeguard guard"
-(cd "$ROOT_DIR" && bash tests/regression_engine_recommendation_thresholds.sh)
+if [[ "$SKIP_ENGINE_REGISTRY" -eq 0 ]]; then
+  echo "==> Engine tuning registry sync guard"
+  (cd "$ROOT_DIR" && bash tests/regression_engine_registry_sync.sh)
+else
+  echo "==> Skipping engine tuning registry sync guard"
+fi
+
+if [[ "$SKIP_ENGINE_RECOMMEND" -eq 0 ]]; then
+  echo "==> Engine recommendation safeguard guard"
+  (cd "$ROOT_DIR" && bash tests/regression_engine_recommendation_thresholds.sh)
+else
+  echo "==> Skipping engine recommendation safeguard guard"
+fi
 
 if [[ "$SKIP_PDP_QUEEN" -eq 0 ]]; then
   echo "==> PDPgjgTd guard (avoid random queen capture)"
@@ -271,6 +319,9 @@ else
   echo "==> Skipping qsearch in-check mate/evasion guard"
 fi
 
+echo "==> YWUtX6DF opening queen-pressure guard"
+(cd "$ROOT_DIR" && perl tests/regression_ywutx6df_opening_search.pl)
+
 if [[ "$SKIP_SEARCH_REPETITION" -eq 0 ]]; then
   echo "==> Search repetition threefold-only guard"
   (cd "$ROOT_DIR" && perl tests/regression_search_threefold_only.pl)
@@ -285,6 +336,8 @@ if [[ "$SKIP_MODULE_UNIT" -eq 0 ]]; then
   (cd "$ROOT_DIR" && perl tests/regression_transposition_table.pl)
   echo "==> Move picker unit guard"
   (cd "$ROOT_DIR" && perl tests/regression_move_picker.pl)
+  echo "==> Plan heuristics unit guard"
+  (cd "$ROOT_DIR" && perl tests/regression_plan_heuristics.pl)
   echo "==> Table util unit guard"
   (cd "$ROOT_DIR" && perl tests/regression_table_util_core.pl)
   echo "==> Time manager unit guard"
@@ -295,6 +348,13 @@ if [[ "$SKIP_MODULE_UNIT" -eq 0 ]]; then
   (cd "$ROOT_DIR" && perl tests/regression_search_root_stats.pl)
 else
   echo "==> Skipping module-level unit guards"
+fi
+
+if [[ "$SKIP_EVAL_THREAT_PLAN" -eq 0 ]]; then
+  echo "==> Eval threat/planning integration guard"
+  (cd "$ROOT_DIR" && perl tests/regression_eval_threat_planning.pl)
+else
+  echo "==> Skipping eval threat/planning integration guard"
 fi
 
 if [[ "$SKIP_UNGUARDED_PLAN" -eq 0 ]]; then
@@ -337,6 +397,13 @@ if [[ "$SKIP_SEARCHMOVES" -eq 0 ]]; then
   (cd "$ROOT_DIR" && perl tests/regression_uci_searchmoves.pl)
 else
   echo "==> Skipping UCI searchmoves filter guard"
+fi
+
+if [[ "$SKIP_R9GKSIYT" -eq 0 ]]; then
+  echo "==> r9GKsIYt promotion/mate guard"
+  (cd "$ROOT_DIR" && perl tests/regression_r9gksiyt_game.pl)
+else
+  echo "==> Skipping r9GKsIYt promotion/mate guard"
 fi
 
 if [[ "$SKIP_PERFT" -eq 0 ]]; then

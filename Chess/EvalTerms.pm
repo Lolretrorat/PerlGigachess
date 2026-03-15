@@ -26,6 +26,7 @@ our @EXPORT_OK = qw(
   development_score
   passed_pawn_score
   hanging_piece_score
+  threatened_material_summary
   least_attacker_value
   is_quiet_hanging_move
   hanging_move_penalty
@@ -240,6 +241,37 @@ sub is_square_attacked_by_side {
   return 0;
 }
 
+sub _queen_attacks_square_from {
+  my ($board, $from_idx, $target_idx, $queen_piece) = @_;
+  return 0 unless ref($board) eq 'ARRAY';
+  return 0 unless defined $from_idx && defined $target_idx;
+  return 0 unless defined $queen_piece && abs($queen_piece) == QUEEN;
+  return 0 if $from_idx == $target_idx;
+
+  my $delta = $target_idx - $from_idx;
+  my $step;
+  if ($delta % 10 == 0) {
+    $step = $delta > 0 ? 10 : -10;
+  } elsif (int($target_idx / 10) == int($from_idx / 10)) {
+    $step = $delta > 0 ? 1 : -1;
+  } elsif ($delta % 11 == 0) {
+    $step = $delta > 0 ? 11 : -11;
+  } elsif ($delta % 9 == 0) {
+    $step = $delta > 0 ? 9 : -9;
+  } else {
+    return 0;
+  }
+
+  for (my $idx = $from_idx + $step; $idx != $target_idx; $idx += $step) {
+    my $piece = $board->[$idx] // OOB;
+    return 0 if $piece == OOB;
+    next unless $piece;
+    return 0;
+  }
+
+  return 1;
+}
+
 sub find_piece_idx {
   my ($board, $target_piece) = @_;
   for my $idx (@board_indices) {
@@ -400,6 +432,55 @@ sub hanging_piece_score {
   }
 
   return $score;
+}
+
+sub threatened_material_summary {
+  my ($board, $attack_cache) = @_;
+  my %summary = (
+    threatened_ours        => 0,
+    threatened_theirs      => 0,
+    threatened_ours_count  => 0,
+    threatened_theirs_count => 0,
+    threatened_delta       => 0,
+  );
+
+  for my $idx (@board_indices) {
+    my $piece = $board->[$idx] // 0;
+    next unless $piece;
+
+    my $abs_piece = abs($piece);
+    next if $abs_piece == KING;
+
+    my $penalty = HANGING_PIECE_PENALTY->{$abs_piece};
+    $penalty = THREATENED_PAWN_PENALTY if !defined $penalty && $abs_piece == PAWN;
+    next unless defined $penalty && $penalty > 0;
+
+    my $enemy_sign = $piece > 0 ? -1 : 1;
+    my $friendly_sign = -$enemy_sign;
+    next unless is_square_attacked_by_side($board, $idx, $enemy_sign, $attack_cache);
+
+    my $defended = is_square_attacked_by_side($board, $idx, $friendly_sign, $attack_cache) ? 1 : 0;
+    my $least_attacker = least_attacker_value($board, $idx, $enemy_sign);
+    my $victim_value = abs($piece_values{$piece} // 0);
+    my $pressure = defined $least_attacker && $least_attacker <= ($victim_value + UNGUARDED_TARGET_VALUE_MARGIN)
+      ? 1
+      : 0;
+
+    my $delta = $defended ? int($penalty * HANGING_DEFENDED_SCALE) : $penalty;
+    $delta += THREAT_ATTACK_BONUS if !$defended || $pressure;
+    next unless $delta > 0;
+
+    if ($piece > 0) {
+      $summary{threatened_ours} += $delta;
+      $summary{threatened_ours_count}++;
+    } else {
+      $summary{threatened_theirs} += $delta;
+      $summary{threatened_theirs_count}++;
+    }
+  }
+
+  $summary{threatened_delta} = $summary{threatened_theirs} - $summary{threatened_ours};
+  return \%summary;
 }
 
 sub least_attacker_value {
@@ -582,8 +663,17 @@ sub king_aggression_for_piece {
   my ($board, $king_piece, $enemy_piece_count) = @_;
   return 0 unless defined $enemy_piece_count;
   return 0 if $enemy_piece_count >= KING_AGGRESSION_ENEMY_PIECE_START;
+  my $king_idx = find_piece_idx($board, $king_piece);
+  return 0 unless defined $king_idx;
+
   my $phase = (KING_AGGRESSION_ENEMY_PIECE_START - $enemy_piece_count) / KING_AGGRESSION_ENEMY_PIECE_START;
-  return int(KING_AGGRESSION_RANK_BONUS * $phase + 0.5);
+  my $rank = rank_of_idx($king_idx);
+  my $file = file_of_idx($king_idx);
+  my $advance = $king_piece > 0 ? max(0, $rank - 1) : max(0, 8 - $rank);
+  my $center = max(0, 4 - int(abs(4.5 - $file) + abs(4.5 - $rank)));
+  my $activity = $advance + $center;
+  return 0 unless $activity > 0;
+  return int(($activity * $phase * KING_AGGRESSION_RANK_BONUS / 2) + 0.5);
 }
 
 sub king_aggression_score {
@@ -633,9 +723,15 @@ sub is_tactical_queen_move {
   $enemy_king_idx = find_piece_idx($new_board, KING) unless defined $enemy_king_idx;
   return 0 unless defined $enemy_king_idx;
 
+  my $queen_idx = flip_idx($move->[1]);
+  my $queen_piece = $new_board->[$queen_idx] // 0;
+  return 0 unless abs($queen_piece) == QUEEN;
+  return 1 if _queen_attacks_square_from($new_board, $queen_idx, $enemy_king_idx, $queen_piece);
+
   my @ring = king_ring_indices($new_board, $enemy_king_idx);
   for my $sq ($enemy_king_idx, @ring) {
-    return 1 if is_square_attacked_by_side($new_board, $sq, -1);
+    next unless _queen_attacks_square_from($new_board, $queen_idx, $sq, $queen_piece);
+    return 1;
   }
 
   return 0;

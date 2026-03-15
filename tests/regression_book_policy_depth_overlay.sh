@@ -9,6 +9,7 @@ BASE_BOOK="$TMP_ROOT/base_book.json"
 OVERLAY_BOOK="$TMP_ROOT/overlay_book.json"
 DEPTH_BOOK="$TMP_ROOT/depth_book.json"
 STYLE_BASE_BOOK="$TMP_ROOT/style_base_book.json"
+STYLE_PLAN_OVERLAY="$TMP_ROOT/style_plan_overlay.json"
 
 cat > "$BASE_BOOK" <<'JSON'
 [
@@ -61,6 +62,28 @@ cat > "$STYLE_BASE_BOOK" <<'JSON'
 ]
 JSON
 
+cat > "$STYLE_PLAN_OVERLAY" <<'JSON'
+[
+  {
+    "key": "rnbqkbnr/pppppppp/8/8/3P4/8/PPP1PPPP/RNBQKBNR b KQkq d3",
+    "opening": "Dutch Defense",
+    "plan": "Fight for dark squares immediately and develop behind the f-pawn.",
+    "plan_tags": ["dark_square_control", "kingside_space", "castle_kingside"],
+    "moves": [
+      {
+        "uci": "f7f5",
+        "played": 240000,
+        "weight": 240000,
+        "white": 10000,
+        "draw": 24000,
+        "black": 206000,
+        "plan_tags": ["dark_square_control", "kingside_space", "castle_kingside"]
+      }
+    ]
+  }
+]
+JSON
+
 best_move="$(
   CHESS_BOOK_PATH="$BASE_BOOK" CHESS_BOOK_POLICY=best perl -I"$ROOT_DIR" -MChess::Book -MChess::State -e '
     use strict;
@@ -92,7 +115,7 @@ overlay_move="$(
 }
 
 style_default_move="$(
-  CHESS_BOOK_PATH="$STYLE_BASE_BOOK" CHESS_BOOK_POLICY=best perl -I"$ROOT_DIR" -MChess::Book -MChess::State -e '
+  CHESS_BOOK_PATH="$STYLE_BASE_BOOK" CHESS_BOOK_STYLE_OVERLAY_PATH="$STYLE_PLAN_OVERLAY" CHESS_BOOK_POLICY=best perl -I"$ROOT_DIR" -MChess::Book -MChess::State -e '
     use strict;
     use warnings;
     my $state = Chess::State->new();
@@ -108,7 +131,7 @@ style_default_move="$(
 }
 
 style_opt_in_move="$(
-  CHESS_BOOK_PATH="$STYLE_BASE_BOOK" CHESS_BOOK_POLICY=best CHESS_BOOK_USE_STYLE_OVERLAY=1 perl -I"$ROOT_DIR" -MChess::Book -MChess::State -e '
+  CHESS_BOOK_PATH="$STYLE_BASE_BOOK" CHESS_BOOK_STYLE_OVERLAY_PATH="$STYLE_PLAN_OVERLAY" CHESS_BOOK_POLICY=best CHESS_BOOK_USE_STYLE_OVERLAY=1 perl -I"$ROOT_DIR" -MChess::Book -MChess::State -e '
     use strict;
     use warnings;
     my $state = Chess::State->new();
@@ -120,6 +143,94 @@ style_opt_in_move="$(
 )"
 [[ "$style_opt_in_move" == "f7f5" ]] || {
   echo "Expected opt-in style overlay move f7f5, got: $style_opt_in_move" >&2
+  exit 1
+}
+
+style_plan_tags="$(
+  CHESS_BOOK_PATH="$STYLE_BASE_BOOK" CHESS_BOOK_STYLE_OVERLAY_PATH="$STYLE_PLAN_OVERLAY" CHESS_BOOK_POLICY=best perl -I"$ROOT_DIR" -MChess::Book -MChess::State -e '
+    use strict;
+    use warnings;
+    my $state = Chess::State->new();
+    $state = $state->make_move($state->encode_move("d2d4"));
+    my $tags = Chess::Book::plan_tags_for_state($state);
+    print join(",", @{$tags || []}), "\n";
+  '
+)"
+[[ "$style_plan_tags" == *"dark_square_control"* && "$style_plan_tags" == *"kingside_space"* ]] || {
+  echo "Expected overlay plan tags to remain visible for search guidance, got: $style_plan_tags" >&2
+  exit 1
+}
+
+dutch_followup_move="$(
+  CHESS_BOOK_POLICY=best CHESS_BOOK_USE_STYLE_OVERLAY=1 perl -I"$ROOT_DIR" -MChess::Book -MChess::State -e '
+    use strict;
+    use warnings;
+    my $state = Chess::State->new();
+    $state = $state->make_move($state->encode_move("d2d4"));
+    $state = $state->make_move($state->encode_move("f7f5"));
+    $state = $state->make_move($state->encode_move("c2c4"));
+    my $move = Chess::Book::choose_move($state);
+    die "Dutch follow-up move missing\n" unless $move;
+    print $state->decode_move($move), "\n";
+  '
+)"
+[[ "$dutch_followup_move" == "g8f6" ]] || {
+  echo "Expected Dutch follow-up move g8f6, got: $dutch_followup_move" >&2
+  exit 1
+}
+
+scotch_entry_move="$(
+  CHESS_BOOK_POLICY=best CHESS_BOOK_USE_STYLE_OVERLAY=1 perl -I"$ROOT_DIR" -MChess::Book -MChess::State -e '
+    use strict;
+    use warnings;
+    my $state = Chess::State->new();
+    $state = $state->make_move($state->encode_move("e2e4"));
+    $state = $state->make_move($state->encode_move("e7e5"));
+    $state = $state->make_move($state->encode_move("g1f3"));
+    $state = $state->make_move($state->encode_move("b8c6"));
+    my $move = Chess::Book::choose_move($state);
+    die "Scotch entry move missing\n" unless $move;
+    print $state->decode_move($move), "\n";
+  '
+)"
+[[ "$scotch_entry_move" == "d2d4" ]] || {
+  echo "Expected Scotch entry move d2d4, got: $scotch_entry_move" >&2
+  exit 1
+}
+
+scotch_followup_move="$(
+  CHESS_BOOK_POLICY=best CHESS_BOOK_USE_STYLE_OVERLAY=1 perl -I"$ROOT_DIR" -MChess::Book -MChess::State -e '
+    use strict;
+    use warnings;
+    my $state = Chess::State->new();
+    for my $uci (qw(e2e4 e7e5 g1f3 b8c6 d2d4 e5d4 f3d4 g8f6 b1c3)) {
+      $state = $state->make_move($state->encode_move($uci));
+    }
+    my $move = Chess::Book::choose_move($state);
+    die "Scotch follow-up move missing\n" unless $move;
+    print $state->decode_move($move), "\n";
+  '
+)"
+[[ "$scotch_followup_move" == "f8b4" ]] || {
+  echo "Expected Scotch follow-up move f8b4, got: $scotch_followup_move" >&2
+  exit 1
+}
+
+scotch_bc5_reply="$(
+  CHESS_BOOK_POLICY=best CHESS_BOOK_USE_STYLE_OVERLAY=1 perl -I"$ROOT_DIR" -MChess::Book -MChess::State -e '
+    use strict;
+    use warnings;
+    my $state = Chess::State->new();
+    for my $uci (qw(e2e4 e7e5 g1f3 b8c6 d2d4 e5d4 f3d4 f8c5)) {
+      $state = $state->make_move($state->encode_move($uci));
+    }
+    my $move = Chess::Book::choose_move($state);
+    die "Scotch Bc5 reply missing\n" unless $move;
+    print $state->decode_move($move), "\n";
+  '
+)"
+[[ "$scotch_bc5_reply" == "c2c3" ]] || {
+  echo "Expected Scotch Bc5 reply c2c3, got: $scotch_bc5_reply" >&2
   exit 1
 }
 
@@ -139,4 +250,4 @@ depth_move="$(
   exit 1
 }
 
-echo "Book regression OK: policy, depth gating, extra overlay loading, and style-overlay opt-in behave as expected"
+echo "Book regression OK: policy, depth gating, metadata-preserving overlay loading, and deeper Dutch/Scotch preferences behave as expected"
