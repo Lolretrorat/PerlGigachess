@@ -15,11 +15,13 @@ OWN_URL_LOG="$ROOT_DIR/data/lichess_game_urls.log"
 PGN_PATH="$ROOT_DIR/data/lichess_games_export.pgn"
 CLEAR_OWN_URL_LOG=0
 SKIP_LOCATION_INGRESS=1
+FORCE_SKIP_LOCATION_INGRESS=0
 
 DEFAULT_TMP_DIR="${PERLGIGACHESS_TMP_DIR:-/mnt/throughput/perlgigachess-tmp}"
 TMP_DIR="$DEFAULT_TMP_DIR"
 KEEP_DOWNLOAD=0
 ALLOW_DUPLICATE_SOURCE=0
+INGRESS_EXTRA_ARGS=()
 
 PYTHON_BIN="${PYTHON_BIN:-$ROOT_DIR/.venv/bin/python}"
 MIN_PARAM_SCORE=""
@@ -55,9 +57,17 @@ Options:
   --clear-url-log                 Clear URL log after OWN-URLS ingest
   --keep-url-log                  Deprecated no-op; URLs are retained by default
   --include-location-ingress      Keep location training enabled during ingest
+  --skip-location                 Pass through to scripts/data_ingress.sh and keep location ingress disabled
   --tmp-dir <dir>                 Temp directory for ingest (default: $PERLGIGACHESS_TMP_DIR or /mnt/throughput/perlgigachess-tmp)
   --keep-download                 Keep monthly archive download
   --allow-duplicate-source        Allow duplicate monthly ingest source
+  --skip-book                     Pass through to scripts/data_ingress.sh
+  --book-max-games <n>            Pass through to scripts/data_ingress.sh
+  --book-max-plies <n>            Pass through to scripts/data_ingress.sh
+  --book-min-position-games <n>   Pass through to scripts/data_ingress.sh
+  --book-min-move-games <n>       Pass through to scripts/data_ingress.sh
+  --location-games <n>            Pass through to scripts/data_ingress.sh
+  --location-scale <n>            Pass through to scripts/data_ingress.sh
   --python <path>                 Python executable (default: .venv/bin/python)
   --min-param-score <float>       ENGINE_TRAINING_MIN_PARAM_SCORE override
   --reference-games <int>         ENGINE_TRAINING_REFERENCE_GAMES override
@@ -124,7 +134,14 @@ while [[ $# -gt 0 ]]; do
       shift
       ;;
     --include-location-ingress)
-      SKIP_LOCATION_INGRESS=0
+      if [[ "$FORCE_SKIP_LOCATION_INGRESS" -eq 0 ]]; then
+        SKIP_LOCATION_INGRESS=0
+      fi
+      shift
+      ;;
+    --skip-location)
+      SKIP_LOCATION_INGRESS=1
+      FORCE_SKIP_LOCATION_INGRESS=1
       shift
       ;;
     --tmp-dir)
@@ -139,6 +156,15 @@ while [[ $# -gt 0 ]]; do
     --allow-duplicate-source)
       ALLOW_DUPLICATE_SOURCE=1
       shift
+      ;;
+    --skip-book)
+      INGRESS_EXTRA_ARGS+=("$1")
+      shift
+      ;;
+    --book-max-games|--book-max-plies|--book-min-position-games|--book-min-move-games|--location-games|--location-scale)
+      require_value "$1" "${2:-}"
+      INGRESS_EXTRA_ARGS+=("$1" "${2:-}")
+      shift 2
       ;;
     --python)
       require_value "--python" "${2:-}"
@@ -261,6 +287,7 @@ if [[ "$RUN_INGRESS" -eq 1 ]]; then
   if [[ "$SKIP_LOCATION_INGRESS" -eq 1 ]]; then
     ingress_args+=(--skip-location)
   fi
+  ingress_args+=("${INGRESS_EXTRA_ARGS[@]}")
   if [[ "$RUN_LICHESS_DB" -eq 1 ]]; then
     ingress_args+=(LICHESS-DB-PGNS "$LICHESS_MONTH")
   fi

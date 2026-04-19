@@ -468,23 +468,27 @@ build_book_delta_and_merge() {
   local requested_max_games="${2:-$BOOK_MAX_GAMES}"
   local delta_book
   local current_max_games="$requested_max_games"
+  local status=0
 
   delta_book="$(mktemp "$TMP_DIR/opening_book_delta_XXXXXX.json")"
   tmp_files+=("$delta_book")
 
   while :; do
-    if perl "$ROOT_DIR/scripts/build_opening_book.pl" \
+    set +e
+    perl "$ROOT_DIR/scripts/build_opening_book.pl" \
       --output "$delta_book" \
       --max-plies "$BOOK_MAX_PLIES" \
       --max-games "$current_max_games" \
       --min-position-games "$BOOK_MIN_POSITION_GAMES" \
       --min-move-games "$BOOK_MIN_MOVE_GAMES" \
       "$pgn_input"
-    then
+    status="$?"
+    set -e
+
+    if [[ "$status" -eq 0 ]]; then
       last
     fi
 
-    local status="$?"
     local oom_like=0
     if [[ "$status" -eq 137 || "$status" -eq 9 ]]; then
       oom_like=1
@@ -518,6 +522,56 @@ build_book_delta_and_merge() {
     --base "$BOOK_OUTPUT" \
     --delta "$delta_book" \
     --output "$BOOK_OUTPUT"
+}
+
+run_location_training_from_archive() {
+  local archive_path="$1"
+  shift
+  local -a decompress_cmd=("$@")
+  local -a train_cmd
+  local -a pipe_status
+  local decompress_status=0
+  local train_status=0
+
+  train_cmd=(
+    "$ROOT_DIR/init"
+    train-location
+    --output "$LOCATION_OUTPUT"
+    --games "$LOCATION_GAMES"
+    --accumulate
+  )
+  if [[ -n "$LOCATION_SCALE" ]]; then
+    train_cmd+=(--scale "$LOCATION_SCALE")
+  fi
+
+  set +e
+  set +o pipefail
+  "${decompress_cmd[@]}" "$archive_path" | "${train_cmd[@]}"
+  pipe_status=("${PIPESTATUS[@]}")
+  set -o pipefail
+  set -e
+
+  decompress_status="${pipe_status[0]:-0}"
+  train_status="${pipe_status[1]:-0}"
+
+  if [[ "$train_status" -ne 0 ]]; then
+    if [[ "$train_status" -eq 137 || "$train_status" -eq 9 ]]; then
+      echo "Location training was killed (likely OOM) at --location-games $LOCATION_GAMES." >&2
+      echo "Retry with a smaller --location-games value, --skip-location, or a larger instance." >&2
+    else
+      echo "Location training failed with exit $train_status." >&2
+    fi
+    return "$train_status"
+  fi
+
+  if [[ "$decompress_status" -ne 0 && "$decompress_status" -ne 141 ]]; then
+    echo "Archive decompression exited with status $decompress_status after location training completed." >&2
+    return "$decompress_status"
+  fi
+
+  if [[ "$decompress_status" -eq 141 ]]; then
+    echo "==> Decompressor stopped after trainer reached --location-games $LOCATION_GAMES"
+  fi
 }
 
 run_own_urls_ingress() {
@@ -629,19 +683,8 @@ run_lichess_db_ingress() {
   fi
 
   if [[ "$RUN_LOCATION" -eq 1 ]]; then
-    local -a train_cmd
     echo "==> Training location modifiers: $LOCATION_OUTPUT"
-    train_cmd=(
-      "$ROOT_DIR/init"
-      train-location
-      --output "$LOCATION_OUTPUT"
-      --games "$LOCATION_GAMES"
-      --accumulate
-    )
-    if [[ -n "$LOCATION_SCALE" ]]; then
-      train_cmd+=(--scale "$LOCATION_SCALE")
-    fi
-    "${decompress_cmd[@]}" "$archive_path" | "${train_cmd[@]}"
+    run_location_training_from_archive "$archive_path" "${decompress_cmd[@]}"
   fi
 
   echo "==> Recording source in manifest: $MANIFEST_PATH"

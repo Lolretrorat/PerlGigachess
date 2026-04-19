@@ -63,6 +63,7 @@ EOF
 run_parameter_wrapper_checks() {
   local root="$TMP_ROOT/parameter"
   local env_log="$root/parameter_env.log"
+  local ingress_args_log="$root/parameter_ingress_args.log"
   local bundle_ts="20260314010101"
   local bundle_dir="$root/engineMigration/V${bundle_ts}__engine_training_recommendations"
   mkdir -p "$root/scripts" "$root/analysis" "$root/engineMigration" "$root/data"
@@ -71,6 +72,7 @@ run_parameter_wrapper_checks() {
   cat > "$root/scripts/data_ingress.sh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
+printf '%s\n' "$@" > "$PARAMETER_INGRESS_ARGS_LOG"
 exit 0
 EOF
   chmod +x "$root/scripts/data_ingress.sh"
@@ -108,13 +110,19 @@ EOF
   (
     cd "$root"
     PERLGIGACHESS_TMP_DIR="$root/tmp" \
+    PARAMETER_INGRESS_ARGS_LOG="$ingress_args_log" \
     ./DO_PARAMATER_EXTRACTION.sh \
-      --skip-ingress \
       --python "$root/mock_python.sh" \
-      --migration-timestamp "$bundle_ts"
+      --migration-timestamp "$bundle_ts" \
+      --book-max-games 1234 \
+      --location-games 77
   )
 
   assert_contains "$env_log" "ENGINE_TRAINING_CLEAR_GAME_URL_LOG=0"
+  assert_contains "$ingress_args_log" "--book-max-games"
+  assert_contains "$ingress_args_log" "1234"
+  assert_contains "$ingress_args_log" "--location-games"
+  assert_contains "$ingress_args_log" "77"
 }
 
 run_giga_wrapper_checks() {
@@ -179,11 +187,12 @@ EOF
 }
 
 check_notebook_contract() {
-  python - <<'PY'
+  ROOT_DIR="$ROOT_DIR" python - <<'PY'
 import json
+import os
 from pathlib import Path
 
-root = Path("/home/josh/code/PerlGigachess")
+root = Path(os.environ["ROOT_DIR"])
 
 engine = json.loads((root / "analysis" / "engine_training.ipynb").read_text(encoding="utf-8"))
 location = json.loads((root / "analysis" / "location_modifer_training.ipynb").read_text(encoding="utf-8"))
